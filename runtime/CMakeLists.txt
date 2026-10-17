@@ -8,6 +8,8 @@
 #         -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++
 #   ninja -C build-tools/rexruntime -j4 rexruntime
 cmake_minimum_required(VERSION 3.25)
+# Before project(): match the SDK binary (minos 13.3).
+set(CMAKE_OSX_DEPLOYMENT_TARGET 13.3 CACHE STRING "")
 project(mgr_rexruntime C CXX OBJC OBJCXX)
 
 get_filename_component(MGR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
@@ -109,6 +111,11 @@ endforeach()
 set_target_properties(rexruntime PROPERTIES
     OUTPUT_NAME_RELWITHDEBINFO rexruntimerd
     INSTALL_NAME_DIR "@rpath"
+    # Same LC_RPATHs as the SDK binary. Without this CMake embeds the absolute
+    # tools/sdk lib dir, so @rpath/libTracyClientrd.dylib could resolve to a
+    # second copy of Tracy next to the one the executable loads.
+    BUILD_WITH_INSTALL_RPATH ON
+    INSTALL_RPATH "@loader_path;@loader_path/../lib"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 target_link_libraries(rexruntime PRIVATE "-framework Cocoa" "-framework QuartzCore"
                       "-framework Metal" "-framework IOKit" "-framework AudioToolbox")
