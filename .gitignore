@@ -2,8 +2,14 @@
 *.ISO
 .DS_Store
 private/
-tools/
 vendor/
 build/
 generated/
 *.log
+build-tools/
+
+# downloaded/third-party tool trees (tools/analysis, tools/assets are ours)
+tools/sdk/
+tools/rexglue-src/
+tools/extract-xiso/
+tools/rexglue-sdk.zip
