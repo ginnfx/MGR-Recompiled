@@ -466,7 +466,7 @@ index 04856ee..be4ea2f 100644
                                                xenos::FetchOpDimension dimension, bool is_signed);
  
 diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
-index 11b83be..feef584 100644
+index 11b83be..1714476 100644
 --- a/src/audio/xma_context.cpp
 +++ b/src/audio/xma_context.cpp
 @@ -117,6 +117,10 @@ bool XmaContext::Work() {
@@ -480,7 +480,7 @@ index 11b83be..feef584 100644
      StoreContextMerged(data, initial_data, context_ptr);
      return true;
    }
-@@ -133,17 +137,47 @@ bool XmaContext::Work() {
+@@ -133,17 +137,41 @@ bool XmaContext::Work() {
    }
  
    while (remaining_subframe_blocks_in_output_buffer_ >= minimum_subframe_decode_count) {
@@ -520,17 +520,46 @@ index 11b83be..feef584 100644
 +  } else if (data.output_buffer_write_offset != data.output_buffer_read_offset) {
 +    data.output_buffer_write_offset = data.output_buffer_read_offset;
 +    data.output_buffer_valid = 0;
-+  } else if (current_frame_remaining_subframes_ == 0) {
-+    // MGR: a fully drained voice (no input, nothing pending, write == read)
-+    // must also report its output stopped. Canary only invalidates when
-+    // write != read; MGR's voice manager kicks such voices forever waiting for
-+    // this and never reuses them, so its ~170-voice pool fills (run-46).
-+    data.output_buffer_valid = 0;
 +  }
 +  // Signal the game that the output buffer is full.
 +  if (remaining_subframe_blocks_in_output_buffer_ == 0 && output_rb.empty()) {
      data.output_buffer_valid = 0;
    }
+ 
+@@ -316,7 +344,15 @@ uint32_t XmaContext::GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_pack
+     if (packet_frame_offset <= kMaxFrameSizeinBits) {
+       return (next_packet_index * kBitsPerPacket) + packet_frame_offset;
+     }
+-    next_packet_index++;
++    // MGR (xenia-canary 7015473a7): no frame *starts* in this packet, it is
++    // entirely the continuation of a frame split across the packet boundary.
++    // Follow this packet's own skip count to the next packet of the same
++    // sub-stream instead of stepping into another sub-stream's packet.
++    const uint8_t next_skip = xma::GetPacketSkipCount(next_packet);
++    if (next_skip == 0xFF) {
++      break;
++    }
++    next_packet_index += next_skip + 1;
+   }
+ 
+   return kBitsPerPacketHeader;
+@@ -359,6 +395,17 @@ kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
+ 
+   while (true) {
+     if (stream.BitsRemaining() < kBitsPerFrameHeader) {
++      // MGR (xenia-canary aee0871dd): this frame's 15-bit header runs into the
++      // next packet, so its size isn't readable yet. Count it anyway, or the
++      // caller takes the previous frame for the packet's last and skips
++      // straight past this one. Size 0 sends it to the split-header path.
++      if (stream.BitsRemaining() > 0) {
++        if (stream.offset_bits() == frame_offset) {
++          packet_info.current_frame_ = packet_info.frame_count_;
++          packet_info.current_frame_size_ = 0;
++        }
++        packet_info.frame_count_++;
++      }
+       break;
+     }
  
 diff --git a/src/audio/xma_decoder.cpp b/src/audio/xma_decoder.cpp
 index a0a178d..3b05153 100644
