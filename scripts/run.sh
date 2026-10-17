@@ -9,6 +9,12 @@ echo "log: $LOG"
 cd "$ROOT/build"
 # Native (offline XenosRecomp) pixel shaders; MGR_NATIVE_PS=0 forces Xenia shaders.
 export MGR_NATIVE_SHADERS="${MGR_NATIVE_SHADERS:-$ROOT/private/mgr_native_shaders.xrnb}"
+# MGR_RUNTIME_DIR (scripts/run-variant.sh): load librexruntimerd.dylib from there.
+# Exported here rather than inherited: SIP strips DYLD_* when /bin/bash starts.
+if [ -n "${MGR_RUNTIME_DIR:-}" ]; then
+  export DYLD_LIBRARY_PATH="$MGR_RUNTIME_DIR"
+  echo "runtime override: $MGR_RUNTIME_DIR"
+fi
 ./mgr \
   --gpu_plugin=xenos \
   --game_data_root="$ROOT/private/game" \
