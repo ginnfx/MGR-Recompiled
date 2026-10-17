@@ -15,6 +15,9 @@
 #include <string>
 #include <thread>
 
+void MgrStartSessionLog(const char* build);  // mgr_perf.cpp
+void MgrStopSessionLog();
+
 class MgrApp : public rex::ReXApp {
  public:
   using rex::ReXApp::ReXApp;
@@ -31,6 +34,8 @@ class MgrApp : public rex::ReXApp {
   // rex/src/rayman_app.h (c1bf7b9), with a joined thread instead of detached.
   void OnPostSetup() override {
     DumpGuestImageIfRequested();
+    const char* perf_log = std::getenv("MGR_PERF_LOG");
+    if (perf_log && perf_log[0] == '1') MgrStartSessionLog(MGR_BUILD_ID);
     const char* dir = std::getenv("MGR_CAPTURE_DIR");
     if (!dir || !*dir) return;
     capture_thread_ = std::jthread(
@@ -40,6 +45,7 @@ class MgrApp : public rex::ReXApp {
   }
 
   void OnShutdown() override {
+    MgrStopSessionLog();
     capture_thread_.request_stop();
     if (capture_thread_.joinable()) capture_thread_.join();
   }

@@ -13,6 +13,8 @@ include(generated/rexglue.cmake)
 # Sources
 set(MGR_SOURCES
     src/main.cpp
+    src/mgr_perf.cpp
+    src/thirdparty/mgrr_perf/perf_logger.cpp
 )
 
 if(WIN32)
@@ -21,6 +23,7 @@ else()
     add_executable(mgr ${MGR_SOURCES})
 endif()
 
+add_subdirectory(gpu)
 rexglue_setup_target(mgr GPU_PLUGINS xenos)
 
 # mgr_register.cpp is one ~85k-statement function that takes Apple Clang 30+
@@ -29,3 +32,8 @@ get_target_property(_recomp_sources mgr_recomp SOURCES)
 list(FILTER _recomp_sources EXCLUDE REGEX "mgr_register\\.cpp$")
 set_target_properties(mgr_recomp PROPERTIES SOURCES "${_recomp_sources}")
 target_sources(mgr_recomp PRIVATE src/mgr_register_fast.cpp)
+
+target_include_directories(mgr PRIVATE src/thirdparty/mgrr_perf)
+execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+                OUTPUT_VARIABLE MGR_GIT_REV OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+target_compile_definitions(mgr PRIVATE MGR_BUILD_ID="${MGR_GIT_REV}")
