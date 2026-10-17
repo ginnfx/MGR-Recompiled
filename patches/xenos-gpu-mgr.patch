@@ -124,10 +124,10 @@ index 9d2a848..0972261 100644
      args.index_count = index_count;
 diff --git a/include/rex/graphics/vulkan/mgr_cmd_stats.h b/include/rex/graphics/vulkan/mgr_cmd_stats.h
 new file mode 100644
-index 0000000..35b4322
+index 0000000..524eafa
 --- /dev/null
 +++ b/include/rex/graphics/vulkan/mgr_cmd_stats.h
-@@ -0,0 +1,32 @@
+@@ -0,0 +1,43 @@
 +// MGR port diagnostic: counts recorded Vulkan commands per call site.
 +// Enabled with MGR_GPU_STATS=1; prints a per-frame breakdown every few seconds.
 +#pragma once
@@ -148,6 +148,17 @@ index 0000000..35b4322
 +};
 +
 +bool Enabled();
++void AddBusyNanoseconds(long long ns);
++void AddWaitNanoseconds(long long ns);  // blocking GPU fence waits (subset of busy)
++long long NowNanoseconds();
++
++// Accumulates GPU command processor busy time (reported per frame).
++struct BusyScope {
++  long long start = Enabled() ? NowNanoseconds() : 0;
++  ~BusyScope() {
++    if (start) AddBusyNanoseconds(NowNanoseconds() - start);
++  }
++};
 +void Record(Kind kind, const void* call_site);
 +void OnFrame();
 +
@@ -208,6 +219,27 @@ index 104bdad..834b943 100644
    // Single for non-sparse, every allocation so far for sparse.
    std::vector<VkDeviceMemory> buffer_memory_;
  
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a744375..84a97c2 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -15,6 +15,8 @@
+ #include <cstring>
+ #include <string_view>
+ 
++#include <rex/graphics/vulkan/mgr_cmd_stats.h>
++
+ #include <fmt/format.h>
+ 
+ #include <rex/cvar.h>
+@@ -613,6 +615,7 @@ void CommandProcessor::PrepareForWait() {}
+ void CommandProcessor::ReturnFromWait() {}
+ 
+ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t write_index) {
++  vulkan::mgr_stats::BusyScope mgr_busy_scope;
+   SCOPE_profile_cpu_f("gpu");
+ 
+   // Execute commands!
 diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
 index ec0df7c..09d7b5d 100644
 --- a/src/graphics/shared_memory.cpp
@@ -228,7 +260,7 @@ index ec0df7c..09d7b5d 100644
  
  bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..1b67023 100644
+index 001f36b..61b4828 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -2271,6 +2271,7 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
@@ -239,7 +271,19 @@ index 001f36b..1b67023 100644
    SCOPE_profile_cpu_f("gpu");
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
-@@ -5230,6 +5231,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -4970,9 +4971,11 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+     // defined by vkQueueSubmit additionally include in the first
+     // synchronization scope all commands that occur earlier in submission
+     // order."
++    const long long mgr_wait_start = mgr_stats::Enabled() ? mgr_stats::NowNanoseconds() : 0;
+     VkResult wait_result =
+         dfn.vkWaitForFences(device, uint32_t(await_submission - submission_completed_),
+                             submissions_in_flight_fences_.data(), VK_TRUE, UINT64_MAX);
++    if (mgr_wait_start) mgr_stats::AddWaitNanoseconds(mgr_stats::NowNanoseconds() - mgr_wait_start);
+     if (wait_result == VK_SUCCESS) {
+       fences_awaited += await_submission - submission_completed_;
+     } else {
+@@ -5230,6 +5233,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
  }
  
  bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
@@ -247,7 +291,7 @@ index 001f36b..1b67023 100644
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5385,6 +5387,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5385,6 +5389,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        REXGPU_ERROR("Failed to begin a Vulkan command buffer");
        return false;
      }

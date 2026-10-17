@@ -29,6 +29,8 @@ struct State {
   std::map<std::pair<int, const void*>, unsigned long> sites;
   unsigned long totals[static_cast<int>(Kind::kCount)] = {};
   unsigned long frames = 0;
+  long long busy_ns = 0;
+  long long wait_ns = 0;
   Clock::time_point window_start = Clock::now();
 };
 
@@ -57,6 +59,11 @@ std::string Symbolize(const void* addr) {
 void Report(State& s) {
   if (!s.frames) return;
   const double n = static_cast<double>(s.frames);
+  const double wall_ms =
+      std::chrono::duration<double, std::milli>(Clock::now() - s.window_start).count();
+  std::fprintf(stderr,
+               "[mgr-gpu] CP work %.2f ms/frame + GPU fence wait %.2f ms/frame, frame %.2f ms\n",
+               (s.busy_ns - s.wait_ns) / 1e6 / n, s.wait_ns / 1e6 / n, wall_ms / n);
   std::fprintf(stderr, "[mgr-gpu] per frame over %lu frames:", s.frames);
   for (int k = 0; k < static_cast<int>(Kind::kCount); ++k)
     std::fprintf(stderr, " %s=%.1f", KIND_NAMES[k], s.totals[k] / n);
@@ -82,6 +89,14 @@ bool Enabled() {
   }();
   return enabled;
 }
+
+long long NowNanoseconds() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+             Clock::now().time_since_epoch()).count();
+}
+
+void AddBusyNanoseconds(long long ns) { GetState().busy_ns += ns; }
+void AddWaitNanoseconds(long long ns) { GetState().wait_ns += ns; }
 
 void Record(Kind kind, const void* call_site) {
   State& s = GetState();
