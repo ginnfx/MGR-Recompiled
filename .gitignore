@@ -1,0 +1,9 @@
+*.iso
+*.ISO
+.DS_Store
+private/
+tools/
+vendor/
+build/
+generated/
+*.log
