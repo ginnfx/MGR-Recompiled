@@ -27,6 +27,20 @@ endif()
 add_subdirectory(gpu)
 rexglue_setup_target(mgr GPU_PLUGINS xenos)
 
+# Source-built runtime with MGR fixes (runtime/CMakeLists.txt, scripts/build-runtime.sh).
+# Same exports and install name as the SDK binary; staged after (over) the SDK copy.
+set(MGR_RUNTIME_LIB "${CMAKE_SOURCE_DIR}/build-tools/rexruntime/librexruntimerd.dylib"
+    CACHE FILEPATH "Source-built librexruntimerd.dylib to stage instead of the SDK binary")
+if(EXISTS "${MGR_RUNTIME_LIB}")
+    message(STATUS "mgr: staging source-built runtime ${MGR_RUNTIME_LIB}")
+    add_custom_command(TARGET mgr POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy "${MGR_RUNTIME_LIB}" "$<TARGET_FILE_DIR:mgr>/"
+        COMMENT "Staging source-built librexruntimerd.dylib")
+else()
+    message(WARNING "mgr: ${MGR_RUNTIME_LIB} not built; using the SDK runtime "
+                    "(missing presenter/wait fixes). Run scripts/build-runtime.sh")
+endif()
+
 # mgr_register.cpp is one ~85k-statement function that takes Apple Clang 30+
 # minutes even at -O0; swap it for an equivalent table loop.
 get_target_property(_recomp_sources mgr_recomp SOURCES)

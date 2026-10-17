@@ -15,7 +15,7 @@ index 4d85a2b..8dd8613 100644
        const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) = 0;
  
 diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
-index 696ff48..b1b76d8 100644
+index 696ff48..5239100 100644
 --- a/include/rex/graphics/vulkan/command_processor.h
 +++ b/include/rex/graphics/vulkan/command_processor.h
 @@ -42,6 +42,7 @@
@@ -26,20 +26,19 @@ index 696ff48..b1b76d8 100644
  
  namespace rex::graphics::vulkan {
  
-@@ -155,6 +156,12 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -155,6 +156,11 @@ class VulkanCommandProcessor : public CommandProcessor {
      return submission_completed_ + uint64_t(submissions_in_flight_fences_.size()) + 1;
    }
    uint64_t GetCompletedSubmission() const { return submission_completed_; }
-+  // MGR port: non-blocking fence poll (same as Xenia's mid-frame readback
-+  // checks), so callers see GPU progress made since the submission opened.
-+  uint64_t PollCompletedSubmission() {
-+    CheckSubmissionFenceAndDeviceLoss(0);
-+    return submission_completed_;
-+  }
++  // MGR port: read-only, non-blocking fence query, so callers see GPU progress
++  // made since the submission opened. Unlike CheckSubmissionFenceAndDeviceLoss
++  // it reclaims nothing and runs no CompletedSubmissionUpdated callbacks, so it
++  // is safe mid-draw / mid-texture-load (e.g. from SharedMemory::RequestRanges).
++  uint64_t PollCompletedSubmission() const;
  
    // Sparse binds are:
    // - In a single submission, all submitted in one vkQueueBindSparse.
-@@ -493,6 +500,17 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -493,6 +499,17 @@ class VulkanCommandProcessor : public CommandProcessor {
        const draw_util::ViewportInfo& viewport_info, uint32_t used_texture_mask,
        reg::RB_DEPTHCONTROL normalized_depth_control, uint32_t normalized_color_mask);
    bool UpdateBindings(const VulkanShader* vertex_shader, const VulkanShader* pixel_shader);
@@ -57,7 +56,7 @@ index 696ff48..b1b76d8 100644
    // Allocates a descriptor set and fills one or two VkWriteDescriptorSet
    // structure instances (for images and samplers).
    // The descriptor set layout must be the one for the given is_vertex,
-@@ -584,6 +602,19 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -584,6 +601,19 @@ class VulkanCommandProcessor : public CommandProcessor {
    std::unordered_map<PipelineLayoutKey, PipelineLayout, PipelineLayoutKey::Hasher>
        pipeline_layouts_;
  
@@ -388,7 +387,7 @@ index 7b938b9..160d22b 100644
    const std::pair<const PipelineDescription, Pipeline>* last_pipeline_ = nullptr;
    // <Submission index, pipeline>.
 diff --git a/include/rex/graphics/vulkan/shared_memory.h b/include/rex/graphics/vulkan/shared_memory.h
-index 104bdad..834b943 100644
+index 104bdad..0ef827f 100644
 --- a/include/rex/graphics/vulkan/shared_memory.h
 +++ b/include/rex/graphics/vulkan/shared_memory.h
 @@ -55,6 +55,14 @@ class VulkanSharedMemory : public SharedMemory {
@@ -406,7 +405,7 @@ index 104bdad..834b943 100644
   private:
    void GetUsageMasks(Usage usage, VkPipelineStageFlags& stage_mask,
                       VkAccessFlags& access_mask) const;
-@@ -64,6 +72,28 @@ class VulkanSharedMemory : public SharedMemory {
+@@ -64,6 +72,31 @@ class VulkanSharedMemory : public SharedMemory {
  
    VkBuffer buffer_ = VK_NULL_HANDLE;
    uint32_t buffer_memory_type_;
@@ -430,6 +429,9 @@ index 104bdad..834b943 100644
 +  std::vector<std::pair<VkBuffer, VkBufferCopy>> hoisted_uploads_;
 +  bool StageHoistedUpload(uint32_t page_start, uint32_t page_count);
 +  void MarkPagesAccessed(uint32_t start, uint32_t length);
++  // Use() without marking written_range accessed (for callers that mark the
++  // exact pages themselves, as the barrier range may span untouched pages).
++  void UseBarrier(Usage usage, std::pair<uint32_t, uint32_t> written_range);
 +  bool UploadRangesWithCopies(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges);
 +  void ReportUploadStats();
    // Single for non-sparse, every allocation so far for sparse.
@@ -451,6 +453,143 @@ index 04856ee..be4ea2f 100644
    VkImageView GetActiveBindingOrNullImageView(uint32_t fetch_constant_index,
                                                xenos::FetchOpDimension dimension, bool is_signed);
  
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index 9ac8d15..0e66b35 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -267,6 +267,21 @@ static sem_t* RexCreateAnonymousSemaphore() {
+ }
+ #endif  // __APPLE__
+ 
++// Wakes threads blocked in PosixConditionBase::WaitMultiple. They sleep on one global condition
++// variable and re-scan their handles when the epoch changes, instead of polling every 1 ms
++// (the Audio Worker waits on its nine client handles this way and burned ~75% of a core).
++// Every state change that can satisfy a wait bumps the epoch after the change, via NotifyAll().
++struct MultiWaitState {
++  std::atomic<uint64_t> epoch{0};
++  std::atomic<int> waiters{0};
++  std::mutex mutex;
++  std::condition_variable cv;
++};
++static MultiWaitState& GetMultiWaitState() {
++  static MultiWaitState* state = new MultiWaitState();  // never destroyed: threads outlive statics
++  return *state;
++}
++
+ class PosixConditionBase {
+  public:
+   PosixConditionBase() {
+@@ -287,6 +302,17 @@ class PosixConditionBase {
+   virtual ~PosixConditionBase() = default;
+   virtual bool Signal() = 0;
+ 
++  // Call after the state changed, with mutex_ held.
++  void NotifyAll() {
++    cond_.notify_all();
++    auto& ms = GetMultiWaitState();
++    ms.epoch.fetch_add(1, std::memory_order_seq_cst);
++    if (ms.waiters.load(std::memory_order_seq_cst) > 0) {
++      { std::lock_guard<std::mutex> lock(ms.mutex); }  // a waiter is either not yet checking or waiting
++      ms.cv.notify_all();
++    }
++  }
++
+   WaitResult Wait(std::chrono::milliseconds timeout) {
+     bool executed;
+     auto predicate = [this] { return this->signaled(); };
+@@ -335,7 +361,15 @@ class PosixConditionBase {
+                         ? std::chrono::steady_clock::time_point::max()
+                         : start_time + timeout;
+ 
++    auto& ms = GetMultiWaitState();
++    struct WaiterGuard {
++      std::atomic<int>& n;
++      explicit WaiterGuard(std::atomic<int>& n_) : n(n_) { n.fetch_add(1, std::memory_order_seq_cst); }
++      ~WaiterGuard() { n.fetch_sub(1, std::memory_order_seq_cst); }
++    } waiter_guard(ms.waiters);
++
+     while (true) {
++      const uint64_t seen_epoch = ms.epoch.load(std::memory_order_seq_cst);
+       size_t first_signaled = std::numeric_limits<size_t>::max();
+       bool condition_met = false;
+       bool all_locked = true;
+@@ -411,13 +445,17 @@ class PosixConditionBase {
+         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+       }
+ 
+-      if (timeout == std::chrono::milliseconds::max()) {
+-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+-      } else {
++      // Sleep until some handle changes state. The cap covers state changes that do not
++      // notify (and bounds the damage of any missed one to the old polling behaviour).
++      auto sleep_time = std::chrono::milliseconds(20);
++      if (timeout != std::chrono::milliseconds::max()) {
+         auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
+-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
+-        std::this_thread::sleep_for(sleep_time);
++        sleep_time = std::min(remaining + std::chrono::milliseconds(1), sleep_time);
+       }
++      std::unique_lock<std::mutex> wait_lock(ms.mutex);
++      ms.cv.wait_for(wait_lock, sleep_time, [&] {
++        return ms.epoch.load(std::memory_order_seq_cst) != seen_epoch;
++      });
+     }
+   }
+ 
+@@ -449,7 +487,7 @@ class PosixCondition<Event> : public PosixConditionBase {
+   bool Signal() override {
+     auto lock = std::unique_lock<std::mutex>(mutex_);
+     signal_ = true;
+-    cond_.notify_all();
++    NotifyAll();
+     return true;
+   }
+ 
+@@ -486,7 +524,7 @@ class PosixCondition<Semaphore> : public PosixConditionBase {
+       *out_previous_count = count_;
+     }
+     count_ += release_count;
+-    cond_.notify_all();
++    NotifyAll();
+     return true;
+   }
+ 
+@@ -518,7 +556,7 @@ class PosixCondition<Mutant> : public PosixConditionBase {
+       --count_;
+       // Free to be acquired by another thread
+       if (count_ == 0) {
+-        cond_.notify_all();
++        NotifyAll();
+       }
+       return true;
+     }
+@@ -550,7 +588,7 @@ class PosixCondition<Timer> : public PosixConditionBase {
+   bool Signal() override {
+     std::lock_guard<std::mutex> lock(mutex_);
+     signal_ = true;
+-    cond_.notify_all();
++    NotifyAll();
+     return true;
+   }
+ 
+@@ -978,7 +1016,7 @@ class PosixCondition<Thread> : public PosixConditionBase {
+ 
+       exit_code_ = exit_code;
+       signaled_ = true;
+-      cond_.notify_all();
++      NotifyAll();
+     }
+     if (is_current_thread) {
+       pthread_exit(reinterpret_cast<void*>(exit_code));
+@@ -1448,7 +1486,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
+     std::unique_lock<std::mutex> lock(thread->handle_.mutex_);
+     thread->handle_.exit_code_ = 0;
+     thread->handle_.signaled_ = true;
+-    thread->handle_.cond_.notify_all();
++    thread->handle_.NotifyAll();
+   }
+ 
+   current_thread_ = nullptr;
 diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
 index a744375..84a97c2 100644
 --- a/src/graphics/command_processor.cpp
@@ -472,6 +611,59 @@ index a744375..84a97c2 100644
    SCOPE_profile_cpu_f("gpu");
  
    // Execute commands!
+diff --git a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
+index 9ce3bb4..0bec327 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
+@@ -749,8 +749,7 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+     // - 2: Size (needed only once).
+     // - 3: Exponent adjustment (needed only once).
+     // - 4: Conditionally for 3D kTextureFetch: stacked texture filtering modes.
+-    //      Unconditionally LOD kTextureFetch: LOD and gradient exponent bias,
+-    //      result exponent bias.
++    //      Unconditionally LOD kTextureFetch: LOD and gradient exponent bias.
+     // - 5: Dimensionality (3D or 2D stacked - needed only once).
+ 
+     // Load the texture size and whether it's 3D or stacked if needed.
+@@ -1408,9 +1407,23 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+         spv::Id is_any_unsigned =
+             builder_->createUnaryOp(spv::OpLogicalNot, type_bool_, is_all_signed);
+ 
++        // Load the fetch constant word 3, needed for result exponent biasing.
++        // exp_adjust is in word 3, bits 13:18 (6-bit signed).
++        id_vector_temp_.clear();
++        id_vector_temp_.push_back(const_int_0_);
++        id_vector_temp_.push_back(
++            builder_->makeIntConstant(int((fetch_constant_word_0_index + 3) >> 2)));
++        id_vector_temp_.push_back(
++            builder_->makeIntConstant(int((fetch_constant_word_0_index + 3) & 3)));
++        spv::Id fetch_constant_word_3 = builder_->createLoad(
++            builder_->createAccessChain(spv::StorageClassUniform, uniform_fetch_constants_,
++                                        id_vector_temp_),
++            spv::NoPrecision);
++        spv::Id fetch_constant_word_3_signed =
++            builder_->createUnaryOp(spv::OpBitcast, type_int_, fetch_constant_word_3);
++
+         // Load the fetch constant word 4, needed unconditionally for LOD
+-        // biasing, for result exponent biasing, and conditionally for stacked
+-        // texture filtering.
++        // biasing and conditionally for stacked texture filtering.
+         id_vector_temp_.clear();
+         id_vector_temp_.push_back(const_int_0_);
+         id_vector_temp_.push_back(
+@@ -2030,10 +2043,10 @@ void SpirvShaderTranslator::ProcessTextureFetchInstruction(
+         }
+ 
+         // Apply the exponent bias from the bits 13:18 of the fetch constant
+-        // word 4.
++        // word 3.
+         spv::Id result_exponent_bias = builder_->createBinBuiltinCall(
+             type_float_, ext_inst_glsl_std_450_, GLSLstd450Ldexp, const_float_1_,
+-            builder_->createTriOp(spv::OpBitFieldSExtract, type_int_, fetch_constant_word_4_signed,
++            builder_->createTriOp(spv::OpBitFieldSExtract, type_int_, fetch_constant_word_3_signed,
+                                   builder_->makeUintConstant(13), builder_->makeUintConstant(6)));
+         {
+           uint32_t result_remaining_components = used_result_nonzero_components;
 diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
 index ec0df7c..09d7b5d 100644
 --- a/src/graphics/shared_memory.cpp
@@ -491,8 +683,21 @@ index ec0df7c..09d7b5d 100644
  }
  
  bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
+diff --git a/src/graphics/util/draw_extent_estimator.cpp b/src/graphics/util/draw_extent_estimator.cpp
+index 3027dc8..54f77a9 100644
+--- a/src/graphics/util/draw_extent_estimator.cpp
++++ b/src/graphics/util/draw_extent_estimator.cpp
+@@ -24,7 +24,7 @@
+ #include <rex/memory.h>
+ #include <rex/ui/graphics_util.h>
+ 
+-REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu, false, "GPU",
++REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu, true, "GPU",
+                     "Execute unclipped draw vertex shader on CPU");
+ 
+ REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_with_scissor, false, "GPU",
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..564122c 100644
+index 001f36b..dd08204 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -1014,6 +1014,10 @@ bool VulkanCommandProcessor::SetupContext() {
@@ -526,7 +731,7 @@ index 001f36b..564122c 100644
    SCOPE_profile_cpu_f("gpu");
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
-@@ -3440,6 +3450,214 @@ const VulkanPipelineCache::PipelineLayoutProvider* VulkanCommandProcessor::GetPi
+@@ -3440,6 +3450,232 @@ const VulkanPipelineCache::PipelineLayoutProvider* VulkanCommandProcessor::GetPi
    return &emplaced_pair.first->second;
  }
  
@@ -596,6 +801,16 @@ index 001f36b..564122c 100644
 +  if (flags & gamma_flags) {
 +    return "gamma";
 +  }
++  // Xenia emulates alpha-to-coverage in its translated pixel shader; the
++  // native shaders have no equivalent.
++  if (system_constants_.alpha_to_mask) {
++    return "alpha_to_mask";
++  }
++  // Without view swizzles Xenia swizzles in the shader (texture_swizzles);
++  // native shaders rely on the view swizzle.
++  if (!GetVulkanDevice()->properties().imageViewFormatSwizzle) {
++    return "no_view_swizzle";
++  }
 +  auto alpha_function = xenos::CompareFunction(
 +      (flags >> SpirvShaderTranslator::kSysFlag_AlphaPassIfLess_Shift) & 0b111);
 +  if (alpha_function != xenos::CompareFunction::kAlways) {
@@ -652,10 +867,18 @@ index 001f36b..564122c 100644
 +    }
 +    native_texture_views_.push_back({binding.fetch_constant, descriptor_binding, view});
 +  }
++  // Native samplers are indexed by fetch constant, so two Xenia sampler
++  // bindings on one slot (different filter overrides) would collide.
++  uint32_t sampler_slots_used = 0;
 +  for (const auto& binding : pixel_shader->GetSamplerBindingsAfterTranslation()) {
 +    if (binding.fetch_constant >= mgr_native::kSlotCount) {
 +      return "sampler_slot";
 +    }
++    const uint32_t slot_bit = uint32_t(1) << binding.fetch_constant;
++    if (sampler_slots_used & slot_bit) {
++      return "sampler_shared_slot";
++    }
++    sampler_slots_used |= slot_bit;
 +  }
 +  module_out = native_ps_.GetModule(*native, interpolator_mask);
 +  if (module_out == VK_NULL_HANDLE) {
@@ -741,7 +964,7 @@ index 001f36b..564122c 100644
  VulkanCommandProcessor::ScratchBufferAcquisition VulkanCommandProcessor::AcquireScratchGpuBuffer(
      VkDeviceSize size, VkPipelineStageFlags initial_stage_mask, VkAccessFlags initial_access_mask) {
    assert_true(submission_open_);
-@@ -3844,64 +4062,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3844,64 +4080,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
      return draw_fail("render_target_update");
    }
  
@@ -809,7 +1032,7 @@ index 001f36b..564122c 100644
    bool host_render_targets_used =
        render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets;
    uint32_t draw_resolution_scale_x = texture_cache_->draw_resolution_scale_x();
-@@ -3971,11 +4134,102 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3971,11 +4152,102 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
                               shader_32bit_index_dma, 0, viewport_info, used_texture_mask,
                               normalized_depth_control, normalized_color_mask);
  
@@ -913,7 +1136,45 @@ index 001f36b..564122c 100644
  
    // Ensure vertex buffers are resident.
    const Shader::ConstantRegisterMap& constant_map_vertex = vertex_shader->constant_register_map();
-@@ -4970,9 +5224,11 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+@@ -4010,10 +4282,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+           return false;
+       }
+       VertexBufferState& state = vertex_buffer_states_[vfetch_index];
+-      if (state.address == vfetch_constant.address && state.size == vfetch_constant.size) {
+-        vertex_buffers_in_sync_[vfetch_index >> 6] |= vfetch_bit;
+-        continue;
+-      }
++      // MGR: no "same address and size" skip (Xenia has none). RequestRange is
++      // what re-uploads CPU-rewritten vertex data (write watches) and marks the
++      // pages accessed for the direct/hoisted upload hazard tracking.
+       if (!shared_memory_->RequestRange(vfetch_constant.address << 2, vfetch_constant.size << 2)) {
+         REXGPU_ERROR(
+             "Failed to request vertex buffer at 0x{:08X} (size {}) in the shared "
+@@ -4943,6 +5214,23 @@ void VulkanCommandProcessor::WriteGuestOcclusionResult(uint32_t sample_count_add
+   sample_counts->StencilFail_B = 0;
+ }
+ 
++uint64_t VulkanCommandProcessor::PollCompletedSubmission() const {
++  if (device_lost_) {
++    return submission_completed_;
++  }
++  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  uint64_t completed = submission_completed_;
++  // In order, like CheckSubmissionFenceAndDeviceLoss.
++  for (VkFence fence : submissions_in_flight_fences_) {
++    if (dfn.vkGetFenceStatus(vulkan_device->device(), fence) != VK_SUCCESS) {
++      break;
++    }
++    ++completed;
++  }
++  return completed;
++}
++
+ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_submission) {
+   // Only report once, no need to retry a wait that won't succeed anyway.
+   if (device_lost_) {
+@@ -4970,9 +5258,11 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
      // defined by vkQueueSubmit additionally include in the first
      // synchronization scope all commands that occur earlier in submission
      // order."
@@ -925,7 +1186,7 @@ index 001f36b..564122c 100644
      if (wait_result == VK_SUCCESS) {
        fences_awaited += await_submission - submission_completed_;
      } else {
-@@ -5181,6 +5437,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5181,6 +5471,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
      // FIXME(Triang3l): This will result in a memory leak if the guest is not
      // presenting.
      uniform_buffer_pool_->Reclaim(frame_completed_);
@@ -933,7 +1194,7 @@ index 001f36b..564122c 100644
      while (!single_transient_descriptors_used_.empty()) {
        const UsedSingleTransientDescriptor& used_transient_descriptor =
            single_transient_descriptors_used_.front();
-@@ -5230,6 +5487,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5230,6 +5521,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
  }
  
  bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
@@ -941,7 +1202,7 @@ index 001f36b..564122c 100644
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5319,6 +5577,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5319,6 +5611,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
      shared_memory_->EndSubmission();
  
      uniform_buffer_pool_->FlushWrites();
@@ -949,7 +1210,7 @@ index 001f36b..564122c 100644
  
      // Submit sparse binds earlier, before executing the deferred command
      // buffer, to reduce latency.
-@@ -5385,6 +5644,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5385,6 +5678,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        REXGPU_ERROR("Failed to begin a Vulkan command buffer");
        return false;
      }
@@ -1082,7 +1343,7 @@ index 91ac08f..74e8664 100644
      assert_true(creation_arguments.pixel_shader->is_translated());
      if (!creation_arguments.pixel_shader->is_valid()) {
 diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
-index 6788214..8bb9e31 100644
+index 6788214..a2d4b23 100644
 --- a/src/graphics/vulkan/shared_memory.cpp
 +++ b/src/graphics/vulkan/shared_memory.cpp
 @@ -10,6 +10,8 @@
@@ -1228,7 +1489,7 @@ index 6788214..8bb9e31 100644
  void VulkanSharedMemory::Shutdown(bool from_destructor) {
    upload_buffer_pool_.reset();
  
-@@ -190,10 +289,12 @@ void VulkanSharedMemory::Shutdown(bool from_destructor) {
+@@ -190,14 +289,23 @@ void VulkanSharedMemory::Shutdown(bool from_destructor) {
  }
  
  void VulkanSharedMemory::CompletedSubmissionUpdated() {
@@ -1241,15 +1502,21 @@ index 6788214..8bb9e31 100644
    upload_buffer_pool_->FlushWrites();
  }
  
-@@ -225,6 +326,31 @@ void VulkanSharedMemory::Use(Usage usage, std::pair<uint32_t, uint32_t> written_
-         VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, false);
-   }
-   last_written_range_ = written_range;
-+  if (written_range.second) {
-+    MarkPagesAccessed(written_range.first, written_range.second);
+ void VulkanSharedMemory::Use(Usage usage, std::pair<uint32_t, uint32_t> written_range) {
++  UseBarrier(usage, written_range);
++  if (last_written_range_.second) {
++    MarkPagesAccessed(last_written_range_.first, last_written_range_.second);
 +  }
 +}
 +
++void VulkanSharedMemory::UseBarrier(Usage usage, std::pair<uint32_t, uint32_t> written_range) {
+   written_range.first = std::min(written_range.first, kBufferSize);
+   written_range.second = std::min(written_range.second, kBufferSize - written_range.first);
+   assert_true(usage != Usage::kRead || !written_range.second);
+@@ -227,6 +335,28 @@ void VulkanSharedMemory::Use(Usage usage, std::pair<uint32_t, uint32_t> written_
+   last_written_range_ = written_range;
+ }
+ 
 +void VulkanSharedMemory::MarkPagesAccessed(uint32_t start, uint32_t length) {
 +  if (!direct_mapping_ || !length) {
 +    return;
@@ -1270,10 +1537,27 @@ index 6788214..8bb9e31 100644
 +  for (const auto& range : ranges) {
 +    MarkPagesAccessed(range.first, range.second);
 +  }
++}
++
+ bool VulkanSharedMemory::AllocateSparseHostGpuMemoryRange(uint32_t offset_allocations,
+                                                           uint32_t length_allocations) {
+   if (!length_allocations) {
+@@ -268,14 +398,199 @@ bool VulkanSharedMemory::AllocateSparseHostGpuMemoryRange(uint32_t offset_alloca
+   return true;
  }
  
- bool VulkanSharedMemory::AllocateSparseHostGpuMemoryRange(uint32_t offset_allocations,
-@@ -273,6 +399,178 @@ bool VulkanSharedMemory::UploadRanges(
++namespace {
++bool UploadStatsEnabled() {
++  static const bool enabled = [] {
++    const char* v = std::getenv("MGR_GPU_STATS");
++    return v && v[0] == '1';
++  }();
++  return enabled;
++}
++}  // namespace
++
+ bool VulkanSharedMemory::UploadRanges(
+     const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
    if (upload_page_ranges.empty()) {
      return true;
    }
@@ -1300,7 +1584,7 @@ index 6788214..8bb9e31 100644
 +    for (auto upload_range : upload_page_ranges) {
 +      uint32_t page = upload_range.first;
 +      const uint32_t page_end = upload_range.first + upload_range.second;
-+      for (uint32_t p = page; p < page_end; ++p) {
++      for (uint32_t p = page; UploadStatsEnabled() && p < page_end; ++p) {
 +        const uint64_t last = page_last_access_submission_[p];
 +        if (last == current) {
 +          ++copied_same_submission_pages_;
@@ -1412,12 +1696,8 @@ index 6788214..8bb9e31 100644
 +}
 +
 +void VulkanSharedMemory::ReportUploadStats() {
-+  static const bool enabled = [] {
-+    const char* v = std::getenv("MGR_GPU_STATS");
-+    return v && v[0] == '1';
-+  }();
 +  constexpr uint64_t REPORT_EVERY_PAGES = 200000;
-+  if (!enabled ||
++  if (!UploadStatsEnabled() ||
 +      direct_upload_pages_ + copied_upload_pages_ + hoisted_upload_pages_ < REPORT_EVERY_PAGES) {
 +    return;
 +  }
@@ -1451,7 +1731,18 @@ index 6788214..8bb9e31 100644
 +  }
    // upload_page_ranges are sorted, use them to determine the range for the
    // ordering barrier.
-   Use(Usage::kTransferDestination,
+-  Use(Usage::kTransferDestination,
++  // Barrier over the sorted span, but mark only the pages actually copied:
++  // marking the whole span would push later uploads in it off the direct and
++  // hoisted paths for the rest of the submission.
++  for (auto upload_range : upload_page_ranges) {
++    MarkPagesAccessed(upload_range.first << page_size_log2(),
++                      upload_range.second << page_size_log2());
++  }
++  UseBarrier(Usage::kTransferDestination,
+       std::make_pair(upload_page_ranges.front().first << page_size_log2(),
+                      (upload_page_ranges.back().first + upload_page_ranges.back().second -
+                       upload_page_ranges.front().first)
 diff --git a/src/graphics/vulkan/texture_cache.cpp b/src/graphics/vulkan/texture_cache.cpp
 index ecbd940..ec4a089 100644
 --- a/src/graphics/vulkan/texture_cache.cpp
@@ -1502,3 +1793,34 @@ index ecbd940..ec4a089 100644
  VkImageView VulkanTextureCache::GetActiveBindingOrNullImageView(uint32_t fetch_constant_index,
                                                                  xenos::FetchOpDimension dimension,
                                                                  bool is_signed) {
+diff --git a/src/kernel/xam/apps/xmp_app.cpp b/src/kernel/xam/apps/xmp_app.cpp
+index a5e9088..35b4b7a 100644
+--- a/src/kernel/xam/apps/xmp_app.cpp
++++ b/src/kernel/xam/apps/xmp_app.cpp
+@@ -408,11 +408,6 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(args->controller_ptr), 0);
+       memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(args->locked_ptr), 0);
+ 
+-      if (!XThread::GetCurrentThread()->main_thread()) {
+-        // Atrain spawns a thread 82437FD0 to call this in a tight loop forever.
+-        rex::thread::Sleep(std::chrono::milliseconds(10));
+-      }
+-
+       return X_E_SUCCESS;
+     }
+     case 0x00070029: {
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+index 23645ef..622fa6e 100644
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -1840,6 +1840,10 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(bool execute_ui_draw
+                 swapchain_effect, paint_context_.swapchain_render_pass);
+             if (swapchain_effect_pipeline.swapchain_pipeline == VK_NULL_HANDLE) {
+               guest_output_flow.effect_count = 0;
++            } else {
++              // rexglue-sdk#507: without this the pipeline is recreated on every paint.
++              swapchain_effect_pipeline.swapchain_format =
++                  paint_context_.swapchain_render_pass_format;
+             }
+           }
+         }
