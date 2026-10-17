@@ -7,6 +7,8 @@ N=$(ls "$ROOT"/private/logs/run-*.log 2>/dev/null | wc -l | tr -d ' ')
 LOG="$ROOT/private/logs/run-$(printf %02d $((N+1))).log"
 echo "log: $LOG"
 cd "$ROOT/build"
+# Native (offline XenosRecomp) pixel shaders; MGR_NATIVE_PS=0 forces Xenia shaders.
+export MGR_NATIVE_SHADERS="${MGR_NATIVE_SHADERS:-$ROOT/private/mgr_native_shaders.xrnb}"
 ./mgr \
   --gpu_plugin=xenos \
   --game_data_root="$ROOT/private/game" \

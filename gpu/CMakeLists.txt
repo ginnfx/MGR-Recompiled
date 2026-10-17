@@ -29,7 +29,8 @@ set(XENOS_SOURCES
     vulkan/shader.cpp vulkan/shared_memory.cpp vulkan/texture_cache.cpp
 )
 list(TRANSFORM XENOS_SOURCES PREPEND ${XENOS_SRC}/)
-list(APPEND XENOS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/mgr_cmd_stats.cpp)
+list(APPEND XENOS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/mgr_cmd_stats.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mgr_native_ps.cpp)
 
 add_library(rexgpu-xenos SHARED ${XENOS_SOURCES})
 set_target_properties(rexgpu-xenos PROPERTIES
