@@ -6,6 +6,8 @@ vendor/
 build/
 generated/
 *.log
+# Documentation is maintained locally and excluded from Git at every depth.
+*.[mM][dD]
 build-tools/
 
 # downloaded/third-party tool trees (tools/analysis, tools/assets are ours)
