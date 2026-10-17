@@ -1,0 +1,648 @@
+diff --git a/include/rex/graphics/shared_memory.h b/include/rex/graphics/shared_memory.h
+index 4d85a2b..8dd8613 100644
+--- a/include/rex/graphics/shared_memory.h
++++ b/include/rex/graphics/shared_memory.h
+@@ -137,6 +137,11 @@ class SharedMemory {
+   // MakeRangeValid has page granularity). upload_page_ranges are sorted in
+   // ascending address order, so front and back can be used to determine the
+   // overall bounds of pages to be uploaded.
++  // MGR port: called after each RequestRanges with the merged byte ranges the
++  // GPU will access in the current submission (after any uploads were queued).
++  virtual void OnRangesRequested(const std::vector<std::pair<uint32_t, uint32_t>>& ranges) {
++    (void)ranges;
++  }
+   virtual bool UploadRanges(
+       const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) = 0;
+ 
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+index 696ff48..9d3062a 100644
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -155,6 +155,12 @@ class VulkanCommandProcessor : public CommandProcessor {
+     return submission_completed_ + uint64_t(submissions_in_flight_fences_.size()) + 1;
+   }
+   uint64_t GetCompletedSubmission() const { return submission_completed_; }
++  // MGR port: non-blocking fence poll (same as Xenia's mid-frame readback
++  // checks), so callers see GPU progress made since the submission opened.
++  uint64_t PollCompletedSubmission() {
++    CheckSubmissionFenceAndDeviceLoss(0);
++    return submission_completed_;
++  }
+ 
+   // Sparse binds are:
+   // - In a single submission, all submitted in one vkQueueBindSparse.
+diff --git a/include/rex/graphics/vulkan/deferred_command_buffer.h b/include/rex/graphics/vulkan/deferred_command_buffer.h
+index 9d2a848..0972261 100644
+--- a/include/rex/graphics/vulkan/deferred_command_buffer.h
++++ b/include/rex/graphics/vulkan/deferred_command_buffer.h
+@@ -1,4 +1,6 @@
+ #pragma once
++
++#include <rex/graphics/vulkan/mgr_cmd_stats.h>
+ /**
+  ******************************************************************************
+  * Xenia : Xbox 360 Emulator Research Project                                 *
+@@ -32,8 +34,9 @@ class DeferredCommandBuffer {
+   void Execute(VkCommandBuffer command_buffer);
+ 
+   // render_pass_begin->pNext of all barriers must be null.
+-  void CmdVkBeginRenderPass(const VkRenderPassBeginInfo* render_pass_begin,
++  __attribute__((noinline)) void CmdVkBeginRenderPass(const VkRenderPassBeginInfo* render_pass_begin,
+                             VkSubpassContents contents) {
++    MGR_STAT(kBeginRenderPass);
+     assert_null(render_pass_begin->pNext);
+     size_t arguments_size = sizeof(ArgsVkBeginRenderPass);
+     uint32_t clear_value_count = render_pass_begin->clearValueCount;
+@@ -134,8 +137,9 @@ class DeferredCommandBuffer {
+     attachments_out = reinterpret_cast<VkClearAttachment*>(args_ptr + attachments_offset);
+     rects_out = reinterpret_cast<VkClearRect*>(args_ptr + rects_offset);
+   }
+-  void CmdVkClearAttachments(uint32_t attachment_count, const VkClearAttachment* attachments,
++  __attribute__((noinline)) void CmdVkClearAttachments(uint32_t attachment_count, const VkClearAttachment* attachments,
+                              uint32_t rect_count, const VkClearRect* rects) {
++    MGR_STAT(kClearAttachments);
+     VkClearAttachment* attachments_arg;
+     VkClearRect* rects_arg;
+     CmdClearAttachmentsEmplace(attachment_count, attachments_arg, rect_count, rects_arg);
+@@ -175,8 +179,9 @@ class DeferredCommandBuffer {
+     args.region_count = region_count;
+     return reinterpret_cast<VkBufferCopy*>(args_ptr + header_size);
+   }
+-  void CmdVkCopyBuffer(VkBuffer src_buffer, VkBuffer dst_buffer, uint32_t region_count,
++  __attribute__((noinline)) void CmdVkCopyBuffer(VkBuffer src_buffer, VkBuffer dst_buffer, uint32_t region_count,
+                        const VkBufferCopy* regions) {
++    MGR_STAT(kCopyBuffer);
+     std::memcpy(CmdCopyBufferEmplace(src_buffer, dst_buffer, region_count), regions,
+                 sizeof(VkBufferCopy) * region_count);
+   }
+@@ -203,9 +208,10 @@ class DeferredCommandBuffer {
+     args.region_count = region_count;
+     return reinterpret_cast<VkBufferImageCopy*>(args_ptr + header_size);
+   }
+-  void CmdVkCopyBufferToImage(VkBuffer src_buffer, VkImage dst_image,
++  __attribute__((noinline)) void CmdVkCopyBufferToImage(VkBuffer src_buffer, VkImage dst_image,
+                               VkImageLayout dst_image_layout, uint32_t region_count,
+                               const VkBufferImageCopy* regions) {
++    MGR_STAT(kCopyBufferToImage);
+     std::memcpy(CmdCopyBufferToImageEmplace(src_buffer, dst_image, dst_image_layout, region_count),
+                 regions, sizeof(VkBufferImageCopy) * region_count);
+   }
+@@ -224,7 +230,9 @@ class DeferredCommandBuffer {
+     args.flags = flags;
+   }
+ 
+-  void CmdVkDispatch(uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
++  __attribute__((noinline)) void CmdVkDispatch(uint32_t group_count_x, uint32_t group_count_y, uint32_t group_count_z) {
++
++    MGR_STAT(kDispatch);
+     auto& args = *reinterpret_cast<ArgsVkDispatch*>(
+         WriteCommand(Command::kVkDispatch, sizeof(ArgsVkDispatch)));
+     args.group_count_x = group_count_x;
+@@ -232,8 +240,10 @@ class DeferredCommandBuffer {
+     args.group_count_z = group_count_z;
+   }
+ 
+-  void CmdVkDraw(uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex,
++  __attribute__((noinline)) void CmdVkDraw(uint32_t vertex_count, uint32_t instance_count, uint32_t first_vertex,
+                  uint32_t first_instance) {
++
++    MGR_STAT(kDraw);
+     auto& args = *reinterpret_cast<ArgsVkDraw*>(WriteCommand(Command::kVkDraw, sizeof(ArgsVkDraw)));
+     args.vertex_count = vertex_count;
+     args.instance_count = instance_count;
+@@ -241,8 +251,10 @@ class DeferredCommandBuffer {
+     args.first_instance = first_instance;
+   }
+ 
+-  void CmdVkDrawIndexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index,
++  __attribute__((noinline)) void CmdVkDrawIndexed(uint32_t index_count, uint32_t instance_count, uint32_t first_index,
+                         int32_t vertex_offset, uint32_t first_instance) {
++
++    MGR_STAT(kDraw);
+     auto& args = *reinterpret_cast<ArgsVkDrawIndexed*>(
+         WriteCommand(Command::kVkDrawIndexed, sizeof(ArgsVkDrawIndexed)));
+     args.index_count = index_count;
+diff --git a/include/rex/graphics/vulkan/mgr_cmd_stats.h b/include/rex/graphics/vulkan/mgr_cmd_stats.h
+new file mode 100644
+index 0000000..35b4322
+--- /dev/null
++++ b/include/rex/graphics/vulkan/mgr_cmd_stats.h
+@@ -0,0 +1,32 @@
++// MGR port diagnostic: counts recorded Vulkan commands per call site.
++// Enabled with MGR_GPU_STATS=1; prints a per-frame breakdown every few seconds.
++#pragma once
++
++namespace rex::graphics::vulkan::mgr_stats {
++
++enum class Kind {
++  kBeginRenderPass,
++  kBeginRendering,
++  kDispatch,
++  kCopyBuffer,
++  kCopyBufferToImage,
++  kBarrier,
++  kDraw,
++  kClearAttachments,
++  kSubmission,
++  kCount
++};
++
++bool Enabled();
++void Record(Kind kind, const void* call_site);
++void OnFrame();
++
++}  // namespace rex::graphics::vulkan::mgr_stats
++
++#define MGR_STAT(kind)                                                         \
++  do {                                                                         \
++    if (::rex::graphics::vulkan::mgr_stats::Enabled())                         \
++      ::rex::graphics::vulkan::mgr_stats::Record(                              \
++          ::rex::graphics::vulkan::mgr_stats::Kind::kind,                      \
++          __builtin_return_address(0));                                        \
++  } while (0)
+diff --git a/include/rex/graphics/vulkan/shared_memory.h b/include/rex/graphics/vulkan/shared_memory.h
+index 104bdad..834b943 100644
+--- a/include/rex/graphics/vulkan/shared_memory.h
++++ b/include/rex/graphics/vulkan/shared_memory.h
+@@ -55,6 +55,14 @@ class VulkanSharedMemory : public SharedMemory {
+ 
+   bool UploadRanges(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) override;
+ 
++ public:
++  // MGR port: emit hoisted uploads at the very start of the submission's real
++  // command buffer (before replaying deferred commands).
++  void RecordHoistedUploads(VkCommandBuffer command_buffer);
++
++ protected:
++  void OnRangesRequested(const std::vector<std::pair<uint32_t, uint32_t>>& ranges) override;
++
+  private:
+   void GetUsageMasks(Usage usage, VkPipelineStageFlags& stage_mask,
+                      VkAccessFlags& access_mask) const;
+@@ -64,6 +72,28 @@ class VulkanSharedMemory : public SharedMemory {
+ 
+   VkBuffer buffer_ = VK_NULL_HANDLE;
+   uint32_t buffer_memory_type_;
++  // MGR port: buffer_ aliases guest physical memory directly (unified memory,
++  // MoltenVK host-pointer import), so CPU writes need no upload copies.
++  bool zero_copy_ = false;
++  bool InitializeZeroCopy();
++
++  // MGR port: hazard-checked direct uploads. buffer_ lives in host-visible
++  // memory; a dirty page is memcpy'd straight into it (no transfer command,
++  // so no render pass break) when no unfinished submission accesses it.
++  uint8_t* direct_mapping_ = nullptr;
++  std::vector<uint64_t> page_last_access_submission_;
++  uint64_t direct_upload_pages_ = 0;
++  uint64_t copied_upload_pages_ = 0;
++  uint64_t copied_same_submission_pages_ = 0;
++  uint64_t copied_in_flight_pages_ = 0;
++  uint64_t hoisted_upload_pages_ = 0;
++  // Uploads of pages untouched by the current submission, copied at its start
++  // (before any render pass) instead of inline: (staging buffer, region).
++  std::vector<std::pair<VkBuffer, VkBufferCopy>> hoisted_uploads_;
++  bool StageHoistedUpload(uint32_t page_start, uint32_t page_count);
++  void MarkPagesAccessed(uint32_t start, uint32_t length);
++  bool UploadRangesWithCopies(const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges);
++  void ReportUploadStats();
+   // Single for non-sparse, every allocation so far for sparse.
+   std::vector<VkDeviceMemory> buffer_memory_;
+ 
+diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
+index ec0df7c..09d7b5d 100644
+--- a/src/graphics/shared_memory.cpp
++++ b/src/graphics/shared_memory.cpp
+@@ -461,11 +461,9 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+   COUNT_profile_set("gpu/shared_memory/request_ranges_upload_count",
+                     uint32_t(upload_ranges_.size()));
+ 
+-  if (upload_ranges_.empty()) {
+-    return true;
+-  }
+-
+-  return UploadRanges(upload_ranges_);
++  const bool uploaded = upload_ranges_.empty() || UploadRanges(upload_ranges_);
++  OnRangesRequested(merged_ranges);
++  return uploaded;
+ }
+ 
+ bool SharedMemory::RequestRange(uint32_t start, uint32_t length) {
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 001f36b..1b67023 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -2271,6 +2271,7 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
+ 
+ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                                        uint32_t frontbuffer_height) {
++  mgr_stats::OnFrame();
+   SCOPE_profile_cpu_f("gpu");
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
+@@ -5230,6 +5231,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+ }
+ 
+ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
++  MGR_STAT(kSubmission);
+   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
+@@ -5385,6 +5387,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+       REXGPU_ERROR("Failed to begin a Vulkan command buffer");
+       return false;
+     }
++    shared_memory_->RecordHoistedUploads(command_buffer.buffer);
+     deferred_command_buffer_.Execute(command_buffer.buffer);
+     if (dfn.vkEndCommandBuffer(command_buffer.buffer) != VK_SUCCESS) {
+       REXGPU_ERROR("Failed to end a Vulkan command buffer");
+diff --git a/src/graphics/vulkan/deferred_command_buffer.cpp b/src/graphics/vulkan/deferred_command_buffer.cpp
+index b49e033..923d0e9 100644
+--- a/src/graphics/vulkan/deferred_command_buffer.cpp
++++ b/src/graphics/vulkan/deferred_command_buffer.cpp
+@@ -330,6 +330,7 @@ void DeferredCommandBuffer::CmdVkPipelineBarrier(
+     const VkMemoryBarrier* memory_barriers, uint32_t buffer_memory_barrier_count,
+     const VkBufferMemoryBarrier* buffer_memory_barriers, uint32_t image_memory_barrier_count,
+     const VkImageMemoryBarrier* image_memory_barriers) {
++  MGR_STAT(kBarrier);
+   size_t arguments_size = sizeof(ArgsVkPipelineBarrier);
+   size_t memory_barriers_offset = 0;
+   if (memory_barrier_count) {
+@@ -373,6 +374,7 @@ void DeferredCommandBuffer::CmdVkPipelineBarrier(
+ }
+ 
+ void DeferredCommandBuffer::CmdVkBeginRendering(const VkRenderingInfo* rendering_info) {
++  MGR_STAT(kBeginRendering);
+   assert_null(rendering_info->pNext);
+ 
+   size_t arguments_size =
+diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
+index 6788214..8bb9e31 100644
+--- a/src/graphics/vulkan/shared_memory.cpp
++++ b/src/graphics/vulkan/shared_memory.cpp
+@@ -10,6 +10,8 @@
+  */
+ 
+ #include <algorithm>
++#include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <utility>
+ #include <vector>
+@@ -23,6 +25,18 @@
+ #include <rex/math.h>
+ #include <rex/ui/vulkan/util.h>
+ 
++REXCVAR_DEFINE_BOOL(vulkan_zero_copy_shared_memory, false, "GPU/Vulkan",
++                    "MGR port, EXPERIMENTAL/BROKEN: alias guest physical memory as the GPU buffer. "
++                    "Corrupts dynamic geometry: guest reuses buffers before the host GPU reads them. "
++                    "(unified memory; removes upload copies and render pass breaks)")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++
++REXCVAR_DEFINE_BOOL(vulkan_direct_shared_memory_uploads, true, "GPU/Vulkan",
++                    "MGR port: memcpy dirty guest pages straight into host-visible GPU shared "
++                    "memory when no unfinished GPU work accesses them (avoids transfer "
++                    "commands that break render passes on tile-based GPUs)")
++    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
++
+ REXCVAR_DEFINE_BOOL(vulkan_sparse_shared_memory, true, "GPU/Vulkan",
+                     "Use sparse shared memory on Vulkan")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+@@ -50,6 +64,12 @@ bool VulkanSharedMemory::Initialize() {
+   const VkBufferCreateFlags sparse_flags =
+       VK_BUFFER_CREATE_SPARSE_BINDING_BIT | VK_BUFFER_CREATE_SPARSE_RESIDENCY_BIT;
+ 
++  if (REXCVAR_GET(vulkan_zero_copy_shared_memory) && InitializeZeroCopy()) {
++    last_usage_ = Usage::kRead;
++    last_written_range_ = std::make_pair<uint32_t, uint32_t>(0, 0);
++    return true;
++  }
++
+   // Try to create a sparse buffer.
+   VkBufferCreateInfo buffer_create_info;
+   buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+@@ -113,7 +133,14 @@ bool VulkanSharedMemory::Initialize() {
+     }
+     VkMemoryRequirements buffer_memory_requirements;
+     dfn.vkGetBufferMemoryRequirements(device, buffer_, &buffer_memory_requirements);
+-    if (!rex::bit_scan_forward(
++    const uint32_t host_mappable_device_local =
++        buffer_memory_requirements.memoryTypeBits & vulkan_device->memory_types().device_local &
++        vulkan_device->memory_types().host_visible & vulkan_device->memory_types().host_coherent;
++    const bool want_direct = REXCVAR_GET(vulkan_direct_shared_memory_uploads);
++    if (want_direct && rex::bit_scan_forward(host_mappable_device_local, &buffer_memory_type_)) {
++      REXGPU_INFO("Shared memory: host-visible device-local memory type {} (direct uploads)",
++                  buffer_memory_type_);
++    } else if (!rex::bit_scan_forward(
+             buffer_memory_requirements.memoryTypeBits & vulkan_device->memory_types().device_local,
+             &buffer_memory_type_)) {
+       REXGPU_ERROR(
+@@ -155,6 +182,15 @@ bool VulkanSharedMemory::Initialize() {
+       Shutdown();
+       return false;
+     }
++    if (want_direct && (host_mappable_device_local & (uint32_t(1) << buffer_memory_type_))) {
++      void* mapping = nullptr;
++      if (dfn.vkMapMemory(device, buffer_memory, 0, VK_WHOLE_SIZE, 0, &mapping) == VK_SUCCESS) {
++        direct_mapping_ = static_cast<uint8_t*>(mapping);
++        page_last_access_submission_.assign(kBufferSize >> page_size_log2(), 0);
++      } else {
++        REXGPU_WARN("Shared memory: mapping failed, direct uploads disabled");
++      }
++    }
+   }
+ 
+   // The first usage will likely be uploading.
+@@ -169,6 +205,69 @@ bool VulkanSharedMemory::Initialize() {
+   return true;
+ }
+ 
++bool VulkanSharedMemory::InitializeZeroCopy() {
++  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++  void* const host_pointer = memory().TranslatePhysical(0);
++
++  VkExternalMemoryBufferCreateInfo external_info = {};
++  external_info.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
++  external_info.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
++  VkBufferCreateInfo buffer_create_info = {};
++  buffer_create_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
++  buffer_create_info.pNext = &external_info;
++  buffer_create_info.size = kBufferSize;
++  buffer_create_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
++                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
++  buffer_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
++  if (dfn.vkCreateBuffer(device, &buffer_create_info, nullptr, &buffer_) != VK_SUCCESS) {
++    REXGPU_WARN("Shared memory: zero-copy buffer creation failed, using copies");
++    return false;
++  }
++  VkMemoryRequirements requirements;
++  dfn.vkGetBufferMemoryRequirements(device, buffer_, &requirements);
++  const uint32_t host_types = requirements.memoryTypeBits &
++                              vulkan_device->memory_types().host_visible &
++                              vulkan_device->memory_types().host_coherent;
++  // Prefer a type that is also device-local (Apple shared storage).
++  uint32_t type_index;
++  if (!rex::bit_scan_forward(host_types & vulkan_device->memory_types().device_local,
++                             &type_index) &&
++      !rex::bit_scan_forward(host_types, &type_index)) {
++    REXGPU_WARN("Shared memory: no host-visible coherent memory type for zero-copy");
++    ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device, buffer_);
++    return false;
++  }
++  VkImportMemoryHostPointerInfoEXT import_info = {};
++  import_info.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT;
++  import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
++  import_info.pHostPointer = host_pointer;
++  VkMemoryAllocateInfo allocate_info = {};
++  allocate_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
++  allocate_info.pNext = &import_info;
++  allocate_info.allocationSize = kBufferSize;
++  allocate_info.memoryTypeIndex = type_index;
++  VkDeviceMemory memory_handle;
++  if (dfn.vkAllocateMemory(device, &allocate_info, nullptr, &memory_handle) != VK_SUCCESS) {
++    REXGPU_WARN("Shared memory: importing guest physical memory failed, using copies");
++    ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device, buffer_);
++    return false;
++  }
++  buffer_memory_.push_back(memory_handle);
++  if (dfn.vkBindBufferMemory(device, buffer_, memory_handle, 0) != VK_SUCCESS) {
++    REXGPU_WARN("Shared memory: binding imported guest memory failed, using copies");
++    Shutdown(true);
++    return false;
++  }
++  buffer_memory_type_ = type_index;
++  zero_copy_ = true;
++  REXGPU_INFO("Shared memory: zero-copy, GPU buffer aliases guest physical memory at {} "
++              "(memory type {})",
++              host_pointer, type_index);
++  return true;
++}
++
+ void VulkanSharedMemory::Shutdown(bool from_destructor) {
+   upload_buffer_pool_.reset();
+ 
+@@ -190,10 +289,12 @@ void VulkanSharedMemory::Shutdown(bool from_destructor) {
+ }
+ 
+ void VulkanSharedMemory::CompletedSubmissionUpdated() {
++  if (!upload_buffer_pool_) return;
+   upload_buffer_pool_->Reclaim(command_processor_.GetCompletedSubmission());
+ }
+ 
+ void VulkanSharedMemory::EndSubmission() {
++  if (!upload_buffer_pool_) return;
+   upload_buffer_pool_->FlushWrites();
+ }
+ 
+@@ -225,6 +326,31 @@ void VulkanSharedMemory::Use(Usage usage, std::pair<uint32_t, uint32_t> written_
+         VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, false);
+   }
+   last_written_range_ = written_range;
++  if (written_range.second) {
++    MarkPagesAccessed(written_range.first, written_range.second);
++  }
++}
++
++void VulkanSharedMemory::MarkPagesAccessed(uint32_t start, uint32_t length) {
++  if (!direct_mapping_ || !length) {
++    return;
++  }
++  const uint64_t submission = command_processor_.GetCurrentSubmission();
++  const uint32_t page_first = start >> page_size_log2();
++  const uint32_t page_end =
++      std::min(uint32_t((uint64_t(start) + length + (uint64_t(1) << page_size_log2()) - 1) >>
++                        page_size_log2()),
++               uint32_t(page_last_access_submission_.size()));
++  for (uint32_t page = page_first; page < page_end; ++page) {
++    page_last_access_submission_[page] = submission;
++  }
++}
++
++void VulkanSharedMemory::OnRangesRequested(
++    const std::vector<std::pair<uint32_t, uint32_t>>& ranges) {
++  for (const auto& range : ranges) {
++    MarkPagesAccessed(range.first, range.second);
++  }
+ }
+ 
+ bool VulkanSharedMemory::AllocateSparseHostGpuMemoryRange(uint32_t offset_allocations,
+@@ -273,6 +399,178 @@ bool VulkanSharedMemory::UploadRanges(
+   if (upload_page_ranges.empty()) {
+     return true;
+   }
++  if (direct_mapping_) {
++    // A page may be overwritten from the CPU only if every submission that
++    // accessed it (draw/texture reads, resolves, earlier ordered copies) has
++    // completed on the GPU; otherwise keep Xenia's ordered transfer.
++    uint64_t completed = command_processor_.GetCompletedSubmission();
++    const uint64_t current = command_processor_.GetCurrentSubmission();
++    // Refresh GPU progress (non-blocking) only when it could change the outcome.
++    bool needs_poll = false;
++    for (auto upload_range : upload_page_ranges) {
++      for (uint32_t page = upload_range.first;
++           page < upload_range.first + upload_range.second && !needs_poll; ++page) {
++        const uint64_t last = page_last_access_submission_[page];
++        needs_poll = last > completed && last < current;
++      }
++      if (needs_poll) break;
++    }
++    if (needs_poll) {
++      completed = command_processor_.PollCompletedSubmission();
++    }
++    std::vector<std::pair<uint32_t, uint32_t>> copy_ranges;
++    for (auto upload_range : upload_page_ranges) {
++      uint32_t page = upload_range.first;
++      const uint32_t page_end = upload_range.first + upload_range.second;
++      for (uint32_t p = page; p < page_end; ++p) {
++        const uint64_t last = page_last_access_submission_[p];
++        if (last == current) {
++          ++copied_same_submission_pages_;
++        } else if (last > completed) {
++          ++copied_in_flight_pages_;
++        }
++      }
++      while (page < page_end) {
++        const bool direct = page_last_access_submission_[page] <= completed;
++        uint32_t run_end = page + 1;
++        while (run_end < page_end &&
++               (page_last_access_submission_[run_end] <= completed) == direct) {
++          ++run_end;
++        }
++        const uint32_t offset = page << page_size_log2();
++        const uint32_t length = (run_end - page) << page_size_log2();
++        if (direct) {
++          MakeRangeValid(offset, length, false);
++          std::memcpy(direct_mapping_ + offset, memory().TranslatePhysical(offset), length);
++          direct_upload_pages_ += run_end - page;
++          page = run_end;
++          continue;
++        }
++        // Not idle: split into pages untouched by this submission (hoistable to
++        // its start) and pages it already accessed (must stay in order).
++        for (uint32_t p = page; p < run_end;) {
++          const bool hoistable = page_last_access_submission_[p] != current;
++          uint32_t sub_end = p + 1;
++          while (sub_end < run_end &&
++                 (page_last_access_submission_[sub_end] != current) == hoistable) {
++            ++sub_end;
++          }
++          if (hoistable && StageHoistedUpload(p, sub_end - p)) {
++            hoisted_upload_pages_ += sub_end - p;
++          } else {
++            copy_ranges.emplace_back(p, sub_end - p);
++            copied_upload_pages_ += sub_end - p;
++          }
++          p = sub_end;
++        }
++        page = run_end;
++      }
++    }
++    ReportUploadStats();
++    return copy_ranges.empty() || UploadRangesWithCopies(copy_ranges);
++  }
++  return UploadRangesWithCopies(upload_page_ranges);
++}
++
++bool VulkanSharedMemory::StageHoistedUpload(uint32_t page_start, uint32_t page_count) {
++  const uint64_t submission_current = command_processor_.GetCurrentSubmission();
++  while (page_count) {
++    VkBuffer upload_buffer;
++    VkDeviceSize upload_buffer_offset, upload_buffer_size;
++    uint8_t* mapping = upload_buffer_pool_->RequestPartial(
++        submission_current, page_count << page_size_log2(), size_t(1) << page_size_log2(),
++        upload_buffer, upload_buffer_offset, upload_buffer_size);
++    if (!mapping) {
++      return false;  // caller falls back to the ordered inline copy
++    }
++    const uint32_t offset = page_start << page_size_log2();
++    MakeRangeValid(offset, uint32_t(upload_buffer_size), false);
++    std::memcpy(mapping, memory().TranslatePhysical(offset), upload_buffer_size);
++    VkBufferCopy region;
++    region.srcOffset = upload_buffer_offset;
++    region.dstOffset = offset;
++    region.size = upload_buffer_size;
++    hoisted_uploads_.emplace_back(upload_buffer, region);
++    MarkPagesAccessed(offset, uint32_t(upload_buffer_size));
++    const uint32_t pages = uint32_t(upload_buffer_size >> page_size_log2());
++    page_start += pages;
++    page_count -= pages;
++  }
++  return true;
++}
++
++void VulkanSharedMemory::RecordHoistedUploads(VkCommandBuffer command_buffer) {
++  if (hoisted_uploads_.empty()) {
++    return;
++  }
++  const ui::vulkan::VulkanDevice::Functions& dfn = command_processor_.GetVulkanDevice()->functions();
++  // Older submissions' reads/writes of these pages -> our transfer writes.
++  VkMemoryBarrier barrier = {};
++  barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER;
++  barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
++  barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++  dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
++                           VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &barrier, 0, nullptr, 0,
++                           nullptr);
++  std::vector<VkBufferCopy> regions;
++  for (size_t i = 0; i < hoisted_uploads_.size();) {
++    const VkBuffer source = hoisted_uploads_[i].first;
++    regions.clear();
++    for (; i < hoisted_uploads_.size() && hoisted_uploads_[i].first == source; ++i) {
++      regions.push_back(hoisted_uploads_[i].second);
++    }
++    dfn.vkCmdCopyBuffer(command_buffer, source, buffer_, uint32_t(regions.size()),
++                        regions.data());
++  }
++  // Our transfer writes -> any later access in this submission.
++  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++  barrier.dstAccessMask = VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_SHADER_READ_BIT |
++                          VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT |
++                          VK_ACCESS_TRANSFER_WRITE_BIT;
++  dfn.vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
++                           VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &barrier, 0, nullptr, 0,
++                           nullptr);
++  hoisted_uploads_.clear();
++}
++
++void VulkanSharedMemory::ReportUploadStats() {
++  static const bool enabled = [] {
++    const char* v = std::getenv("MGR_GPU_STATS");
++    return v && v[0] == '1';
++  }();
++  constexpr uint64_t REPORT_EVERY_PAGES = 200000;
++  if (!enabled ||
++      direct_upload_pages_ + copied_upload_pages_ + hoisted_upload_pages_ < REPORT_EVERY_PAGES) {
++    return;
++  }
++  REXGPU_INFO("Shared memory uploads: {} pages direct, {} pages copied ({:.1f}% direct)",
++              direct_upload_pages_, copied_upload_pages_,
++              100.0 * double(direct_upload_pages_) /
++                  double(direct_upload_pages_ + copied_upload_pages_));
++  std::fprintf(stderr,
++               "[mgr-gpu] uploads: %llu pages direct, %llu hoisted, %llu inline-copied "
++               "(%.1f%% direct); fallback seen: same submission %llu, older in-flight %llu\n",
++               (unsigned long long)direct_upload_pages_, (unsigned long long)hoisted_upload_pages_,
++               (unsigned long long)copied_upload_pages_,
++               100.0 * double(direct_upload_pages_) /
++                   double(direct_upload_pages_ + copied_upload_pages_),
++               (unsigned long long)copied_same_submission_pages_,
++               (unsigned long long)copied_in_flight_pages_);
++  direct_upload_pages_ = copied_upload_pages_ = hoisted_upload_pages_ = 0;
++  copied_same_submission_pages_ = copied_in_flight_pages_ = 0;
++}
++
++bool VulkanSharedMemory::UploadRangesWithCopies(
++    const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) {
++  if (zero_copy_) {
++    // The GPU reads guest memory directly; CPU writes before this submission
++    // are visible at vkQueueSubmit (host-coherent memory), as on real hardware.
++    for (auto upload_range : upload_page_ranges) {
++      MakeRangeValid(upload_range.first << page_size_log2(),
++                     upload_range.second << page_size_log2(), false);
++    }
++    return true;
++  }
+   // upload_page_ranges are sorted, use them to determine the range for the
+   // ordering barrier.
+   Use(Usage::kTransferDestination,

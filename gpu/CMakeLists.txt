@@ -29,6 +29,7 @@ set(XENOS_SOURCES
     vulkan/shader.cpp vulkan/shared_memory.cpp vulkan/texture_cache.cpp
 )
 list(TRANSFORM XENOS_SOURCES PREPEND ${XENOS_SRC}/)
+list(APPEND XENOS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/mgr_cmd_stats.cpp)
 
 add_library(rexgpu-xenos SHARED ${XENOS_SOURCES})
 set_target_properties(rexgpu-xenos PROPERTIES
@@ -36,10 +37,14 @@ set_target_properties(rexgpu-xenos PROPERTIES
     OUTPUT_NAME_DEBUG rexgpu-xenosd
     OUTPUT_NAME_RELWITHDEBINFO rexgpu-xenosrd
     OUTPUT_NAME_RELEASE rexgpu-xenos
+    # Build straight into the exe dir: the SDK's POST_BUILD staging only runs
+    # when mgr relinks, which left a stale plugin after plugin-only rebuilds.
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
 )
-target_include_directories(rexgpu-xenos PRIVATE
+target_include_directories(rexgpu-xenos BEFORE PRIVATE
+    ${REXSDK_SRC}/include  # vendored headers (incl. MGR edits) win over the SDK copy
     ${REXSDK_SRC}
     ${REXSDK_SRC}/src
     ${REXSDK_SRC}/thirdparty/renderdoc
