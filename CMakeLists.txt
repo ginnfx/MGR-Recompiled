@@ -14,6 +14,7 @@ include(generated/rexglue.cmake)
 set(MGR_SOURCES
     src/main.cpp
     src/mgr_perf.cpp
+    src/mgr_kernel_fixes.cpp
     src/thirdparty/mgrr_perf/perf_logger.cpp
 )
 
