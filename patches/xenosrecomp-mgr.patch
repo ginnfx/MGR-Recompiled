@@ -1,5 +1,65 @@
+diff --git a/XenosRecomp/main.cpp b/XenosRecomp/main.cpp
+index 754198c..806900b 100644
+--- a/XenosRecomp/main.cpp
++++ b/XenosRecomp/main.cpp
+@@ -29,6 +29,8 @@ struct RecompiledShader
+     uint8_t* data = nullptr;
+     IDxcBlob* dxil = nullptr;
+     std::vector<uint8_t> spirv;
++    std::vector<uint8_t> rawSpirv;  // MGR native bundle: unencoded SPIR-V
++    bool isPixelShader = false;
+     uint32_t specConstantsMask = 0;
+     std::string sourceName;
+ };
+@@ -200,6 +202,10 @@ int main(int argc, char** argv)
+                     return;
+                 }
+ 
++                shader.isPixelShader = recompiler.isPixelShader;
++                shader.rawSpirv.assign(reinterpret_cast<const uint8_t*>(spirv->GetBufferPointer()),
++                    reinterpret_cast<const uint8_t*>(spirv->GetBufferPointer()) + spirv->GetBufferSize());
++
+                 if (!smolv::Encode(spirv->GetBufferPointer(), spirv->GetBufferSize(), shader.spirv, smolv::kEncodeFlagStripDebugInfo))
+                 {
+                     spirv->Release();
+@@ -222,6 +228,35 @@ int main(int argc, char** argv)
+             return 2;
+         }
+ 
++        // MGR native bundle (XENOS_RECOMP_NATIVE_BUNDLE=<file>): little-endian
++        // header "XRNB" u32 version, u32 count; per entry: u64 ucode hash (XXH3_64 of
++        // the container's microcode == Xenia's ucode_data_hash), u64 container
++        // hash, u32 stage (1 = pixel), u32 spec constants mask, u32 spirv bytes, spirv.
++        if (const char* bundlePath = std::getenv("XENOS_RECOMP_NATIVE_BUNDLE"))
++        {
++            std::vector<uint8_t> bundle;
++            auto put = [&bundle](const void* p, size_t n) {
++                bundle.insert(bundle.end(), static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + n);
++            };
++            const uint32_t magic = 0x424E5258, version = 1, count = uint32_t(shaders.size());
++            put(&magic, 4); put(&version, 4); put(&count, 4);
++            for (auto& [hash, shader] : shaders)
++            {
++                auto container = reinterpret_cast<const ShaderContainer*>(shader.data);
++                auto guest = reinterpret_cast<const Shader*>(shader.data + container->shaderOffset);
++                const uint8_t* ucode = shader.data + container->virtualSize + guest->physicalOffset;
++                const uint64_t ucodeHash = XXH3_64bits(ucode, guest->size);
++                const uint64_t containerHash = hash;
++                const uint32_t stage = shader.isPixelShader ? 1 : 0;
++                const uint32_t size = uint32_t(shader.rawSpirv.size());
++                put(&ucodeHash, 8); put(&containerHash, 8); put(&stage, 4);
++                put(&shader.specConstantsMask, 4); put(&size, 4);
++                put(shader.rawSpirv.data(), size);
++            }
++            writeAllBytes(bundlePath, bundle.data(), bundle.size());
++            fmt::println("Wrote native bundle {} ({} shaders, {} bytes)", bundlePath, count, bundle.size());
++        }
++
+         fmt::println("Creating shader cache...");
+ 
+         StringBuffer f;
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index 63c37c9..e5f8a0e 100644
+index 63c37c9..0efc169 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
 @@ -12,18 +12,26 @@
@@ -40,10 +100,29 @@ index 63c37c9..e5f8a0e 100644
  
  // SPEC_CONSTANTS_ONLY keeps the HLSL below out of host C++ TUs, which IntelliSense would otherwise parse.
  #if (!defined(__cplusplus) || defined(__INTELLISENSE__)) && !defined(SHADER_COMMON_SPEC_CONSTANTS_ONLY)
-@@ -44,22 +52,22 @@ struct PushConstants
+@@ -33,33 +41,33 @@
+ 
+ #ifdef __spirv__
+ 
+-struct PushConstants
+-{
+-    uint64_t VertexShaderConstants;
+-    uint64_t PixelShaderConstants;
+-    uint64_t SharedConstants;
+-};
+-
+-[[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
++// MGR native pixel-shader contract: descriptor set 3 replaces Xenia's pixel
++// texture set. Constants come from per-draw storage buffers (no buffer device
++// address); textures are fixed per-fetch-slot arrays indexed by literals (no
++// descriptor indexing features needed on the runtime-created device).
++[[vk::binding(0, 3)]] ByteAddressBuffer g_ShaderConstantsBuffer;  // 256 float4, host endian
++[[vk::binding(1, 3)]] ByteAddressBuffer g_SharedConstantsBuffer;
++#define XR_SHADER_CONST(T, off) g_ShaderConstantsBuffer.Load<T>(off)
++#define XR_SHARED_CONST(T, off) g_SharedConstantsBuffer.Load<T>(off)
  
  #ifdef REBLUE_RECOMP
- // 256-bit boolean register file (BD bool addresses reach ~158), then per-usage 16-bit-pair swap masks.
+-// 256-bit boolean register file (BD bool addresses reach ~158), then per-usage 16-bit-pair swap masks.
 -#define g_Booleans(i)              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256 + (i)*4)
 -#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 288)
 -#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 292)
@@ -55,30 +134,49 @@ index 63c37c9..e5f8a0e 100644
 -#define g_SwappedPositions         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 320)
 -#define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 324)
 -#define g_ShadowPcfScale           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 328)
-+#define g_Booleans(i)              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 512 + (i)*4)
-+#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 544)
-+#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 548)
-+#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 556)
-+#define g_SwappedNormals           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 560)
-+#define g_SwappedBinormals         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 564)
-+#define g_SwappedTangents          vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 568)
-+#define g_SwappedBlendWeights      vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 572)
-+#define g_SwappedPositions         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 576)
-+#define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 580)
-+#define g_ShadowPcfScale           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 584)
++// 256-bit boolean register file (VS 0..127, PS 128..255), then flags.
++#define g_Booleans(i)              XR_SHARED_CONST(uint, 512 + (i)*4)
++#define g_SwappedTexcoords         XR_SHARED_CONST(uint, 544)
++#define g_HalfPixelOffset          XR_SHARED_CONST(float2, 548)
++#define g_AlphaThreshold           XR_SHARED_CONST(float, 556)
++#define g_SwappedNormals           XR_SHARED_CONST(uint, 560)
++#define g_SwappedBinormals         XR_SHARED_CONST(uint, 564)
++#define g_SwappedTangents          XR_SHARED_CONST(uint, 568)
++#define g_SwappedBlendWeights      XR_SHARED_CONST(uint, 572)
++#define g_SwappedPositions         XR_SHARED_CONST(uint, 576)
++#define g_SintTexcoords            XR_SHARED_CONST(uint, 580)
++#define g_ShadowPcfScale           XR_SHARED_CONST(float, 584)
  #else
 -#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
 -#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
 -#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 264)
 -#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 272)
-+#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 512)
-+#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 516)
-+#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 520)
-+#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 528)
++#define g_Booleans                 XR_SHARED_CONST(uint, 512)
++#define g_SwappedTexcoords         XR_SHARED_CONST(uint, 516)
++#define g_HalfPixelOffset          XR_SHARED_CONST(float2, 520)
++#define g_AlphaThreshold           XR_SHARED_CONST(float, 528)
  #endif
  
  [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
-@@ -112,10 +120,17 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+@@ -100,10 +108,17 @@ uint g_SpecConstants();
+ #define BOOL_BIT(n) ((g_Booleans((n) / 32u) & (1u << ((n) & 31u))) != 0)
+ #endif
+ 
++#ifdef __spirv__
++[[vk::binding(2, 3)]] Texture2D<float4> g_Texture2DDescriptorHeap[32];
++[[vk::binding(3, 3)]] Texture3D<float4> g_Texture3DDescriptorHeap[32];
++[[vk::binding(4, 3)]] TextureCube<float4> g_TextureCubeDescriptorHeap[32];
++[[vk::binding(5, 3)]] SamplerState g_SamplerDescriptorHeap[32];
++#else
+ Texture2D<float4> g_Texture2DDescriptorHeap[] : register(t0, space0);
+ Texture3D<float4> g_Texture3DDescriptorHeap[] : register(t0, space1);
+ TextureCube<float4> g_TextureCubeDescriptorHeap[] : register(t0, space2);
+ SamplerState g_SamplerDescriptorHeap[] : register(s0, space3);
++#endif
+ 
+ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+ {
+@@ -112,10 +127,17 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
      return dimensions;
  }
  
@@ -97,7 +195,7 @@ index 63c37c9..e5f8a0e 100644
  }
  
  float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
-@@ -218,7 +233,7 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+@@ -218,7 +240,7 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
  
  float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
  {
@@ -106,7 +204,7 @@ index 63c37c9..e5f8a0e 100644
  }
  
  struct CubeMapData
-@@ -236,7 +251,7 @@ struct CubeMapData
+@@ -236,7 +258,7 @@ struct CubeMapData
  
  float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
  {
@@ -116,7 +214,7 @@ index 63c37c9..e5f8a0e 100644
  
  #ifdef REBLUE_RECOMP
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index feaa90b..a94bd1e 100644
+index feaa90b..5e40176 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -727,8 +727,12 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
@@ -145,21 +243,47 @@ index feaa90b..a94bd1e 100644
      out += include;
      out += '\n';
  
-@@ -1368,11 +1376,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1335,15 +1343,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             if (constantInfo->registerCount > 1)
+             {
+-                uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
++                uint32_t tailCount = 256 - constantInfo->registerIndex;  // MGR: full Xenos 256-register files
+ 
+-                println("#define {}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
+-                    constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
++                println("#define {}(INDEX) select((INDEX) < {}, XR_SHADER_CONST(float4, ({} + min(INDEX, {})) * 16), 0.0)",
++                    constantName, tailCount, constantInfo->registerIndex.get(), tailCount - 1);
++                (void)shaderName;
+             }
+             else
+             {
+-                println("#define {} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10)",
+-                    constantName, shaderName, constantInfo->registerIndex * 16);
++                println("#define {} XR_SHADER_CONST(float4, {})",
++                    constantName, constantInfo->registerIndex * 16);
++                (void)shaderName;
+             }
+             
+ #ifdef REBLUE_RECOMP
+@@ -1367,12 +1377,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         {
              for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
              {
-                 println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-                println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
 -                    constantName, TEXTURE_DIMENSIONS[j], j * 64 + constantInfo->registerIndex * 4);
-+                    constantName, TEXTURE_DIMENSIONS[j], j * 128 + constantInfo->registerIndex * 4);
++                // MGR native: descriptor "index" is the fetch constant slot itself.
++                println("#define {}_Texture{}DescriptorIndex {}", constantName, TEXTURE_DIMENSIONS[j],
++                    constantInfo->registerIndex.get());
              }
  
-             println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-            println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
 -                constantName, std::size(TEXTURE_DIMENSIONS) * 64 + constantInfo->registerIndex * 4);
-+                constantName, std::size(TEXTURE_DIMENSIONS) * 128 + constantInfo->registerIndex * 4);
++            println("#define {}_SamplerDescriptorIndex {}", constantName, constantInfo->registerIndex.get());
  
              samplers.emplace(constantInfo->registerIndex, constantName);
              break;
-@@ -1382,18 +1390,19 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1382,18 +1392,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      }
  
  #ifdef REBLUE_RECOMP
@@ -173,17 +297,50 @@ index feaa90b..a94bd1e 100644
              continue;
          for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
          {
-             println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-            println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
 -                r, TEXTURE_DIMENSIONS[j], j * 64 + r * 4);
-+                r, TEXTURE_DIMENSIONS[j], j * 128 + r * 4);
++            println("#define s{}_Texture{}DescriptorIndex {}", r, TEXTURE_DIMENSIONS[j], r);
          }
-         println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-        println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
 -            r, std::size(TEXTURE_DIMENSIONS) * 64 + r * 4);
-+            r, std::size(TEXTURE_DIMENSIONS) * 128 + r * 4);
++        println("#define s{}_SamplerDescriptorIndex {}", r, r);
      }
  #endif
  
-@@ -1740,6 +1749,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1518,14 +1527,25 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     {
+         out += "\tin float4 iPos : SV_Position,\n";
+ 
+-        for (auto& [usage, usageIndex] : INTERPOLATORS)
++        // MGR native: link with Xenia's translated vertex shader, which outputs
++        // interpolator register N at location N (remapped to the draw's packed
++        // interpolator rank at pipeline creation). Declare only registers this
++        // pixel shader's container maps.
+         {
+-#ifdef REBLUE_RECOMP
+-            const char* interpolation = (usage == DeclUsage::Color) ? "centroid " : "";
+-#else
+-            const char* interpolation = "";
+-#endif
+-            println("\tin {3}float4 i{0}{1} : {2}{1},", USAGE_VARIABLES[uint32_t(usage)], usageIndex, USAGE_SEMANTICS[uint32_t(usage)], interpolation);
++            uint32_t psInterpolatorCount = (shader->interpolatorInfo >> 5) & 0x1F;
++            for (uint32_t i = 0; i < psInterpolatorCount; i++)
++            {
++                union
++                {
++                    Interpolator interpolator;
++                    uint32_t value;
++                };
++                value = reinterpret_cast<const PixelShader*>(shader)->interpolators[i];
++                const char* interpolation = (interpolator.usage == DeclUsage::Color) ? "centroid " : "";
++                println("\t[[vk::location({4})]] in {3}float4 i{0}{1} : {2}{1},", USAGE_VARIABLES[uint32_t(interpolator.usage)],
++                    uint32_t(interpolator.usageIndex), USAGE_SEMANTICS[uint32_t(interpolator.usage)], interpolation,
++                    uint32_t(interpolator.reg));
++            }
+         }
+ 
+         out += "#ifdef __spirv__\n";
+@@ -1740,6 +1760,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
  
          for (auto& [usage, usageIndex] : INTERPOLATORS)
              println("\to{}{} = 0.0;", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
