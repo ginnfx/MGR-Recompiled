@@ -319,6 +319,22 @@ index b49e033..923d0e9 100644
    assert_null(rendering_info->pNext);
  
    size_t arguments_size =
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+index 91ac08f..901f6c8 100644
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -1246,6 +1246,11 @@ bool VulkanPipelineCache::TranslateAnalyzedShader(SpirvShaderTranslator& transla
+     return false;
+   }
+ 
++  // MGR port: dump translated SPIR-V too (D3D12 path already does this).
++  if (!REXCVAR_GET(dump_shaders).empty()) {
++    translation.Dump(REXCVAR_GET(dump_shaders), "spirv");
++  }
++
+   // TODO(Triang3l): Log that the shader has been successfully translated in
+   // common code.
+ 
 diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
 index 6788214..8bb9e31 100644
 --- a/src/graphics/vulkan/shared_memory.cpp
