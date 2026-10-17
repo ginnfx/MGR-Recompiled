@@ -1,3 +1,48 @@
+diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
+index 8426798..ed20255 100644
+--- a/include/rex/audio/xma/context.h
++++ b/include/rex/audio/xma/context.h
+@@ -191,16 +191,6 @@ class XmaContext {
+   static const uint32_t kOutputMaxSizeBytes = 31 * kOutputBytesPerBlock;
+   static const uint32_t kMaxFrameSizeinBits = 0x4000 - kBitsPerPacketHeader;
+
+-  // The bitstream declares a start padding that the hardware discards. FFmpeg's
+-  // xmaframes decoder parses that field and drops it on the floor
+-  // (wmaprodec.c decode_frame, "start skip"), emitting the padding as ordinary
+-  // output, so its sample numbering runs this far ahead of the numbering the
+-  // guest's loop offsets use. Measured at 192 on every wave checked. Left
+-  // uncorrected it costs each loop wrap its final 192 samples.
+-  static const uint32_t kDecoderStartPadding = 192;
+-  static_assert(kDecoderStartPadding < kSamplesPerFrame,
+-                "start padding must fit inside one decoded frame");
+-
+   explicit XmaContext();
+   ~XmaContext();
+
+@@ -287,10 +277,6 @@ class XmaContext {
+   std::array<uint8_t, 1 + 4096> xma_frame_;
+   // Conversion buffer for up to 2-channel frame
+   std::array<uint8_t, kBytesPerFrameChannel * 2> raw_frame_;
+-  // Freshly decoded block, before start-padding realignment
+-  std::array<uint8_t, kBytesPerFrameChannel * 2> decoded_frame_;
+-  // Tail of the previous decoded block, awaiting the next block's padding head
+-  std::array<uint8_t, kBytesPerFrameChannel * 2> carry_frame_;
+
+   // Output buffer tracking
+   int32_t remaining_subframe_blocks_in_output_buffer_ = 0;
+@@ -300,12 +286,6 @@ class XmaContext {
+   uint8_t loop_frame_output_limit_ = 0;
+   bool loop_start_skip_pending_ = false;
+
+-  // Start-padding realignment state. Attributes belong to the frame whose
+-  // samples are still being assembled, so they land one decode after the frame
+-  // they describe.
+-  bool carry_valid_ = false;
+-  uint8_t pending_output_limit_ = 0;
+-  uint8_t pending_start_skip_ = 0;
+ };
+
+ }  // namespace rex::audio
 diff --git a/include/rex/audio/xma/decoder.h b/include/rex/audio/xma/decoder.h
 index df00f06..9ecf17f 100644
 --- a/include/rex/audio/xma/decoder.h
@@ -466,44 +511,49 @@ index 04856ee..be4ea2f 100644
                                                xenos::FetchOpDimension dimension, bool is_signed);
  
 diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
-index 11b83be..f5c6f53 100644
+index 11b83be..9194349 100644
 --- a/src/audio/xma_context.cpp
 +++ b/src/audio/xma_context.cpp
-@@ -113,10 +113,24 @@ bool XmaContext::Work() {
+@@ -98,6 +98,12 @@ bool XmaContext::Work() {
+   }
+
+   std::lock_guard<std::mutex> lock(lock_);
++  // The worker sweep and inline kick path can both pass the fast check above.
++  // Recheck after locking so a queued Work cannot decode after Disable/Release,
++  // or process the same kick a second time.
++  if (!is_allocated() || !is_enabled()) {
++    return false;
++  }
+   set_is_enabled(false);
+
+   auto context_ptr = memory()->TranslateVirtual(guest_ptr());
+@@ -113,10 +119,16 @@ bool XmaContext::Work() {
    // Consume-only context: no input, just drain remaining subframes.
    if (data.IsConsumeOnlyContext()) {
      if (current_frame_remaining_subframes_ == 0) {
-+      // MGR: a fully drained voice (no input, nothing pending) reports its
-+      // output stopped, as hardware does once nothing is left to decode. MGR
-+      // never frees voices that keep output_buffer_valid=1 (run-45..49: 170 of
-+      // ~171 allocated voices idle with the flag still set, ~10 new voices/s,
-+      // SFX silent once its voice pool is full). Only the flag changes; output
-+      // offsets stay untouched (canary: rewriting them makes games re-read PCM).
-+      if (!data.IsAnyInputBufferValid() && data.output_buffer_valid) {
-+        data.output_buffer_valid = 0;
-+        StoreContextMerged(data, initial_data, context_ptr);
-+      }
++      // No decoded frame remains. Leave any queued PCM and output validity
++      // alone: a valid output buffer isn't a count of samples still owed.
        return true;
      }
      Consume(&output_rb, &data);
      data.output_buffer_write_offset = output_rb.write_offset() / kOutputBytesPerBlock;
-+    // MGR (from xenia-canary xma_context_new.cc): report the drained output.
++    // Write reaching read means the output ring was filled by Consume.
 +    if (output_rb.empty()) {
 +      data.output_buffer_valid = 0;
 +    }
      StoreContextMerged(data, initial_data, context_ptr);
      return true;
    }
-@@ -133,17 +147,43 @@ bool XmaContext::Work() {
+@@ -133,17 +145,41 @@ bool XmaContext::Work() {
    }
- 
+
    while (remaining_subframe_blocks_in_output_buffer_ >= minimum_subframe_decode_count) {
 +    const uint32_t pre_decode_offset = data.input_buffer_read_offset;
 +    const uint8_t pre_remaining_subframes = current_frame_remaining_subframes_;
 +
      Decode(&data);
      Consume(&output_rb, &data);
- 
+
 -    if (!data.IsAnyInputBufferValid() || data.error_status == 4) {
 +    // MGR (from xenia-canary xma_context_new.cc): don't abandon a partially
 +    // consumed frame. Consume() hands over at most subframe_decode_count
@@ -522,7 +572,7 @@ index 11b83be..f5c6f53 100644
        break;
      }
    }
- 
+
 -  data.output_buffer_write_offset = output_rb.write_offset() / kOutputBytesPerBlock;
 -
 -  if (output_rb.empty()) {
@@ -534,15 +584,25 @@ index 11b83be..f5c6f53 100644
 +  } else if (data.output_buffer_write_offset != data.output_buffer_read_offset) {
 +    data.output_buffer_write_offset = data.output_buffer_read_offset;
 +    data.output_buffer_valid = 0;
-+  } else if (current_frame_remaining_subframes_ == 0) {
-+    data.output_buffer_valid = 0;  // MGR: drained voice, see consume-only path
 +  }
 +  // Signal the game that the output buffer is full.
 +  if (remaining_subframe_blocks_in_output_buffer_ == 0 && output_rb.empty()) {
      data.output_buffer_valid = 0;
    }
- 
-@@ -316,7 +356,15 @@ uint32_t XmaContext::GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_pack
+
+@@ -201,11 +237,6 @@ void XmaContext::ResetDecoderState() {
+     av_context_->channels = 0;
+   }
+   raw_frame_.fill(0);
+-  decoded_frame_.fill(0);
+-  carry_frame_.fill(0);
+-  carry_valid_ = false;
+-  pending_output_limit_ = 0;
+-  pending_start_skip_ = 0;
+   current_frame_remaining_subframes_ = 0;
+   loop_frame_output_limit_ = 0;
+   loop_start_skip_pending_ = false;
+@@ -316,7 +347,15 @@ uint32_t XmaContext::GetNextPacketReadOffset(uint8_t* buffer, uint32_t next_pack
      if (packet_frame_offset <= kMaxFrameSizeinBits) {
        return (next_packet_index * kBitsPerPacket) + packet_frame_offset;
      }
@@ -557,10 +617,10 @@ index 11b83be..f5c6f53 100644
 +    }
 +    next_packet_index += next_skip + 1;
    }
- 
+
    return kBitsPerPacketHeader;
-@@ -359,6 +407,17 @@ kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
- 
+@@ -359,6 +398,17 @@ kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
+
    while (true) {
      if (stream.BitsRemaining() < kBitsPerFrameHeader) {
 +      // MGR (xenia-canary aee0871dd): this frame's 15-bit header runs into the
@@ -576,7 +636,76 @@ index 11b83be..f5c6f53 100644
 +      }
        break;
      }
- 
+
+@@ -658,55 +708,33 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+   const uint32_t padding_start =
+       static_cast<uint8_t>(stream.Copy(xma_frame_.data() + 1, packet_info.current_frame_size_));
+
+-  decoded_frame_.fill(0);
+-
+-  if (PrepareDecoder(data->sample_rate, bool(data->is_stereo)) == 1) {
+-    // Reopening the codec restarts its output; the carried tail belongs to the
+-    // old stream.
+-    carry_valid_ = false;
+-  }
++  raw_frame_.fill(0);
++  PrepareDecoder(data->sample_rate, bool(data->is_stereo));
+   PreparePacket(packet_info.current_frame_size_, padding_start);
+   const bool decoded = DecodePacket(av_context_, av_packet_, av_frame_);
+   if (decoded) {
+     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
+-                 decoded_frame_.data());
++                 raw_frame_.data());
+
+-    // Realign the decoder's output onto the bitstream's sample numbering: the
+-    // samples of the frame just decoded run from kDecoderStartPadding into this
+-    // block and finish in the head of the next one.
+-    const size_t pad_bytes = kDecoderStartPadding * kBytesPerSample << data->is_stereo;
+-    const size_t carry_bytes = (kBytesPerFrameChannel << data->is_stereo) - pad_bytes;
++    // Publish every decoded frame immediately, as xenia-canary does. The SDK's
++    // start-padding realignment held back one frame awaiting the next decode,
++    // but never flushed that carry at end of input. Short SFX therefore lost
++    // 512 samples per channel, leaving the guest waiting for missing output.
++    current_frame_remaining_subframes_ = 4 << data->is_stereo;
+
+     // Loop end: limit output to subframes 0..loop_subframe_end.
+-    const uint8_t decoded_output_limit =
++    loop_frame_output_limit_ =
+         is_loop_end_frame ? static_cast<uint8_t>((data->loop_subframe_end + 1) << data->is_stereo)
+                           : 0;
+     // Loop start: skip leading subframes per loop_subframe_skip. skip == 4
+     // means the whole frame is a warm-up frame (frame-aligned loop start):
+     // decode seeds the codec state, output is fully discarded.
+-    const uint8_t decoded_start_skip =
+-        loop_start_skip_pending_ ? static_cast<uint8_t>(data->loop_subframe_skip << data->is_stereo)
+-                                 : 0;
+-    loop_start_skip_pending_ = false;
+-
+-    if (carry_valid_) {
+-      std::memcpy(raw_frame_.data(), carry_frame_.data(), carry_bytes);
+-      std::memcpy(raw_frame_.data() + carry_bytes, decoded_frame_.data(), pad_bytes);
+-
+-      current_frame_remaining_subframes_ = 4 << data->is_stereo;
+-      loop_frame_output_limit_ = pending_output_limit_;
++    if (loop_start_skip_pending_) {
++      const uint8_t skip = data->loop_subframe_skip << data->is_stereo;
+       current_frame_remaining_subframes_ -=
+-          std::min(pending_start_skip_, current_frame_remaining_subframes_);
++          std::min(skip, current_frame_remaining_subframes_);
+     }
+-
+-    std::memcpy(carry_frame_.data(), decoded_frame_.data() + pad_bytes, carry_bytes);
+-    carry_valid_ = true;
+-    pending_output_limit_ = decoded_output_limit;
+-    pending_start_skip_ = decoded_start_skip;
+-  } else {
+-    // A dropped frame breaks the carry's adjacency; re-prime rather than splice
+-    // two blocks that are not neighbors.
+-    carry_valid_ = false;
++    loop_start_skip_pending_ = false;
+   }
+
+   // Compute where to go next.
 diff --git a/src/audio/xma_decoder.cpp b/src/audio/xma_decoder.cpp
 index a0a178d..3b05153 100644
 --- a/src/audio/xma_decoder.cpp
