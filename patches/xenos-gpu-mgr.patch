@@ -1,3 +1,15 @@
+diff --git a/include/rex/audio/xma/decoder.h b/include/rex/audio/xma/decoder.h
+index df00f06..9ecf17f 100644
+--- a/include/rex/audio/xma/decoder.h
++++ b/include/rex/audio/xma/decoder.h
+@@ -58,6 +58,7 @@ class XmaDecoder {
+ 
+  private:
+   void WorkerThreadMain();
++  void ReportXmaStats();  // MGR: MGR_XMA_STATS=1 diagnostics
+ 
+   static uint32_t MMIOReadRegisterThunk(void* ppc_context, XmaDecoder* as, uint32_t addr) {
+     return as->ReadRegister(addr);
 diff --git a/include/rex/graphics/shared_memory.h b/include/rex/graphics/shared_memory.h
 index 4d85a2b..8dd8613 100644
 --- a/include/rex/graphics/shared_memory.h
@@ -453,6 +465,159 @@ index 04856ee..be4ea2f 100644
    VkImageView GetActiveBindingOrNullImageView(uint32_t fetch_constant_index,
                                                xenos::FetchOpDimension dimension, bool is_signed);
  
+diff --git a/src/audio/xma_decoder.cpp b/src/audio/xma_decoder.cpp
+index a0a178d..4a8db99 100644
+--- a/src/audio/xma_decoder.cpp
++++ b/src/audio/xma_decoder.cpp
+@@ -9,6 +9,11 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++
+ #include <rex/audio/xma/context.h>
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/cvar.h>
+@@ -28,6 +33,21 @@ extern "C" {
+ 
+ REXCVAR_DEFINE_BOOL(ffmpeg_verbose, false, "Audio", "Verbose FFmpeg output (debug and above)");
+ 
++// MGR: opt-in XMA diagnostics (MGR_XMA_STATS=1) for the "SFX stop after a
++// while / after a reload" bug: periodic context-state census on stderr.
++namespace {
++bool XmaStatsEnabled() {
++  static const bool enabled = [] {
++    const char* v = std::getenv("MGR_XMA_STATS");
++    return v && v[0] == '1';
++  }();
++  return enabled;
++}
++std::atomic<uint64_t> g_xma_allocs{0}, g_xma_alloc_failures{0}, g_xma_releases{0};
++std::atomic<uint64_t> g_xma_kicks{0}, g_xma_kick_works{0}, g_xma_sweep_works{0};
++std::atomic<uint64_t> g_xma_clears{0}, g_xma_locks{0};
++}  // namespace
++
+ // As with normal Microsoft, there are like twelve different ways to access
+ // the audio APIs. Early games use XMA*() methods almost exclusively to touch
+ // decoders. Later games use XAudio*() and direct memory writes to the XMA
+@@ -137,6 +157,51 @@ X_STATUS XmaDecoder::Setup(system::KernelState* kernel_state) {
+   return X_STATUS_SUCCESS;
+ }
+ 
++void XmaDecoder::ReportXmaStats() {
++  if (!XmaStatsEnabled()) {
++    return;
++  }
++  static const auto start_time = std::chrono::steady_clock::now();
++  static auto next_report = start_time;
++  const auto now = std::chrono::steady_clock::now();
++  if (now < next_report) {
++    return;
++  }
++  next_report = now + std::chrono::seconds(2);
++  uint32_t allocated = 0, enabled = 0, no_input = 0, no_output = 0, errored = 0;
++  uint32_t first_error_id = UINT32_MAX, first_error = 0;
++  for (uint32_t n = 0; n < kContextCount; ++n) {
++    XmaContext& context = contexts_[n];
++    if (!context.is_allocated()) {
++      continue;
++    }
++    ++allocated;
++    enabled += context.is_enabled();
++    XMA_CONTEXT_DATA data(memory()->TranslateVirtual(context.guest_ptr()));
++    no_input += !data.IsAnyInputBufferValid();
++    no_output += !data.output_buffer_valid;
++    if (data.error_status || data.parser_error_status) {
++      ++errored;
++      if (first_error_id == UINT32_MAX) {
++        first_error_id = n;
++        first_error = (data.error_status << 8) | data.parser_error_status;
++      }
++    }
++  }
++  std::fprintf(stderr,
++               "[mgr-xma] t=%llds contexts allocated %u (enabled %u, no input %u, no output %u, "
++               "error %u first ctx %d err %04X) | total alloc %llu fail %llu release %llu "
++               "kick %llu kick-work %llu sweep-work %llu lock %llu clear %llu\n",
++               (long long)std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count(),
++               allocated, enabled, no_input, no_output, errored,
++               first_error_id == UINT32_MAX ? -1 : int(first_error_id), first_error,
++               (unsigned long long)g_xma_allocs.load(), (unsigned long long)g_xma_alloc_failures.load(),
++               (unsigned long long)g_xma_releases.load(), (unsigned long long)g_xma_kicks.load(),
++               (unsigned long long)g_xma_kick_works.load(),
++               (unsigned long long)g_xma_sweep_works.load(), (unsigned long long)g_xma_locks.load(),
++               (unsigned long long)g_xma_clears.load());
++}
++
+ void XmaDecoder::WorkerThreadMain() {
+   while (worker_running_) {
+     // Okay, let's loop through XMA contexts to find ones we need to decode!
+@@ -147,6 +212,7 @@ void XmaDecoder::WorkerThreadMain() {
+       if (worked) {
+         context.SignalWorkDone();
+         PROFILE_XMA_FRAME_DECODED();
++        g_xma_sweep_works.fetch_add(1, std::memory_order_relaxed);
+       }
+       did_work = did_work || worked;
+     }
+@@ -156,6 +222,7 @@ void XmaDecoder::WorkerThreadMain() {
+       resume_fence_.Wait();
+     }
+ 
++    ReportXmaStats();
+     if (did_work) {
+       continue;
+     }
+@@ -207,8 +274,11 @@ uint32_t XmaDecoder::AllocateContext() {
+   size_t index = context_bitmap_.Acquire();
+   if (index == -1) {
+     // Out of contexts.
++    g_xma_alloc_failures.fetch_add(1, std::memory_order_relaxed);
++    REXAPU_WARN("XMA: AllocateContext failed - all {} contexts in use", uint32_t(kContextCount));
+     return 0;
+   }
++  g_xma_allocs.fetch_add(1, std::memory_order_relaxed);
+ 
+   XmaContext& context = contexts_[index];
+   assert_false(context.is_allocated());
+@@ -222,6 +292,7 @@ void XmaDecoder::ReleaseContext(uint32_t guest_ptr) {
+ 
+   XmaContext& context = contexts_[context_id];
+   assert_true(context.is_allocated());
++  g_xma_releases.fetch_add(1, std::memory_order_relaxed);
+   context.Release();
+   context_bitmap_.Release(context_id);
+ }
+@@ -299,8 +370,10 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
+       if (kicked_value & 1) {
+         uint32_t context_id = base_context_id + i;
+         auto& context = contexts_[context_id];
++        g_xma_kicks.fetch_add(1, std::memory_order_relaxed);
+         if (context.Work()) {
+           context.SignalWorkDone();
++          g_xma_kick_works.fetch_add(1, std::memory_order_relaxed);
+         }
+       }
+     }
+@@ -314,6 +387,7 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
+       if (value & 1) {
+         uint32_t context_id = base_context_id + i;
+         auto& context = contexts_[context_id];
++        g_xma_locks.fetch_add(1, std::memory_order_relaxed);
+         context.Disable();
+         // [XMA fix] Added Block(false) after Disable(). Without this, the game
+         // could call XMADisableContext and start modifying the context struct
+@@ -332,6 +406,7 @@ void XmaDecoder::WriteRegister(uint32_t addr, uint32_t value) {
+       if (value & 1) {
+         uint32_t context_id = base_context_id + i;
+         XmaContext& context = contexts_[context_id];
++        g_xma_clears.fetch_add(1, std::memory_order_relaxed);
+         context.Clear();
+       }
+     }
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
 index 9ac8d15..0e66b35 100644
 --- a/src/core/threading_posix.cpp
