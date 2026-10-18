@@ -8,6 +8,7 @@ project(mgr LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+include(cmake/MgrCompilerOptions.cmake)
 include(generated/rexglue.cmake)
 
 # Sources
@@ -15,6 +16,15 @@ set(MGR_SOURCES
     src/main.cpp
     src/mgr_perf.cpp
     src/mgr_kernel_fixes.cpp
+    src/mgr_timing.cpp
+    src/mgr_input_prompts.cpp
+    src/mgr_key_labels.cpp
+    src/mgr_button_atlas.cpp
+    src/mgr_icon_render_mac.cpp
+    src/mgr_prompt_device.cpp
+    src/mgr_settings.cpp
+    src/mgr_qol.cpp
+    src/mgr_options_dialog.cpp
     src/thirdparty/mgrr_perf/perf_logger.cpp
 )
 
@@ -26,6 +36,15 @@ endif()
 
 add_subdirectory(gpu)
 rexglue_setup_target(mgr GPU_PLUGINS xenos)
+foreach(_target mgr mgr_recomp rexgpu-xenos)
+    mgr_apply_compiler_options(${_target})
+endforeach()
+# Guest addresses may alias through different scalar/vector access types.
+# Higher optimization must not assume ordinary C++ typed-object alias rules.
+# PPC integer arithmetic wraps; generated addi/addic use signed C++ intermediates.
+# Preserve that behavior under stronger LLVM range/overflow analysis.
+target_compile_options(mgr_recomp PRIVATE -fno-strict-aliasing -fwrapv)
+target_compile_options(rexgpu-xenos PRIVATE -fno-strict-aliasing)
 
 # Source-built runtime with MGR fixes (runtime/CMakeLists.txt, scripts/build-runtime.sh).
 # Same exports and install name as the SDK binary; staged after (over) the SDK copy.
@@ -48,7 +67,54 @@ list(FILTER _recomp_sources EXCLUDE REGEX "mgr_register\\.cpp$")
 set_target_properties(mgr_recomp PROPERTIES SOURCES "${_recomp_sources}")
 target_sources(mgr_recomp PRIVATE src/mgr_register_fast.cpp)
 
+# Audit and transform only call-free integer leaf bodies in the build tree.
+# Guest RAM remains volatile; original generated files and symbol names stay intact.
+option(MGR_LOCALIZE_LEAF_REGISTERS "Cache registers in audited call-free guest bodies" ON)
+if(MGR_LOCALIZE_LEAF_REGISTERS)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    get_target_property(_leaf_sources mgr_recomp SOURCES)
+    set(_optimized_sources "")
+    foreach(_source IN LISTS _leaf_sources)
+        if(_source MATCHES "mgr_recomp\\.[0-9]+\\.cpp$")
+            get_filename_component(_source_abs "${_source}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+            get_filename_component(_source_name "${_source}" NAME)
+            set(_output "${CMAKE_BINARY_DIR}/recomp-optimized/${_source_name}")
+            set(_report "${_output}.json")
+            add_custom_command(OUTPUT "${_output}" "${_report}"
+                COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/tools/codegen/localize_leaf_registers.py"
+                    --input "${_source_abs}" --output "${_output}" --report "${_report}"
+                DEPENDS "${_source_abs}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/codegen/localize_leaf_registers.py"
+                VERBATIM)
+            get_source_file_property(_source_options "${_source}" COMPILE_OPTIONS)
+            if(_source_options)
+                set_source_files_properties("${_output}" PROPERTIES COMPILE_OPTIONS "${_source_options}")
+            endif()
+            list(APPEND _optimized_sources "${_output}")
+        else()
+            list(APPEND _optimized_sources "${_source}")
+        endif()
+    endforeach()
+    set_target_properties(mgr_recomp PROPERTIES SOURCES "${_optimized_sources}")
+endif()
+
+
 target_include_directories(mgr PRIVATE src/thirdparty/mgrr_perf)
+target_link_libraries(mgr PRIVATE "-framework CoreText" "-framework CoreGraphics"
+                      "-framework CoreFoundation")
 execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
                 OUTPUT_VARIABLE MGR_GIT_REV OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 target_compile_definitions(mgr PRIVATE MGR_BUILD_ID="${MGR_GIT_REV}")
+
+# Explicit target for the opt-in timing hook checks; excluded from normal builds.
+add_executable(mgr_timing_checks EXCLUDE_FROM_ALL
+    tests/mgr_timing_checks.cpp src/mgr_timing.cpp)
+target_include_directories(mgr_timing_checks PRIVATE src)
+target_link_libraries(mgr_timing_checks PRIVATE rex::runtime)
+
+# Keyboard prompt atlas checks: mgr_prompt_checks <core.wtb> [out.ppm]
+add_executable(mgr_prompt_checks EXCLUDE_FROM_ALL
+    tests/mgr_prompt_checks.cpp src/mgr_key_labels.cpp src/mgr_button_atlas.cpp
+    src/mgr_icon_render_mac.cpp)
+target_include_directories(mgr_prompt_checks PRIVATE src)
+target_link_libraries(mgr_prompt_checks PRIVATE rex::runtime "-framework CoreText"
+                      "-framework CoreGraphics" "-framework CoreFoundation")

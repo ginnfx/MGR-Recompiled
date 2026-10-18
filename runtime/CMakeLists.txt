@@ -34,8 +34,9 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CMAKE_OSX_ARCHITECTURES arm64)
-# Same global flags as the SDK superbuild (vendor CMakeLists.txt).
-add_compile_options(-march=armv8-a -mcmodel=small -fno-strict-aliasing -ffp-model=strict -fno-char8_t
+# Retain the SDK memory/FP semantics. Let Apple Clang select its supported
+# Apple ARM baseline instead of forcing generic ARMv8-A in the host runtime.
+add_compile_options(-mcmodel=small -fno-strict-aliasing -ffp-model=strict -fno-char8_t
                     -Wno-deprecated-declarations)
 add_compile_definitions(REX_PLATFORM_MAC=1 REXGLUE_BUILD_CONFIG="$<CONFIG>"
                         REXGLUE_ENABLE_PROFILING REXGLUE_ENABLE_PERF_COUNTERS)
@@ -119,3 +120,9 @@ set_target_properties(rexruntime PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 target_link_libraries(rexruntime PRIVATE "-framework Cocoa" "-framework QuartzCore"
                       "-framework Metal" "-framework IOKit" "-framework AudioToolbox")
+
+# Same optimization policy as the game/plugin, including every runtime object library.
+include("${MGR_ROOT}/cmake/MgrCompilerOptions.cmake")
+foreach(_target rexcore rexfilesystem rexui rexinput rexaudio rexruntime imgui)
+    mgr_apply_compiler_options(${_target})
+endforeach()

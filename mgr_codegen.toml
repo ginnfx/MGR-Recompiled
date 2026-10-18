@@ -126,5 +126,6 @@
 "0x82DB0C50" = {}
 "0x82E682A4" = {}
 "0x82EED640" = {}
-"0x82EEF408" = {}
-"0x82EEF494" = {}
+# 0x82EEF408/0x82EEF494 are jump tables of this function, not entry points;
+# as hints they cut off its case stubs (FATAL "unresolved at bctr 0x82EEF490").
+"0x82EEEEF0" = { end = 0x82EEF568 }

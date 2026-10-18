@@ -5,8 +5,14 @@
 #pragma once
 
 #include <rex/rex_app.h>
+#include <rex/cvar.h>
 #include <rex/system/interfaces/graphics.h>
+#include <rex/input/input_system.h>
+#include <rex/ui/keybinds.h>
 #include <rex/ui/presenter.h>
+
+#include "mgr_options_dialog.h"
+#include "mgr_settings.h"
 
 #include <chrono>
 #include <cstdio>
@@ -16,6 +22,9 @@
 #include <thread>
 
 void MgrStartSessionLog(const char* build);  // mgr_perf.cpp
+void MgrPromptDeviceInstall();               // mgr_prompt_device.cpp
+void MgrPromptDeviceUninstall();
+void MgrApplySettings();                     // mgr_settings.cpp
 void MgrStopSessionLog();
 
 class MgrApp : public rex::ReXApp {
@@ -29,11 +38,49 @@ class MgrApp : public rex::ReXApp {
   }
 
  protected:
+  // MGR options feed the GPU/runtime cvars before the plugin loads.
+  void OnPreSetup(rex::RuntimeConfig& config) override {
+    (void)config;
+    MgrApplySettings();
+  }
+
+  void OnConfigurePaths(rex::PathConfig& paths) override { config_path_ = paths.config_path; }
+
+  // F2 toggles the MGR options window (bindable in Settings > Keybinds).
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    // Cvar callbacks may originate off the UI thread. The weak token prevents
+    // queued resize work from accessing this app after shutdown.
+    const std::weak_ptr<uint8_t> alive = settings_callbacks_alive_;
+    auto* ui_context = &app_context();
+    rex::cvar::RegisterChangeCallback(
+        "mgr_output_resolution", [this, alive, ui_context](std::string_view, std::string_view) {
+          if (alive.expired()) return;
+          ui_context->CallInUIThread([this, alive] {
+            if (!alive.expired()) MgrApplyOutputResolution(window());
+          });
+        });
+    MgrApplyOutputResolution(window());
+    rex::ui::RegisterBind("bind_mgr_options", "F2", "Toggle MGR options", [this, drawer] {
+      if (options_dialog_) {
+        options_dialog_.reset();
+        return;
+      }
+      auto* input = runtime() ? static_cast<rex::input::InputSystem*>(runtime()->input_system())
+                              : nullptr;
+      options_dialog_ = std::make_unique<MgrOptionsDialog>(drawer, input, config_path_, window());
+    });
+  }
+
+  void OnWindowPixelSizeChanged(uint32_t, uint32_t) override {
+    MgrApplyOutputResolution(window());
+  }
+
   // Diagnostic: MGR_CAPTURE_DIR=<dir> dumps the guest frontbuffer as PPM
   // every CAPTURE_INTERVAL. Pattern from XDanfr/RaymanOriginsRecomp
   // rex/src/rayman_app.h (c1bf7b9), with a joined thread instead of detached.
   void OnPostSetup() override {
     DumpGuestImageIfRequested();
+    MgrPromptDeviceInstall();
     const char* perf_log = std::getenv("MGR_PERF_LOG");
     if (perf_log && perf_log[0] == '1') MgrStartSessionLog(MGR_BUILD_ID);
     const char* dir = std::getenv("MGR_CAPTURE_DIR");
@@ -45,6 +92,10 @@ class MgrApp : public rex::ReXApp {
   }
 
   void OnShutdown() override {
+    settings_callbacks_alive_.reset();
+    MgrPromptDeviceUninstall();
+    rex::ui::UnregisterBind("bind_mgr_options");  // its callback captures this
+    options_dialog_.reset();
     MgrStopSessionLog();
     capture_thread_.request_stop();
     if (capture_thread_.joinable()) capture_thread_.join();
@@ -108,4 +159,7 @@ class MgrApp : public rex::ReXApp {
   }
 
   std::jthread capture_thread_;
+  std::filesystem::path config_path_;
+  std::unique_ptr<MgrOptionsDialog> options_dialog_;
+  std::shared_ptr<uint8_t> settings_callbacks_alive_ = std::make_shared<uint8_t>(0);
 };

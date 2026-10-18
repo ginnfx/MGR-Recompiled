@@ -277,8 +277,24 @@ void NativePixelShaders::CountDraw(bool native, const char* fallback_reason) {
                (unsigned long long)native_draws_, (unsigned long long)fallback_draws_,
                100.0 * double(native_draws_) / double(native_draws_ + fallback_draws_),
                reasons.c_str());
+  std::fprintf(stderr,
+               "[mgr-native] bindings: pixel uploads %llu, shared uploads %llu, "
+               "sets written %llu, reused %llu; uploaded %.2f MiB\n",
+               (unsigned long long)pixel_uploads_, (unsigned long long)shared_uploads_,
+               (unsigned long long)sets_written_, (unsigned long long)sets_reused_,
+               double(pixel_uploads_ * kPixelConstantsBytes +
+                      shared_uploads_ * kSharedConstantsBytes) / (1024.0 * 1024.0));
   native_draws_ = fallback_draws_ = 0;
+  pixel_uploads_ = shared_uploads_ = sets_written_ = sets_reused_ = 0;
   fallback_reasons_.clear();
+}
+
+void NativePixelShaders::CountBindings(bool pixel_upload, bool shared_upload, bool set_reused) {
+  if (!IsStatsEnabled()) return;
+  pixel_uploads_ += pixel_upload;
+  shared_uploads_ += shared_upload;
+  sets_written_ += !set_reused;
+  sets_reused_ += set_reused;
 }
 
 }  // namespace rex::graphics::vulkan::mgr_native

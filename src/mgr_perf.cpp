@@ -11,6 +11,8 @@
 #include <rex/ppc/func.h>
 
 #include "perf_logger.h"
+#include "mgr_input_prompts.h"
+#include "mgr_timing.h"
 
 #include <dlfcn.h>
 
@@ -67,6 +69,8 @@ extern "C" REX_FUNC(__imp__VdSwap) {
   static const bool reporting = IsReportingEnabled();
   static FrameMeter meter;  // VdSwap is only called from the guest render thread
   if (reporting) meter.OnFrame();
+  MgrTimingOnPresent(base);
+  MgrPromptsOnPresent();
   mgrr_perf::Profiler::Get().EndFrame();  // no-op unless MgrStartSessionLog ran
   sdk_vdswap(ctx, base);
 }
