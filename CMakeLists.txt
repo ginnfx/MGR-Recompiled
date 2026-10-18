@@ -8,6 +8,17 @@ project(mgr LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Build the native backend independently of guest code generation and Vulkan.
+# The game remains on its existing renderer until the native path reaches parity.
+option(MGR_BUILD_METAL4 "Build the Metal 4 backend and bring-up executable" OFF)
+option(MGR_BUILD_GAME "Build the recompiled game" ON)
+if(MGR_BUILD_METAL4)
+    add_subdirectory(gpu/metal)
+endif()
+if(NOT MGR_BUILD_GAME)
+    return()
+endif()
+
 include(cmake/MgrCompilerOptions.cmake)
 include(generated/rexglue.cmake)
 

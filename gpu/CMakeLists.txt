@@ -28,6 +28,9 @@ set(XENOS_SOURCES
     vulkan/primitive_processor.cpp vulkan/render_target_cache.cpp
     vulkan/shader.cpp vulkan/shared_memory.cpp vulkan/texture_cache.cpp
 )
+if(EXISTS "${XENOS_SRC}/vulkan/shader_features.cpp")
+    list(APPEND XENOS_SOURCES vulkan/shader_features.cpp)
+endif()
 list(TRANSFORM XENOS_SOURCES PREPEND ${XENOS_SRC}/)
 list(APPEND XENOS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/mgr_cmd_stats.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/mgr_native_ps.cpp)
