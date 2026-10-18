@@ -97,7 +97,11 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t width, 
             "draw_us=%llu resolve_us=%llu front_us=%llu "
             "gpu_resolves=%llu gpu_resolve_us=%llu gpu_dispatch_us=%llu "
             "gpu_commit_us=%llu gpu_wait_us=%llu "
-            "texture_us=%llu texture_calls=%llu texture_uploads=%llu\n",
+            "texture_us=%llu texture_calls=%llu texture_uploads=%llu "
+            "tex_lookup_us=%llu tex_translate_us=%llu tex_convert_us=%llu "
+            "tex_upload_us=%llu tex_wait_us=%llu tex_bytes=%llu tex_unique=%llu "
+            "tex_hits=%llu tex_misses=%llu tex_hashes=%llu tex_hash_bytes=%llu "
+            "pipe_compile_us=%llu pipe_compiles=%llu\n",
             width, height, (unsigned long long)stats_.swaps, (unsigned long long)stats_.draws,
             (unsigned long long)stats_.resolves, (unsigned long long)context_->backend->stats().draws,
             (unsigned long long)stats_.unsupported_draws,
@@ -117,7 +121,20 @@ void MetalCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t width, 
             (unsigned long long)context_->backend->stats().resolve_commit_us,
             (unsigned long long)context_->backend->stats().resolve_wait_us,
             (unsigned long long)guest_->texture_us, (unsigned long long)guest_->texture_calls,
-            (unsigned long long)guest_->texture_uploads);
+            (unsigned long long)guest_->texture_uploads,
+            (unsigned long long)guest_->texture_lookup_us,
+            (unsigned long long)guest_->texture_translate_us,
+            (unsigned long long)guest_->texture_convert_us,
+            (unsigned long long)guest_->texture_upload_us,
+            (unsigned long long)guest_->texture_wait_us,
+            (unsigned long long)guest_->texture_bytes,
+            (unsigned long long)guest_->texture_unique,
+            (unsigned long long)guest_->texture_cache_hits,
+            (unsigned long long)guest_->texture_cache_misses,
+            (unsigned long long)guest_->texture_hashes,
+            (unsigned long long)guest_->texture_hash_bytes,
+            (unsigned long long)context_->backend->stats().pipeline_compile_us,
+            (unsigned long long)context_->backend->stats().pipeline_compiles);
     }
     if (auto* p = graphics_system_->presenter()) p->RefreshGuestOutput(width, height, width, height,
         [image](auto& refresh) { static_cast<MetalRefreshContext&>(refresh).image = image; return true; });

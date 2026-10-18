@@ -280,7 +280,8 @@ class MetalBackend final : public HostBackend {
     return {submissions_, draws_, pipelines_created_.load(), archive_loaded_,
         residency_commit_us_.load(), queue_submit_us_.load(), wait_us_.load(),
         residency_->additions.load(), resolve_dispatches_.load(),
-        resolve_dispatch_us_.load(), resolve_commit_us_.load(), resolve_wait_us_.load()};
+        resolve_dispatch_us_.load(), resolve_commit_us_.load(), resolve_wait_us_.load(),
+        pipeline_compile_us_.load(), pipeline_compiles_.load()};
   }
 
  private:
@@ -319,6 +320,7 @@ class MetalBackend final : public HostBackend {
   std::atomic<uint64_t> residency_commit_us_{0}, queue_submit_us_{0}, wait_us_{0};
   std::atomic<uint64_t> resolve_dispatches_{0}, resolve_dispatch_us_{0};
   std::atomic<uint64_t> resolve_commit_us_{0}, resolve_wait_us_{0};
+  std::atomic<uint64_t> pipeline_compile_us_{0}, pipeline_compiles_{0};
   NS::SharedPtr<MTL::ComputePipelineState> resolve_pipeline_;
   std::shared_ptr<Buffer> resolve_params_;
   std::mutex jobs_mutex_, compiler_mutex_;
@@ -628,6 +630,7 @@ void MetalBackend::Worker() {
   }
 }
 std::shared_ptr<Pipeline> MetalBackend::Compile(const PipelineDesc& desc) {
+  const auto compile_begin = std::chrono::steady_clock::now();
   Require(desc.vertex.stage == Stage::kVertex && desc.fragment.stage == Stage::kFragment,
           "Pipeline stages do not match vertex/fragment slots");
   Require(desc.color != Format::kDepth32Stencil8 && desc.color_write_mask <= 15, "Invalid color state");
@@ -702,7 +705,15 @@ std::shared_ptr<Pipeline> MetalBackend::Compile(const PipelineDesc& desc) {
   }
   result->depth = NS::TransferPtr(device_->newDepthStencilState(depth.get()));
   Require(bool(result->depth), "Depth state creation failed");
-  ++pipelines_created_; cache_dirty_ = true; return result;
+  ++pipelines_created_; cache_dirty_ = true;
+  const auto compile_us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - compile_begin).count());
+  pipeline_compile_us_.fetch_add(compile_us, std::memory_order_relaxed);
+  pipeline_compiles_.fetch_add(1, std::memory_order_relaxed);
+  if (std::getenv("MGR_METAL4_TRACE_PIPELINES"))
+    std::fprintf(stderr, "[metal4] pipeline '%s' compiled in %llu us\n",
+                 desc.label.c_str(), static_cast<unsigned long long>(compile_us));
+  return result;
 }
 
 void MetalBackend::Wait(uint64_t value) {

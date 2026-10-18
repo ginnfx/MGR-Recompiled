@@ -147,6 +147,7 @@ struct BackendStats {
   uint64_t residency_additions = 0;
   uint64_t resolve_dispatches = 0, resolve_dispatch_us = 0;
   uint64_t resolve_commit_us = 0, resolve_wait_us = 0;
+  uint64_t pipeline_compile_us = 0, pipeline_compiles = 0;
 };
 struct EdramResolveParams {
   uint32_t width = 0, height = 0;

@@ -1,3 +1,4 @@
+#define XXH_INLINE_ALL
 #include "guest_renderer.h"
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/pipeline/texture/info.h>
@@ -184,6 +185,17 @@ void MetalCommandProcessor::GuestRenderer::FlushColor() {
   const auto bytes = host.ReadBuffer(edram_buffer);
   std::memcpy(edram.data(), bytes.data(), edram.size());
 }
+void MetalCommandProcessor::GuestRenderer::InvalidateTextureHashes(uint64_t start, uint64_t length) {
+  if (!length) return;
+  const uint64_t end = start + length;
+  for (auto& [key, hash] : texture_hashes_by_descriptor) {
+    const uint64_t base = (uint64_t(hash.base_page) << 12) & 0x1fffffff;
+    const uint64_t mip = (uint64_t(hash.mip_page) << 12) & 0x1fffffff;
+    if ((hash.base_bytes && base < end && start < base + hash.base_bytes) ||
+        (hash.mip_bytes && mip < end && start < mip + hash.mip_bytes))
+      hash.frame = UINT64_MAX;
+  }
+}
 std::shared_ptr<Target> MetalCommandProcessor::GuestRenderer::Texture(uint32_t index, bool is_signed) {
   ScopeTimer timer(texture_us);
   ++texture_calls;
@@ -257,30 +269,73 @@ std::shared_ptr<Target> MetalCommandProcessor::GuestRenderer::Texture(uint32_t i
       std::fprintf(stderr, "[metal4-xenos] stacked texture %u has %u slices; uploading slice 0 only\n",
                    index, array_length);
   }
-  // Guest writes can change textures without changing fetch constants. Hash
-  // their current physical bytes rather than treating an address as immutable.
-  std::string cache_key(reinterpret_cast<const char*>(&fetch), sizeof(fetch));
-  cache_key.push_back(is_signed ? 1 : 0);
-  auto hash_range = [&](uint32_t page, uint32_t bytes) {
-    if (!page || !bytes) return;
+  // Guest writes can change textures without changing fetch constants, so the
+  // guest bytes must be invalidated. Rehash only when the descriptor is new,
+  // its range intersects a resolve destination, or the bounded rehash interval
+  // elapsed; repeated draws of static textures reuse the cached hash.
+  const auto lookup_begin = std::chrono::steady_clock::now();
+  std::string descriptor_key(reinterpret_cast<const char*>(&fetch), sizeof(fetch));
+  descriptor_key.push_back(is_signed ? 1 : 0);
+  auto compute_hash = [&](uint32_t page, uint32_t bytes) -> uint64_t {
+    if (!page || !bytes) return 0;
     const uint32_t base = (page << 12) & 0x1fffffff;
     Need(uint64_t(base) + bytes <= 512 * 1024 * 1024, "texture cache range exceeds physical memory");
-    const auto hash = XXH3_64bits(memory.TranslatePhysical(base), bytes);
-    cache_key.append(reinterpret_cast<const char*>(&hash), sizeof(hash));
+    ++texture_hashes; texture_hash_bytes += bytes;
+    return XXH3_64bits(memory.TranslatePhysical(base), bytes);
   };
-  hash_range(base_page, layout.base.level_data_extent_bytes);
-  hash_range(mip_page, layout.mips_total_extent_bytes);
+  const uint32_t base_page_bytes = layout.base.level_data_extent_bytes;
+  const uint32_t mip_page_bytes = layout.mips_total_extent_bytes;
+  const uint64_t base_guest = (uint64_t(base_page) << 12) & 0x1fffffff;
+  const uint64_t mip_guest = (uint64_t(mip_page) << 12) & 0x1fffffff;
+  auto overlaps = [&](const std::vector<std::pair<uint64_t, uint64_t>>& ranges,
+                      uint64_t start, uint32_t bytes) {
+    if (!bytes) return false;
+    const uint64_t end = start + bytes;
+    for (const auto& range : ranges)
+      if (start < range.second && range.first < end) return true;
+    return false;
+  };
+  const bool dirty = overlaps(texture_dirty_prev, base_guest, base_page_bytes) ||
+      overlaps(texture_dirty_prev, mip_guest, mip_page_bytes) ||
+      overlaps(texture_dirty_current, base_guest, base_page_bytes) ||
+      overlaps(texture_dirty_current, mip_guest, mip_page_bytes);
+  auto& cached_hash = texture_hashes_by_descriptor[descriptor_key];
+  const bool changed_layout = cached_hash.base_page != base_page ||
+      cached_hash.mip_page != mip_page || cached_hash.base_bytes != base_page_bytes ||
+      cached_hash.mip_bytes != mip_page_bytes;
+  const bool force_hash = index == 0 &&
+      std::getenv("MGR_METAL4_FRONTBUFFER_REHASH") != nullptr;
+  const bool rehash = force_hash || changed_layout || cached_hash.frame == UINT64_MAX ||
+      (dirty && cached_hash.frame != guest_frame) ||
+      (cached_hash.frame != UINT64_MAX &&
+       guest_frame - cached_hash.frame >= kTextureHashInterval);
+  if (rehash) {
+    cached_hash.base_hash = compute_hash(base_page, base_page_bytes);
+    cached_hash.mip_hash = compute_hash(mip_page, mip_page_bytes);
+    cached_hash.frame = guest_frame;
+    cached_hash.base_page = base_page; cached_hash.mip_page = mip_page;
+    cached_hash.base_bytes = base_page_bytes; cached_hash.mip_bytes = mip_page_bytes;
+  }
+  std::string cache_key = descriptor_key;
+  cache_key.append(reinterpret_cast<const char*>(&cached_hash.base_hash), sizeof(uint64_t));
+  cache_key.append(reinterpret_cast<const char*>(&cached_hash.mip_hash), sizeof(uint64_t));
+  texture_lookup_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - lookup_begin).count());
   ++texture_clock;
   if (auto existing = texture_cache.find(cache_key); existing != texture_cache.end()) {
+    ++texture_cache_hits;
     existing->second.used = texture_clock; return existing->second.image;
   }
   ++texture_uploads;
+  ++texture_cache_misses;
+  if (unique_texture_keys.insert(descriptor_key).second) ++texture_unique;
   const auto& info = *FormatInfo::Get(format);
   const uint32_t block_width = info.block_width, block_height = info.block_height;
   const uint32_t block_bytes = info.bits_per_pixel * block_width * block_height / 8;
   Need(block_bytes && std::has_single_bit(block_bytes), "invalid texture block size");
   const uint32_t block_log2 = std::countr_zero(block_bytes);
   std::vector<TextureLevel> levels;
+  const auto translate_begin = std::chrono::steady_clock::now();
   for (uint32_t mip = 0; mip <= mip_max; ++mip) {
     TextureLevel level{};
     level.width = std::max(1u, width >> mip);
@@ -322,20 +377,29 @@ std::shared_ptr<Target> MetalCommandProcessor::GuestRenderer::Texture(uint32_t i
         for (uint32_t byte = 0; byte < block_bytes; ++byte)
           output[byte] = std::byte(source_bytes[byte ^ lane]);
         if (format == xenos::TextureFormat::k_24_8 || format == xenos::TextureFormat::k_24_8_FLOAT) {
+          const auto convert_begin = std::chrono::steady_clock::now();
           uint32_t packed; std::memcpy(&packed, output, 4);
           const float depth_value = format == xenos::TextureFormat::k_24_8_FLOAT ? xenos::Float20e4To32(packed >> 8) : float(packed >> 8) / 16777215.0f;
           std::memcpy(output, &depth_value, 4);
+          texture_convert_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+              std::chrono::steady_clock::now() - convert_begin).count());
         }
       }
     }
     levels.push_back(std::move(level));
   }
+  texture_translate_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - translate_begin).count());
+  for (const auto& level : levels) texture_bytes += level.bytes.size();
   TargetDesc desc{};
   desc.width = width; desc.height = height; desc.depth = is_3d ? depth : 1;
   desc.format = host_format; desc.label = "Xenos texture " + std::to_string(index);
   desc.array_texture = !is_1d && !is_3d; desc.array_length = array_length;
   desc.mip_levels = mip_max + 1; desc.is_3d = is_3d; desc.is_1d = is_1d; desc.is_cube = is_cube;
+  const auto upload_begin = std::chrono::steady_clock::now();
   auto image = host.CreateTexture2D(desc, levels);
+  texture_upload_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+      std::chrono::steady_clock::now() - upload_begin).count());
   if (std::getenv("MGR_METAL4_TRACE_EDRAM") && format == xenos::TextureFormat::k_8_8_8_8) {
     static uint32_t texture_readbacks = 0;
     if (texture_readbacks++ < 4) {
@@ -694,6 +758,21 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
   }
   draw.viewport = {viewport.xy_offset[0], viewport.xy_offset[1], viewport.xy_extent[0], viewport.xy_extent[1]};
   draw.scissor = {scissor.offset[0], scissor.offset[1], std::min(scissor.extent[0], width - scissor.offset[0]), scissor.extent[1]};
+  if (mask) {
+    last_draw_by_base[color_info.color_base] = {color_info.color_base,
+        uint32_t(color_info.color_format), mask,
+        static_cast<uint64_t>(ps ? ps->ucode_data_hash() : 0)};
+  }
+  if (std::getenv("MGR_METAL4_TRACE_FRAME") && frontbuffer_present + 1 >= 148 &&
+      frontbuffer_present + 1 <= 152 && mask) {
+    std::fprintf(stderr,
+        "[metal4-frame] draw base=%u fmt=%u mask=%04x ps=%llx prim=%u count=%u "
+        "scissor=%u,%u %ux%u\n", color_info.color_base,
+        uint32_t(color_info.color_format), mask,
+        static_cast<unsigned long long>(ps ? ps->ucode_data_hash() : 0),
+        uint32_t(primitive), count, scissor.offset[0], scissor.offset[1],
+        scissor.extent[0], scissor.extent[1]);
+  }
   if (trace_draw && color_info.color_base == 0 && mask) {
     static uint32_t base0_logged = 0;
     if (base0_logged++ < 8) {
@@ -800,11 +879,21 @@ void MetalCommandProcessor::GuestRenderer::Resolve() {
     if (copy_length) {
       auto* destination = memory.TranslatePhysical(uint32_t(copy_base));
       host.CopyBufferToHost(shared_memory, copy_base, size_t(copy_length), destination);
+      texture_dirty_current.emplace_back(copy_base, copy_base + copy_length);
+      InvalidateTextureHashes(copy_base, copy_length);
       if (std::getenv("MGR_METAL4_TRACE_RESOLVE") && resolve_gpu_count < 32) {
         uint32_t word = 0; std::memcpy(&word, destination, 4);
         std::fprintf(stderr, "[metal4-xenos] resolve-gpu %llu %ux%u src_base=%u dest=%08x depth=%u first=%08x\n",
                      static_cast<unsigned long long>(resolve_gpu_count + 1), width, height,
                      source_info.base_tiles, info.copy_dest_base, depth_copy ? 1u : 0u, word);
+      }
+      if (std::getenv("MGR_METAL4_TRACE_FRAME") && frontbuffer_present + 1 >= 148 &&
+          frontbuffer_present + 1 <= 152) {
+        uint32_t word = 0; std::memcpy(&word, destination, 4);
+        std::fprintf(stderr, "[metal4-frame] resolve src_base=%u dest=%08x fmt=%u depth=%u "
+                     "clear=%u/%u first=%08x\n", source_info.base_tiles, info.copy_dest_base,
+                     uint32_t(source_info.format), depth_copy ? 1u : 0u,
+                     uint32_t(info.IsClearingColor()), uint32_t(info.IsClearingDepth()), word);
       }
     }
     resolve_gpu_us += uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
@@ -942,6 +1031,11 @@ void MetalCommandProcessor::GuestRenderer::Resolve() {
               return word; }(),
         edram_nonzero, source_nonzero, dest_nonzero, dest_rgb, dest_alpha);
   }
+  if (copying && info.copy_dest_extent_length) {
+    texture_dirty_current.emplace_back(info.copy_dest_base,
+                                       uint64_t(info.copy_dest_base) + info.copy_dest_extent_length);
+    InvalidateTextureHashes(info.copy_dest_base, info.copy_dest_extent_length);
+  }
   if (edram_buffer && (info.IsClearingColor() || info.IsClearingDepth())) {
     host.WaitIdle(); host.UpdateBuffer(edram_buffer, 0, std::as_bytes(std::span(edram)));
   }
@@ -952,9 +1046,21 @@ std::shared_ptr<Target> MetalCommandProcessor::GuestRenderer::FrontBuffer(uint32
   // matching RequestSwapTexture in the Vulkan reference.
   const auto fetch = regs.GetTextureFetch(0);
   Need(width <= fetch.size_2d.width + 1 && height <= fetch.size_2d.height + 1, "frontbuffer active region exceeds texture extent");
+  texture_dirty_prev = std::move(texture_dirty_current);
+  texture_dirty_current.clear();
+  ++guest_frame;
   auto array = Texture(0);
   static uint32_t presented = 0;
   const uint32_t present = presented++;
+  frontbuffer_present = present;
+  if (std::getenv("MGR_METAL4_TRACE_FRAME") && present == 150) {
+    for (const auto& [base, info] : last_draw_by_base) {
+      if (base != 0 && base != 1328) continue;
+      std::fprintf(stderr, "[metal4-frame] last draw base=%u fmt=%u mask=%04x ps=%llx\n",
+                   base, info.color_fmt, info.mask,
+                   static_cast<unsigned long long>(info.ps_hash));
+    }
+  }
   const uint32_t first = EnvU32("MGR_METAL4_DUMP_FROM", 0);
   const uint32_t count = EnvU32("MGR_METAL4_DUMP_COUNT", 8);
   const char* directory = std::getenv("MGR_METAL4_DUMP_FRAMES");
