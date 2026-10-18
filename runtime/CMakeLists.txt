@@ -86,6 +86,7 @@ set_property(TARGET libavcodec APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES
 add_library(TracyClient SHARED IMPORTED GLOBAL)
 set_target_properties(TracyClient PROPERTIES
     IMPORTED_LOCATION "${SDK_LIB}/libTracyClientrd.dylib"
+    IMPORTED_LOCATION_DEBUG "${SDK_LIB}/libTracyClientd.dylib"
     INTERFACE_COMPILE_DEFINITIONS
         "TRACY_IMPORTS;TRACY_ENABLE;TRACY_ON_DEMAND;TRACY_DELAYED_INIT;TRACY_MANUAL_LIFETIME;TRACY_FIBERS"
     INTERFACE_INCLUDE_DIRECTORIES "${SDK_INC}/tracy"
@@ -110,6 +111,7 @@ endforeach()
 
 # Drop-in for the SDK binary: same file name and install name.
 set_target_properties(rexruntime PROPERTIES
+    OUTPUT_NAME_DEBUG rexruntimed
     OUTPUT_NAME_RELWITHDEBINFO rexruntimerd
     INSTALL_NAME_DIR "@rpath"
     # Same LC_RPATHs as the SDK binary. Without this CMake embeds the absolute

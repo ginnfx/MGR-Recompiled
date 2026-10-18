@@ -15,7 +15,7 @@ if [ "$(git -C "$SDK" rev-parse HEAD)" != "$BASE" ]; then
     echo "SDK base differs from $BASE; preserve it and prepare a separate checkout." >&2
     exit 1
 fi
-for patch in xenos-gpu-mgr.patch xenos-metal4-shared-translator.patch; do
+for patch in xenos-gpu-mgr.patch xenos-metal4-shared-translator.patch xenos-metal4-shared-edram.patch; do
     if git -C "$SDK" apply --reverse --check "$ROOT/patches/$patch" 2>/dev/null; then
         echo "$patch already applied"
     else

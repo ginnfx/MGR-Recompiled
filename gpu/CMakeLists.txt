@@ -28,6 +28,9 @@ set(XENOS_SOURCES
     vulkan/primitive_processor.cpp vulkan/render_target_cache.cpp
     vulkan/shader.cpp vulkan/shared_memory.cpp vulkan/texture_cache.cpp
 )
+if(EXISTS "${XENOS_SRC}/pipeline/render_target/psi_format.cpp")
+    list(APPEND XENOS_SOURCES pipeline/render_target/psi_format.cpp)
+endif()
 if(EXISTS "${XENOS_SRC}/vulkan/shader_features.cpp")
     list(APPEND XENOS_SOURCES vulkan/shader_features.cpp)
 endif()

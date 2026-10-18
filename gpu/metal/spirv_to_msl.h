@@ -8,6 +8,7 @@ struct MslBinding {
 struct MslShader {
   std::string source, entry;
   std::vector<MslBinding> buffers;
+  std::vector<MslBinding> textures, samplers;
   bool needs_extended_bindings = false;
 };
 // Preserves the existing SPIR-V intermediate. Descriptor-set and binding

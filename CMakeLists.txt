@@ -46,7 +46,11 @@ else()
 endif()
 
 add_subdirectory(gpu)
-rexglue_setup_target(mgr GPU_PLUGINS xenos)
+set(_mgr_gpu_plugins xenos)
+if(TARGET rexgpu-xenos-metal4)
+    list(APPEND _mgr_gpu_plugins xenos-metal4)
+endif()
+rexglue_setup_target(mgr GPU_PLUGINS ${_mgr_gpu_plugins})
 foreach(_target mgr mgr_recomp rexgpu-xenos)
     mgr_apply_compiler_options(${_target})
 endforeach()
@@ -59,13 +63,18 @@ target_compile_options(rexgpu-xenos PRIVATE -fno-strict-aliasing)
 
 # Source-built runtime with MGR fixes (runtime/CMakeLists.txt, scripts/build-runtime.sh).
 # Same exports and install name as the SDK binary; staged after (over) the SDK copy.
-set(MGR_RUNTIME_LIB "${CMAKE_SOURCE_DIR}/build-tools/rexruntime/librexruntimerd.dylib"
-    CACHE FILEPATH "Source-built librexruntimerd.dylib to stage instead of the SDK binary")
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(_mgr_runtime_default "${CMAKE_SOURCE_DIR}/build-tools/rexruntime-debug/librexruntimed.dylib")
+else()
+    set(_mgr_runtime_default "${CMAKE_SOURCE_DIR}/build-tools/rexruntime/librexruntimerd.dylib")
+endif()
+set(MGR_RUNTIME_LIB "${_mgr_runtime_default}"
+    CACHE FILEPATH "Source-built runtime to stage instead of the SDK binary")
 if(EXISTS "${MGR_RUNTIME_LIB}")
     message(STATUS "mgr: staging source-built runtime ${MGR_RUNTIME_LIB}")
     add_custom_command(TARGET mgr POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy "${MGR_RUNTIME_LIB}" "$<TARGET_FILE_DIR:mgr>/"
-        COMMENT "Staging source-built librexruntimerd.dylib")
+        COMMENT "Staging source-built runtime")
 else()
     message(WARNING "mgr: ${MGR_RUNTIME_LIB} not built; using the SDK runtime "
                     "(missing presenter/wait fixes). Run scripts/build-runtime.sh")

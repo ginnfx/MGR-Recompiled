@@ -18,6 +18,7 @@ MslShader TranslateSpirvToMsl(const ShaderCode& shader) {
   compiler.set_msl_options(options);
   auto common = compiler.get_common_options();
   common.force_zero_initialized_variables = true;
+  common.vertex.flip_vert_y = shader.flip_y;
   compiler.set_common_options(common);
   MslShader result;
   result.source = compiler.compile();
@@ -36,8 +37,21 @@ MslShader TranslateSpirvToMsl(const ShaderCode& shader) {
   };
   append(resources.uniform_buffers);
   append(resources.storage_buffers);
-  result.needs_extended_bindings = !resources.push_constant_buffers.empty() || !resources.separate_images.empty() ||
-      !resources.separate_samplers.empty() || !resources.sampled_images.empty() ||
+  auto append_resources = [&](const auto& list, auto& output, uint32_t limit) {
+    for (const auto& r : list) {
+      const auto slot = compiler.get_automatic_msl_resource_binding(r.id);
+      if (slot == UINT32_MAX) continue;
+      if (slot >= limit || !compiler.get_type(r.type_id).array.empty()) {
+        result.needs_extended_bindings = true;
+        continue;
+      }
+      output.push_back({compiler.get_decoration(r.id, spv::DecorationDescriptorSet),
+          compiler.get_decoration(r.id, spv::DecorationBinding), slot});
+    }
+  };
+  append_resources(resources.separate_images, result.textures, 128);
+  append_resources(resources.separate_samplers, result.samplers, 16);
+  result.needs_extended_bindings |= !resources.push_constant_buffers.empty() || !resources.sampled_images.empty() ||
       !resources.storage_images.empty() || compiler.needs_swizzle_buffer() ||
       compiler.needs_buffer_size_buffer();
   return result;
