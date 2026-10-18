@@ -39,6 +39,20 @@ struct MetalCommandProcessor::GuestRenderer {
   uint32_t frontbuffer_present = 0;
   struct LastDrawInfo { uint32_t color_base = 0, color_fmt = 0, mask = 0; uint64_t ps_hash = 0; };
   std::map<uint32_t, LastDrawInfo> last_draw_by_base;
+  // Resources produced by the last resolve to each destination, for comparing
+  // what the final composite fetches against what the resolve actually wrote.
+  struct ResolvedTextureInfo {
+    uint32_t src_base = 0, dest = 0, format = 0, width = 0, height = 0, pitch = 0;
+    uint32_t block_bytes = 4, offset_x = 0, offset_y = 0;
+    bool tiled = false, clear = false;
+    uint32_t first = 0;
+  };
+  std::map<uint32_t, ResolvedTextureInfo> resolved_textures;
+  // Host textures bound by the last final-composite fragment shader, and the
+  // guest addresses their fetch constants reference (for visualization only).
+  std::vector<std::shared_ptr<Target>> composite_textures;
+  std::vector<uint32_t> composite_texture_bases;
+  uint64_t composite_ps_hash = 0;
   static constexpr uint64_t kTextureHashInterval = 15;
  private:
   ShaderCode Translate(rex::graphics::SpirvShader&, Translator::Modification);

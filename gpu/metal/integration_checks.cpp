@@ -1,5 +1,6 @@
 #include "runtime.h"
 #include "runtime_shaders.h"
+#include "texture_copy.h"
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
 #include <rex/system/gpu_plugin.h>
 #include <rex/ui/immediate_drawer.h>
@@ -211,6 +212,24 @@ class CheckUI final : public rex::ui::UIDrawer {
   std::unique_ptr<rex::ui::ImmediateTexture> texture_;
 };
 }
+void CheckBlockCompressedTextureCopy() {
+  std::array<uint8_t, 16> source;
+  for (size_t i = 0; i < source.size(); ++i)
+    source[i] = uint8_t(i * 37 + 11);
+  std::array<uint8_t, 16> destination{};
+  mgr::metal4::CopyGuestTextureBlock(true, 1, source.data(), destination.data(),
+                                     uint32_t(source.size()));
+  Check(destination == source,
+        "block-compressed texture copy must preserve guest bytes");
+  std::array<uint8_t, 4> rgba{1, 2, 3, 4}, permuted{};
+  mgr::metal4::CopyGuestTextureBlock(false, 2, rgba.data(), permuted.data(),
+                                     uint32_t(rgba.size()));
+  Check(permuted == std::array<uint8_t, 4>{4, 3, 2, 1},
+        "uncompressed endianness permutation");
+  std::puts("PASS block-compressed texture blocks preserve guest bytes; "
+            "uncompressed endianness still permutes");
+}
+
 int main(int argc, char** argv) {
   try {
     bool window_test = false, reject_draw = false;
@@ -239,6 +258,7 @@ int main(int argc, char** argv) {
     }
     CheckXenosOutputMerger(*context->backend);
     CheckGuestTextureUpload(*context->backend);
+    CheckBlockCompressedTextureCopy();
     CheckEdramResolveGpu(*context->backend);
     std::shared_ptr<Target> image;
     { std::lock_guard lock(context->mutex);
