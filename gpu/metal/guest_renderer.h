@@ -77,6 +77,8 @@ struct MetalCommandProcessor::GuestRenderer {
   struct CachedTexture { std::shared_ptr<Target> image; size_t bytes; uint64_t used; };
   std::map<std::string, CachedTexture> texture_cache;
   std::shared_ptr<Target> null_texture;
+  std::shared_ptr<Target> diagnostic_texture;
+  std::shared_ptr<Buffer> fragment_counters;
   size_t texture_cache_bytes = 0;
   uint64_t texture_clock = 0;
 };

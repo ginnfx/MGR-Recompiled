@@ -1,0 +1,117 @@
+{
+  "date": "2026-10-18",
+  "status": "discovery and initial host foundation implemented; guest draw/resolve integration and game parity remain",
+  "worktree": "/private/tmp/macgrpc-metal4",
+  "branch": "metal4-rewrite",
+  "commit": "5cd3077f573f37f05416da5dc114b2f9d3af15b8",
+  "scope": {
+    "api": "Metal 4 via metal-cpp",
+    "bridge": "Objective-C++ with ARC where needed",
+    "platform": "Apple Silicon M1 and newer; macOS 26+",
+    "reference": "Preserve Vulkan and existing working behavior until parity",
+    "dependencies": "Maintain SDK changes as patches; isolate dependency checkouts for future work"
+  },
+  "artifacts": [
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/README.md",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/PROGRESS.md",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/research/perf.md",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/research/perf-code-review.md",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/research/graphics.md",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/research/NATIVE_RENDERER_REPORT.md",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/research/native-renderer-mgr.md",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/research/resolution.md",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/private/prof/mst-01.trace",
+      "exists": true,
+      "kind": "directory"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/private/prof/mst-02.trace",
+      "exists": true,
+      "kind": "directory"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/private/prof/gpu-intervals.xml",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/private/prof/gpu-intervals-02.xml",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/private/prof/settings-static-cost.json",
+      "exists": true,
+      "kind": "file"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/private/captures",
+      "exists": true,
+      "kind": "directory"
+    }
+  ],
+  "trace_summaries": [
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/private/prof/gpu-intervals.xml",
+      "sha256": "563a6e899aad187a62c51edc930d0e9d941731b45a3dc67a80c02352e4cc7ae1",
+      "summary": "span 6.59s\nFragment     busy  39.0%  n= 15973 (   2425/s)  median    68.7us  p99   1860.9us  max    5.0ms\nVertex       busy  21.8%  n= 16348 (   2482/s)  median    28.8us  p99   2128.2us  max    5.0ms\nCompute      busy  12.3%  n= 32678 (   4961/s)  median     4.3us  p99    191.5us  max    0.4ms\n"
+    },
+    {
+      "path": "/Users/brajanzalta/Desktop/code/macgrpc/private/prof/gpu-intervals-02.xml",
+      "sha256": "9a6dbd2be88e6a4bd4d40ef31a6937cd60b69b6cf1d24a9d690fe5df0e905f62",
+      "summary": "span 5.87s\nFragment     busy  54.3%  n=  5103 (    870/s)  median   136.4us  p99   6432.5us  max   10.0ms\nVertex       busy  19.6%  n=  5756 (    981/s)  median    14.9us  p99   2754.4us  max    6.0ms\nCompute      busy   8.9%  n= 15670 (   2671/s)  median     5.8us  p99    192.9us  max    0.4ms\n"
+    }
+  ],
+  "findings": [
+    "ReXGlue SDK base bd833a2ab69d305f99ddf57418fc38ffec8af93d; Xenia-derived PM4/Xenos Vulkan backend, not XenonRecomp runtime.",
+    "Existing offline XenosRecomp SPIR-V pixel shader bundle is integrated into Vulkan; vertex/fallback shaders and utility conversions still require a Metal shader path.",
+    "Committed SDK patch already includes asynchronous native pipeline jobs and persistent pipeline descriptions; this is distinct from storing driver binaries.",
+    "Existing graphics system, provider, presenter and command processor interfaces support adding a backend; per-resource and encoding implementations remain API-specific.",
+    "Historical trace summaries do not diagnose the latest code. Channel occupancy may overlap and must not be added as total GPU utilization.",
+    "No .gputrace, .rdc or .memgraph located in the inspected project inventory. Existing System Traces and screenshots are usable references.",
+    "Worktree lacks ignored SDK, generated code, game assets and documentation. Do not share writable vendor or generated trees with the Vulkan reference.",
+    "Live vendor and project files contain changes beyond the worktree baseline, including newer resolve work. Preserve and reconcile deliberately; do not treat them as part of 5cd3077.",
+    "Recommend native Metal backend under existing Xenos command semantics first. Game-specific D3D hook replacement is a separate scope decision.",
+    "Apple feature tables list Metal 4 for M1 onward; placement sparse buffers/textures are Apple8+, so the mandatory M1 path must avoid requiring them.",
+    "No game launch, benchmark, dependency mutation, renderer implementation or build was performed."
+  ],
+  "sources": [
+    "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf",
+    "https://developer.apple.com/metal/cpp/",
+    "https://developer.apple.com/documentation/metal/understanding-the-metal-4-core-api"
+  ],
+  "scope_review_pending": null
+}

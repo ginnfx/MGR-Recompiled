@@ -1,0 +1,40 @@
+diff --git a/src/graphics/pipeline/shader/spirv_translator_rb.cpp b/src/graphics/pipeline/shader/spirv_translator_rb.cpp
+index 765c141..e244a0d 100644
+--- a/src/graphics/pipeline/shader/spirv_translator_rb.cpp
++++ b/src/graphics/pipeline/shader/spirv_translator_rb.cpp
+@@ -495,6 +495,7 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
+         builder_->makeUintConstant(kSysFlag_AlphaPassIfLess_Shift), builder_->makeUintConstant(3));
+     // Check if the comparison function is not "always" - that should pass even
+     // for NaN likely, unlike "less, equal or greater".
++    spv::Id sample_mask_before_alpha_test = fsi_sample_mask_in_rt_0_alpha_tests;
+     SpirvBuilder::IfBuilder if_alpha_test_function_is_non_always(
+         builder_->createBinOp(
+             spv::OpINotEqual, type_bool_, alpha_test_function,
+@@ -586,9 +587,15 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
+       }
+     }
+     if_alpha_test_function_is_non_always.makeEndIf();
++    if (edram_fragment_shader_interlock_ && !features_.demote_to_helper_invocation) {
++      fsi_sample_mask_in_rt_0_alpha_tests =
++          if_alpha_test_function_is_non_always.createMergePhi(
++              fsi_sample_mask_in_rt_0_alpha_tests, sample_mask_before_alpha_test);
++    }
+
+     // Alpha to coverage.
+     if (edram_fragment_shader_interlock_ || output_fragment_sample_mask_ != spv::NoResult) {
++      spv::Id sample_mask_before_alpha_to_coverage = fsi_sample_mask_in_rt_0_alpha_tests;
+       id_vector_temp_.clear();
+       id_vector_temp_.push_back(builder_->makeIntConstant(kSystemConstantAlphaToMask));
+       spv::Id alpha_to_mask = builder_->createLoad(
+@@ -773,6 +780,11 @@ void SpirvShaderTranslator::CompleteFragmentShaderInMain() {
+         }
+       }
+       if_alpha_to_coverage_enabled.makeEndIf();
++      if (edram_fragment_shader_interlock_) {
++        fsi_sample_mask_in_rt_0_alpha_tests =
++            if_alpha_to_coverage_enabled.createMergePhi(
++                fsi_sample_mask_in_rt_0_alpha_tests, sample_mask_before_alpha_to_coverage);
++      }
+     }
+
+     if (edram_fragment_shader_interlock_) {

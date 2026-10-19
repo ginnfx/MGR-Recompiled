@@ -387,7 +387,7 @@ MetalBackend::MetalBackend(const BackendConfig& config) : config_(config) {
     samplers_[filter][repeat] = NS::TransferPtr(device_->newSamplerState(sd.get()));
     Require(bool(samplers_[filter][repeat]), "Create native sampler");
   }
-  Require(device_->rasterOrderGroupsSupported(), "Native Xenos rendering requires raster order groups");
+  Require(device_->areRasterOrderGroupsSupported(), "Native Xenos rendering requires raster order groups");
   auto sd = NS::TransferPtr(MTL4::PipelineDataSetSerializerDescriptor::alloc()->init());
   // Capture binaries alone: the combined descriptor+binary mode returned
   // false without an NSError on the tested M2 driver. Binary-only archives
@@ -642,12 +642,62 @@ std::shared_ptr<Pipeline> MetalBackend::Compile(const PipelineDesc& desc) {
   std::lock_guard lock(compiler_mutex_);
   auto result = std::make_shared<MetalPipeline>(); result->owner = this; result->desc = desc;
   result->vertex = TranslateSpirvToMsl(desc.vertex); result->fragment = TranslateSpirvToMsl(desc.fragment);
+  if (std::getenv("MGR_METAL4_FRAGMENT_COUNTERS") &&
+      (desc.label.find("17894137481653627549") != std::string::npos ||
+       desc.label.find("5619865268510285684") != std::string::npos)) {
+    auto& source = result->fragment.source;
+    const auto entry = source.find("fragment void ");
+    Require(entry != std::string::npos, "Diagnostic requires a void fragment entry");
+    const auto args_begin = source.find('(', entry);
+    Require(args_begin != std::string::npos, "Cannot locate fragment arguments");
+    size_t args_end = args_begin + 1;
+    unsigned nesting = 1;
+    for (; args_end < source.size() && nesting; ++args_end) {
+      if (source[args_end] == '(') ++nesting;
+      else if (source[args_end] == ')') --nesting;
+    }
+    Require(!nesting, "Unterminated fragment arguments");
+    --args_end;
+    const auto body = source.find('{', args_end);
+    Require(args_end != std::string::npos && body != std::string::npos,
+            "Cannot locate fragment entry for counters");
+    source.insert(args_end, ", device atomic_uint* mgr_diag [[buffer(30)]]");
+    const auto instrumented_body = source.find('{', entry);
+    source.insert(instrumented_body + 1,
+        "\n    atomic_fetch_add_explicit(&mgr_diag[0], 1u, memory_order_relaxed);\n");
+    // The color-written branch begins output-merger processing after the
+    // guest shader body; the earlier EDRAM accesses are depth-only branches.
+    const auto merger = source.find("if ((xe_var_fsi_color_written & 1u) != 0u)", instrumented_body);
+    Require(merger != std::string::npos, "Diagnostic output merger branch missing");
+    const auto merger_line = source.rfind('\n', merger);
+    source.insert(merger_line + 1,
+        "    atomic_fetch_add_explicit(&mgr_diag[1], 1u, memory_order_relaxed);\n");
+    size_t pos = source.find('{', entry);
+    while ((pos = source.find("xe_edram.edram[", pos)) != std::string::npos) {
+      const auto end = source.find(';', pos);
+      if (end == std::string::npos) break;
+      const auto equals = source.find('=', pos);
+      if (equals != std::string::npos && equals < end &&
+          (equals == 0 || source[equals - 1] != '=')) {
+        const auto line = source.rfind('\n', pos);
+        constexpr char counter[] =
+            "    atomic_fetch_add_explicit(&mgr_diag[2], 1u, memory_order_relaxed);\n";
+        source.insert(line + 1, counter);
+        pos = source.find(';', pos + sizeof(counter) - 1) + 1;
+      } else pos = end + 1;
+    }
+  }
+  if (const char* dump = std::getenv("MGR_METAL4_DUMP_MSL"); dump && *dump &&
+      desc.label.find(dump) != std::string::npos) {
+    std::ofstream("/private/tmp/mgr-metal4-vertex.metal") << result->vertex.source;
+    std::ofstream("/private/tmp/mgr-metal4-fragment.metal") << result->fragment.source;
+  }
   Require(!result->vertex.needs_extended_bindings && !result->fragment.needs_extended_bindings,
           "Draw pipeline requires texture, sampler or push-constant bindings not connected yet");
   auto library = [&](const MslShader& msl) {
     auto options = NS::TransferPtr(MTL::CompileOptions::alloc()->init());
     options->setMathMode(MTL::MathModeSafe);
-    options->setLanguageVersion(MTL::LanguageVersion3_0);
+    options->setLanguageVersion(MTL::LanguageVersion3_2);
     auto ld = NS::TransferPtr(MTL4::LibraryDescriptor::alloc()->init());
     ld->setName(Str("mgr_" + Digest(msl.source)));
     ld->setSource(Str(msl.source)); ld->setOptions(options.get());
@@ -662,6 +712,8 @@ std::shared_ptr<Pipeline> MetalBackend::Compile(const PipelineDesc& desc) {
   pf->setLibrary(ps.get()); pf->setName(Str(result->fragment.entry));
   auto pd = NS::TransferPtr(MTL4::RenderPipelineDescriptor::alloc()->init());
   pd->setLabel(Str(desc.label)); pd->setVertexFunctionDescriptor(vf.get()); pd->setFragmentFunctionDescriptor(pf.get());
+  pd->setRasterizationEnabled(true);
+  Require(pd->isRasterizationEnabled(), "Guest pipeline rasterization was disabled");
   Require(device_->supportsTextureSampleCount(desc.raster_samples), "Unsupported raster sample count");
   pd->setRasterSampleCount(desc.raster_samples);
   auto* color = pd->colorAttachments()->object(0);
@@ -768,6 +820,9 @@ void MetalBackend::BeginPass(const PassDesc& desc) {
   auto rp = NS::TransferPtr(MTL4::RenderPassDescriptor::alloc()->init());
   rp->setRenderTargetWidth(width_); rp->setRenderTargetHeight(height_);
   rp->setDefaultRasterSampleCount(desc.raster_samples);
+  Require(rp->renderTargetWidth() == width_ && rp->renderTargetHeight() == height_ &&
+              rp->defaultRasterSampleCount() == desc.raster_samples,
+          "Metal 4 render pass coverage dimensions or sample count were not applied");
   if (!desc.sample_positions.empty()) {
     Require(desc.sample_positions.size() == desc.raster_samples, "Sample position count mismatch");
     std::vector<MTL::SamplePosition> positions;
@@ -819,6 +874,14 @@ void MetalBackend::Draw(const DrawDesc& desc) {
   };
   bind_stage(Stage::kVertex, pipeline->vertex, frame_->vertex.get());
   bind_stage(Stage::kFragment, pipeline->fragment, frame_->fragment.get());
+  for (const auto& binding : desc.buffers) {
+    if (binding.stage != Stage::kFragment || binding.descriptor_set != UINT32_MAX ||
+        binding.binding != 30) continue;
+    auto buffer = Cast<MetalBuffer>(binding.buffer);
+    Require(binding.offset + 12 <= buffer->size(), "Fragment diagnostic buffer too small");
+    frame_->fragment->setAddress(buffer->buffer->gpuAddress() + binding.offset, 30);
+    Retain(buffer);
+  }
   auto bind_images = [&](Stage stage, const MslShader& shader, MTL4::ArgumentTable* table) {
     for (const auto& required : shader.textures) {
       const TextureBinding* found = nullptr;
@@ -1033,7 +1096,7 @@ void ValidateMslWithMetal(const MslShader& shader) {
   auto compiler = NS::TransferPtr(device->newCompiler(descriptor.get(), &error));
   Require(bool(compiler), "Create shader probe compiler: " + Error(error));
   auto options = NS::TransferPtr(MTL::CompileOptions::alloc()->init());
-  options->setMathMode(MTL::MathModeSafe); options->setLanguageVersion(MTL::LanguageVersion3_0);
+  options->setMathMode(MTL::MathModeSafe); options->setLanguageVersion(MTL::LanguageVersion3_2);
   auto library_desc = NS::TransferPtr(MTL4::LibraryDescriptor::alloc()->init());
   library_desc->setSource(Str(shader.source)); library_desc->setOptions(options.get());
   auto library = NS::TransferPtr(compiler->newLibrary(library_desc.get(), &error));

@@ -1,5 +1,6 @@
 #include "spirv_to_msl.h"
 #include <spirv_msl.hpp>
+#include <algorithm>
 #include <stdexcept>
 
 namespace mgr::gpu {
@@ -11,7 +12,9 @@ MslShader TranslateSpirvToMsl(const ShaderCode& shader) {
   compiler.set_entry_point(shader.entry, model);
   auto options = compiler.get_msl_options();
   options.platform = spirv_cross::CompilerMSL::Options::macOS;
-  options.set_msl_version(3, 0);
+  // SPIR-V DecorationCoherent maps to `volatile` before MSL 3.2. MSL 3.2
+  // has the actual `coherent` qualifier required for ROG EDRAM read/modify/write.
+  options.set_msl_version(3, 2);
   // Use explicit Metal buffer/texture/sampler spaces for Metal 4 argument
   // tables. Vulkan descriptor-set numbers are reflected below, not flattened.
   options.argument_buffers = false;
@@ -54,6 +57,23 @@ MslShader TranslateSpirvToMsl(const ShaderCode& shader) {
   result.needs_extended_bindings |= !resources.push_constant_buffers.empty() || !resources.sampled_images.empty() ||
       !resources.storage_images.empty() || compiler.needs_swizzle_buffer() ||
       compiler.needs_buffer_size_buffer();
+  if (shader.stage == Stage::kFragment && result.source.find("xe_edram") != std::string::npos) {
+    const bool coherent_rog =
+        result.source.find("coherent device XeEdram& xe_edram") != std::string::npos &&
+        result.source.find("raster_order_group(0)") != std::string::npos;
+    const auto edram = std::find_if(resources.storage_buffers.begin(), resources.storage_buffers.end(),
+        [&](const auto& resource) {
+          return compiler.get_decoration(resource.id, spv::DecorationDescriptorSet) == 0 &&
+                 compiler.get_decoration(resource.id, spv::DecorationBinding) == 1;
+        });
+    const bool reflected_read_write_storage = edram != resources.storage_buffers.end() &&
+        compiler.has_member_decoration(edram->base_type_id, 0, spv::DecorationCoherent) &&
+        !compiler.has_member_decoration(edram->base_type_id, 0, spv::DecorationNonWritable);
+    if (!coherent_rog || !reflected_read_write_storage) {
+      throw std::runtime_error("Xenos EDRAM MSL must retain coherent device read/write binding "
+                               "in raster_order_group(0)");
+    }
+  }
   return result;
 }
 }

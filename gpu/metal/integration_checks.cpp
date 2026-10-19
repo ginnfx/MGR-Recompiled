@@ -1,7 +1,12 @@
 #include "runtime.h"
 #include "runtime_shaders.h"
+#include "spirv_to_msl.h"
 #include "texture_copy.h"
+#include "texture_swizzle.h"
+#include "primitive_expansion.h"
 #include <rex/graphics/pipeline/shader/spirv_translator.h>
+#include <rex/graphics/pipeline/shader/spirv.h>
+#include <rex/string/buffer.h>
 #include <rex/system/gpu_plugin.h>
 #include <rex/ui/immediate_drawer.h>
 #include <rex/ui/window_sdl.h>
@@ -27,7 +32,7 @@ void CheckXenosOutputMerger(HostBackend& host) {
   using T = rex::graphics::SpirvShaderTranslator;
   T::Features features(false); features.spirv_version = 0x00010300;
   features.max_storage_buffer_range = 512 * 1024 * 1024;
-  features.fragment_shader_sample_interlock = true; features.sample_rate_shading = true;
+  features.fragment_shader_sample_interlock = false; features.sample_rate_shading = true;
   T translator(features, false, false, true);
   const auto binary = translator.CreateDepthOnlyFragmentShader();
   for (uint32_t samples : {1u, 4u}) {
@@ -70,6 +75,109 @@ void CheckXenosOutputMerger(HostBackend& host) {
     Check(untouched == 0xffffff44, "output merger overwrote uncovered EDRAM");
   }
   std::puts("PASS shared Xenos output merger: ordered depth/stencil writes, 1x/4x coverage and EDRAM half-tile addressing");
+}
+ShaderCode CompositeShaderSpirv() {
+  // Nine dwords from the game's fullscreen color shader (4dfdc5afb71c5f74).
+  // Previously, the translated alpha-test/alpha-to-coverage merge selected
+  // zero coverage when both features were disabled, despite fragment entry.
+  constexpr uint32_t code[] = {0x00000000, 0x1001c400, 0x22000000,
+      0xc80f8000, 0x00000000, 0x223e3e00, 0, 0, 0};
+  rex::graphics::SpirvShader shader(rex::graphics::xenos::ShaderType::kPixel,
+      0x4dfdc5afb71c5f74ull, code, std::size(code), std::endian::native);
+  rex::string::StringBuffer disassembly;
+  shader.AnalyzeUcode(disassembly);
+  using T = rex::graphics::SpirvShaderTranslator;
+  T::Features features(false); features.spirv_version = 0x00010300;
+  features.max_storage_buffer_range = 512 * 1024 * 1024;
+  features.fragment_shader_sample_interlock = false;
+  features.sample_rate_shading = true;
+  T translator(features, false, false, true);
+  auto* translation = shader.GetOrCreateTranslation(
+      translator.GetDefaultPixelShaderModification(0));
+  Check(translator.TranslateAnalyzedShader(*translation) && translation->is_valid(),
+        "composite shader translation");
+  const auto& binary = translation->translated_binary();
+  ShaderCode translated_spirv;
+  translated_spirv.stage = Stage::kFragment;
+  translated_spirv.spirv.resize(binary.size() / 4);
+  std::memcpy(translated_spirv.spirv.data(), binary.data(), binary.size());
+  const auto translated_msl = TranslateSpirvToMsl(translated_spirv);
+  Check(translated_msl.source.find("coherent device XeEdram& xe_edram") != std::string::npos &&
+            translated_msl.source.find("raster_order_group(0)") != std::string::npos,
+        "composite EDRAM must preserve coherent raster-order binding in MSL 3.2");
+  // The second fullscreen composite shader observed in the game has texture
+  // reads and a longer control-flow path. Keep its exact microcode as a
+  // translation contract fixture too.
+  constexpr uint32_t textured_code[] = {
+      0x05746003, 0x10091200, 0x12000001, 0x00000000, 0x600ac400, 0x12000000,
+      0x00005010, 0x00002200, 0x00000000, 0xc80c0000, 0x00acac06, 0x8b00bdbd,
+      0x10001001, 0x1f1ff888, 0x00004000, 0x30284021, 0x1f1ffff8, 0x00004000,
+      0x34284021, 0x1f1fffc7, 0x00004000, 0x38284021, 0x1f1ffe3f, 0x00004000,
+      0xb8381001, 0x1f1ff688, 0x00004000, 0x10182001, 0x1f1ff688, 0x00004000,
+      0xc8010000, 0x04b11b1b, 0x8b00b9fe, 0xc9070003, 0x006cc000, 0xa100b900,
+      0xc80f0000, 0x0000006c, 0x8b01beff, 0xc80f0001, 0x00001b1b, 0x8b00befe,
+      0x14120000, 0x00bec01b, 0xb004fe02, 0xa8870005, 0x04b1c000, 0xc00004bb,
+      0xc8070000, 0x00b4b4b4, 0xab05ba04, 0xc8070000, 0x00c0b4b4, 0xab00b803,
+      0xc8070000, 0x00c0c0b4, 0xab02bb00, 0xc80f0000, 0x00000000, 0xa100bc00,
+      0xc80f8000, 0x00000000, 0xe1000100, 0x00000000, 0x00000000, 0x00000000};
+  rex::graphics::SpirvShader textured_shader(rex::graphics::xenos::ShaderType::kPixel,
+      0xf854bf3b7bf7aa9dull, textured_code, std::size(textured_code), std::endian::native);
+  rex::string::StringBuffer textured_disassembly;
+  textured_shader.AnalyzeUcode(textured_disassembly);
+  auto* textured_translation = textured_shader.GetOrCreateTranslation(
+      translator.GetDefaultPixelShaderModification(0));
+  Check(translator.TranslateAnalyzedShader(*textured_translation) &&
+            textured_translation->is_valid(), "textured composite shader translation");
+  ShaderCode textured_spirv;
+  textured_spirv.stage = Stage::kFragment;
+  const auto& textured_binary = textured_translation->translated_binary();
+  textured_spirv.spirv.resize(textured_binary.size() / 4);
+  std::memcpy(textured_spirv.spirv.data(), textured_binary.data(), textured_binary.size());
+  const auto textured_msl = TranslateSpirvToMsl(textured_spirv);
+  Check(textured_msl.source.find("coherent device XeEdram& xe_edram") != std::string::npos &&
+            textured_msl.source.find("raster_order_group(0)") != std::string::npos,
+        "textured composite EDRAM must preserve coherent raster-order binding in MSL 3.2");
+  std::puts("PASS both composite shaders retain coherent MSL 3.2 EDRAM ROG contract");
+  return translated_spirv;
+}
+void CheckCompositeColorMask(HostBackend& host, const ShaderCode& translated_spirv) {
+  using T = rex::graphics::SpirvShaderTranslator;
+  PipelineDesc pipeline;
+  pipeline.vertex.spirv.assign(std::begin(shaders::present_vertex),
+                               std::end(shaders::present_vertex));
+  pipeline.fragment = translated_spirv;
+  pipeline.color = Format::kNone;
+  pipeline.label = "Composite color sample-mask regression";
+  DrawDesc draw; draw.pipeline = host.PreparePipeline(pipeline).get(); draw.count = 3;
+  std::vector<uint32_t> original(2048 * 1280, 0u);
+  auto edram = host.CreateBuffer(std::as_bytes(std::span(original)), "Composite test EDRAM");
+  T::SystemConstants constants{};
+  constants.flags = 0x00078c00u;  // Guest alpha test always, alpha-to-mask disabled.
+  constants.edram_32bpp_tile_pitch_dwords_scaled = 1280;
+  constants.edram_rt_format_flags[0] = 96;  // RGBA8.
+  constants.edram_rt_blend_factors_ops[0] = 0x00010001u;
+  constants.color_exp_bias[0] = 1.0f;
+  constants.edram_rt_clamp[0][0] = constants.edram_rt_clamp[0][1] = 0.0f;
+  constants.edram_rt_clamp[0][2] = constants.edram_rt_clamp[0][3] = 1.0f;
+  auto system = host.CreateBuffer(std::as_bytes(std::span(&constants, 1)),
+                                  "Composite test system constants");
+  const std::array<float, 4> color{0.25f, 0.5f, 0.75f, 1.0f};
+  auto floats = host.CreateBuffer(std::as_bytes(std::span(color)),
+                                  "Composite test color constants");
+  draw.buffers = {{Stage::kFragment, 0, 1, edram},
+                  {Stage::kFragment, 1, T::kConstantBufferSystem, system},
+                  {Stage::kFragment, 1, T::kConstantBufferFloatPixel, floats}};
+  PassDesc pass; pass.attachmentless_width = pass.attachmentless_height = 8;
+  pass.label = pipeline.label;
+  Check(host.BeginFrame(false), "composite test frame");
+  host.BeginPass(pass); host.Draw(draw); host.EndPass(); host.Submit();
+  const auto bytes = host.ReadBuffer(edram);
+  for (uint32_t y = 0; y < 8; ++y) for (uint32_t x = 0; x < 8; ++x) {
+    uint32_t word;
+    std::memcpy(&word, bytes.data() + ((y * 80 + x + 40) * 4), 4);
+    Check(word == 0xffbf8040u, "composite shader lost color coverage with alpha features disabled");
+  }
+  std::puts("PASS composite color sample-mask regression");
 }
 void CheckEdramResolveGpu(HostBackend& host) {
   constexpr uint32_t width = 64, height = 64;
@@ -217,30 +325,62 @@ void CheckBlockCompressedTextureCopy() {
   for (size_t i = 0; i < source.size(); ++i)
     source[i] = uint8_t(i * 37 + 11);
   std::array<uint8_t, 16> destination{};
-  mgr::metal4::CopyGuestTextureBlock(true, 1, source.data(), destination.data(),
-                                     uint32_t(source.size()));
-  Check(destination == source,
-        "block-compressed texture copy must preserve guest bytes");
+  constexpr uint32_t lane_xor[] = {0, 1, 3, 2};
+  for (uint32_t bytes : {8u, 16u}) {
+    for (uint32_t endian = 0; endian < 4; ++endian) {
+      mgr::metal4::CopyGuestTextureBlock(true, endian, source.data(), destination.data(), bytes);
+      for (size_t word = 0; word < bytes; word += 4)
+        for (size_t byte = 0; byte < 4; ++byte)
+          Check(destination[word + byte] == source[word + (byte ^ lane_xor[endian])],
+                "BC block endian swap must match Vulkan per 32-bit word");
+    }
+  }
   std::array<uint8_t, 4> rgba{1, 2, 3, 4}, permuted{};
   mgr::metal4::CopyGuestTextureBlock(false, 2, rgba.data(), permuted.data(),
                                      uint32_t(rgba.size()));
   Check(permuted == std::array<uint8_t, 4>{4, 3, 2, 1},
         "uncompressed endianness permutation");
-  std::puts("PASS block-compressed texture blocks preserve guest bytes; "
-            "uncompressed endianness still permutes");
+  std::puts("PASS BC blocks and uncompressed pixels apply Xenos endianness");
+}
+void CheckGuestTextureSwizzle() {
+  using namespace rex::graphics::xenos;
+  const uint32_t rgba = XE_GPU_TEXTURE_SWIZZLE_RGBA;
+  Check(mgr::metal4::ShaderTextureSwizzle(TextureFormat::k_24_8_FLOAT, rgba) ==
+            XE_GPU_TEXTURE_SWIZZLE_RRRR,
+        "depth float fetch must replicate red as Vulkan does");
+  Check(mgr::metal4::ShaderTextureSwizzle(TextureFormat::k_DXN, rgba) ==
+            XE_GPU_TEXTURE_SWIZZLE_RGGG,
+        "BC5 fetch must replicate green as Vulkan does");
+  Check(mgr::metal4::ShaderTextureSwizzle(TextureFormat::k_8_8_8_8, rgba) == rgba,
+        "RGBA fetch must retain all four channels");
+  std::puts("PASS guest texture format swizzles match Vulkan for depth, BC5 and RGBA");
+}
+void CheckTriangleFanExpansion() {
+  const std::array<uint32_t, 4> vertices{7, 9, 11, 13};
+  const std::vector<uint32_t> expected{7, 9, 11, 7, 11, 13};
+  Check(mgr::metal4::TriangleFanIndices(vertices) == expected,
+        "triangle fan must expand to the Vulkan-equivalent triangle list");
+  std::puts("PASS guest triangle fan expands to a triangle list");
 }
 
 int main(int argc, char** argv) {
   try {
-    bool window_test = false, reject_draw = false;
+    bool window_test = false, reject_draw = false, translation_only = false;
     std::filesystem::path shader_cache;
     for (int i = 1; i < argc; ++i) {
       const std::string_view arg = argv[i];
       if (arg == "--window") window_test = true;
       else if (arg == "--reject-draw") reject_draw = true;
+      else if (arg == "--translation-only") translation_only = true;
       else if (arg == "--shader-cache" && i + 1 < argc) shader_cache = argv[++i];
       else throw std::runtime_error("Unknown integration check argument");
     }
+    // Keep source translation checks runnable on machines without Metal 4.
+    const auto composite_shader_spirv = CompositeShaderSpirv();
+    CheckBlockCompressedTextureCopy();
+    CheckGuestTextureSwizzle();
+    CheckTriangleFanExpansion();
+    if (translation_only) return 0;
     // Tests the actual plugin ABI and loader, not a directly constructed
     // replacement that could accidentally bypass runtime backend selection.
     auto plugin = rex::system::LoadGpuPlugin("xenos-metal4", "metal4");
@@ -257,8 +397,8 @@ int main(int argc, char** argv) {
       pixels[i+2] = std::byte(x >= 8 ? 255 : 0); pixels[i+3] = std::byte(255);
     }
     CheckXenosOutputMerger(*context->backend);
+    CheckCompositeColorMask(*context->backend, composite_shader_spirv);
     CheckGuestTextureUpload(*context->backend);
-    CheckBlockCompressedTextureCopy();
     CheckEdramResolveGpu(*context->backend);
     std::shared_ptr<Target> image;
     { std::lock_guard lock(context->mutex);

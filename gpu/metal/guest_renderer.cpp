@@ -1,6 +1,8 @@
 #define XXH_INLINE_ALL
 #include "guest_renderer.h"
 #include "texture_copy.h"
+#include "texture_swizzle.h"
+#include "primitive_expansion.h"
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/render_target/cache.h>
@@ -159,7 +161,10 @@ MetalCommandProcessor::GuestRenderer::GuestRenderer(HostBackend& h, RegisterFile
   features.max_storage_buffer_range = 512 * 1024 * 1024;
   features.full_draw_index_uint32 = true;
   features.clip_distance = true;
-  features.fragment_shader_sample_interlock = true;
+  // EDRAM ordering is provided by Metal raster-order groups. Use pixel
+  // interlock in the shared translator, as the native Metal implementation
+  // does; sample interlock selects a different SPIR-V lowering contract.
+  features.fragment_shader_sample_interlock = false;
   features.sample_rate_shading = true;
   // Swizzling remains in the translated shader, including constant 0 and 1.
   features.image_view_format_swizzle = false;
@@ -373,9 +378,8 @@ std::shared_ptr<Target> MetalCommandProcessor::GuestRenderer::Texture(uint32_t i
         // apply the format's lane permutation, rather than translating every
         // byte (this is the texture-upload hot loop).
         const auto* source_bytes = memory.TranslatePhysical(uint32_t(address));
-        // Endianness permutes components inside uncompressed pixels. Block-
-        // compressed formats (DXT1/2/3/4/5, DXN) are byte streams of BC blocks;
-        // XORing each byte of a block corrupts it, so preserve BC blocks.
+        // Apply the fetch endianness within each 32-bit word, including BC
+        // blocks, as the Vulkan texture-load shader does.
         const bool block_compressed = format == xenos::TextureFormat::k_DXT1 ||
             format == xenos::TextureFormat::k_DXT2_3 ||
             format == xenos::TextureFormat::k_DXT4_5 ||
@@ -486,6 +490,33 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
 
   const auto color_info = regs.Get<reg::RB_COLOR_INFO>();
   const auto mask = ps ? draw_util::GetNormalizedColorMask(regs, ps->writes_color_targets()) : 0;
+  const bool trace_scene = std::getenv("MGR_METAL4_TRACE_SCENE") &&
+      frontbuffer_present + 1 >= EnvU32("MGR_METAL4_TRACE_FROM", 113) &&
+      frontbuffer_present + 1 <= EnvU32("MGR_METAL4_TRACE_TO", 114);
+  if (trace_scene && mask) {
+    std::fprintf(stderr,
+        "[metal4-pm4] draw=%llu present=%u prim=%u count=%u ps=%016llx writes=%x "
+        "rb_mask=%04x norm_mask=%04x depth=%08x depth_base=%u pitch=%u msaa=%u "
+        "rt0=%u/%u rt1=%u/%u rt2=%u/%u rt3=%u/%u "
+        "cull_front=%u cull_back=%u guest_face=%u host_clockwise=%u\n",
+        static_cast<unsigned long long>(draw_number), frontbuffer_present + 1,
+        uint32_t(primitive), count, static_cast<unsigned long long>(ps->ucode_data_hash()),
+        ps->writes_color_targets(), regs[XE_GPU_REG_RB_COLOR_MASK], mask,
+        regs[XE_GPU_REG_RB_DEPTHCONTROL], regs.Get<reg::RB_DEPTH_INFO>().depth_base,
+        surface.surface_pitch, uint32_t(surface.msaa_samples),
+        regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[0]).color_base,
+        uint32_t(regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[0]).color_format),
+        regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[1]).color_base,
+        uint32_t(regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[1]).color_format),
+        regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[2]).color_base,
+        uint32_t(regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[2]).color_format),
+        regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[3]).color_base,
+        uint32_t(regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[3]).color_format),
+        uint32_t(regs.Get<reg::PA_SU_SC_MODE_CNTL>().cull_front),
+        uint32_t(regs.Get<reg::PA_SU_SC_MODE_CNTL>().cull_back),
+        uint32_t(regs.Get<reg::PA_SU_SC_MODE_CNTL>().face),
+        uint32_t(!regs.Get<reg::PA_SU_SC_MODE_CNTL>().face));
+  }
   draw_util::Scissor scissor; draw_util::GetScissor(regs, scissor);
   if (!scissor.extent[0] || !scissor.extent[1]) return;
   // Height is derived from the guest scissor, not an assumed game resolution.
@@ -531,6 +562,7 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
     case xenos::PrimitiveType::kRectangleList:
       draw.primitive = Primitive::kTriangles; break;
     case xenos::PrimitiveType::kTriangleList: draw.primitive = Primitive::kTriangles; break;
+    case xenos::PrimitiveType::kTriangleFan: draw.primitive = Primitive::kTriangles; break;
     case xenos::PrimitiveType::kTriangleStrip: draw.primitive = Primitive::kTriangleStrip; break;
     case xenos::PrimitiveType::kLineList: draw.primitive = Primitive::kLines; break;
     case xenos::PrimitiveType::kLineStrip: draw.primitive = Primitive::kLineStrip; break;
@@ -552,6 +584,7 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
   const bool primitive_restart = regs.Get<reg::PA_SU_SC_MODE_CNTL>().multi_prim_ib_ena &&
       indices && (primitive == xenos::PrimitiveType::kTriangleStrip ||
                   primitive == xenos::PrimitiveType::kLineStrip);
+  std::vector<uint32_t> fan_vertices;
   if (indices) {
     Need(indices->guest_base && indices->length && indices->count >= count, "invalid guest index buffer");
     const uint32_t size = indices->format == xenos::IndexFormat::kInt32 ? 4 : 2;
@@ -561,6 +594,15 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
     for (uint32_t i = 0; i < count; ++i) {
       if (size == 4) { uint32_t v; std::memcpy(&v, source + size_t(i) * 4, 4); v = xenos::GpuSwap(v, indices->endianness) & 0xffffff; std::memcpy(swapped.data() + size_t(i) * 4, &v, 4); }
       else { uint16_t v; std::memcpy(&v, source + size_t(i) * 2, 2); v = xenos::GpuSwap(v, indices->endianness); std::memcpy(swapped.data() + size_t(i) * 2, &v, 2); }
+    }
+    if (primitive == xenos::PrimitiveType::kTriangleFan) {
+      fan_vertices.reserve(count);
+      for (uint32_t i = 0; i < count; ++i) {
+        uint32_t value;
+        if (size == 4) std::memcpy(&value, swapped.data() + size_t(i) * 4, 4);
+        else { uint16_t short_value; std::memcpy(&short_value, swapped.data() + size_t(i) * 2, 2); value = short_value; }
+        fan_vertices.push_back(value);
+      }
     }
     if (expanded) {
       const uint32_t address = indices->guest_base & 0x1fffffff;
@@ -599,6 +641,19 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
       draw.indices = slice.buffer; draw.first = uint32_t(slice.offset / size);
       draw.indices32 = size == 4;
     }
+  }
+  if (primitive == xenos::PrimitiveType::kTriangleFan) {
+    if (!indices) {
+      fan_vertices.resize(count);
+      for (uint32_t i = 0; i < count; ++i) fan_vertices[i] = i;
+    }
+    auto triangles = mgr::metal4::TriangleFanIndices(fan_vertices);
+    if (triangles.empty()) return;
+    const auto slice = Transient(std::as_bytes(std::span(triangles)));
+    draw.indices = slice.buffer;
+    draw.first = uint32_t(slice.offset / 4);
+    draw.indices32 = true;
+    draw.count = uint32_t(triangles.size());
   }
   Translator::SystemConstants constants{};
   const auto vte = regs.Get<reg::PA_CL_VTE_CNTL>();
@@ -646,6 +701,15 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
   const uint64_t ps_hash = ps ? ps->ucode_data_hash() : 0;
   const bool composite_ps = ps && (ps_hash == 0xf854bf3b7bf7aa9dull ||
                                    ps_hash == 0x4dfdc5afb71c5f74ull);
+  const bool count_fragments = composite_ps && std::getenv("MGR_METAL4_FRAGMENT_COUNTERS");
+  if (composite_ps && std::getenv("MGR_METAL4_DUMP_UCODE")) {
+    const auto path = std::string("/private/tmp/mgr-") + std::to_string(ps_hash) + ".ucode";
+    if (!std::filesystem::exists(path)) {
+      std::ofstream output(path, std::ios::binary);
+      const auto& code = ps->ucode_data();
+      output.write(reinterpret_cast<const char*>(code.data()), code.size() * sizeof(uint32_t));
+    }
+  }
   const bool trace_composite = composite_ps && std::getenv("MGR_METAL4_TRACE_COMPOSITE") != nullptr;
   const bool dump_composite = composite_ps && std::getenv("MGR_METAL4_DUMP_COMPOSITE") != nullptr;
   const char* skip_mode = std::getenv("MGR_METAL4_SKIP_COMPOSITE");
@@ -656,10 +720,21 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
   std::map<uint32_t, std::shared_ptr<Target>> textures;
   for (uint32_t i = 0; i < 32; ++i) if (used_textures & (1u << i)) {
     const auto fetch = regs.GetTextureFetch(i); textures[i * 2] = Texture(i);
+    if (trace_scene) {
+      std::fprintf(stderr,
+          "[metal4-pm4] draw=%llu fetch=%u format=%u base=%08x size=%ux%u "
+          "swizzle=%03x signs=%02x\n",
+          static_cast<unsigned long long>(draw_number), i,
+          uint32_t(GetBaseFormat(fetch.format)), uint32_t(fetch.base_address) << 12,
+          fetch.size_2d.width + 1, fetch.size_2d.height + 1,
+          uint32_t(fetch.swizzle), uint32_t(texture_util::SwizzleSigns(fetch)));
+    }
     const bool any_signed = fetch.sign_x == xenos::TextureSign::kSigned || fetch.sign_y == xenos::TextureSign::kSigned || fetch.sign_z == xenos::TextureSign::kSigned || fetch.sign_w == xenos::TextureSign::kSigned;
     textures[i * 2 + 1] = any_signed ? Texture(i, true) : textures[i * 2];
     constants.texture_swizzled_signs[i >> 2] |= uint32_t(texture_util::SwizzleSigns(fetch)) << ((i & 3) * 8);
-    constants.texture_swizzles[i >> 1] |= fetch.swizzle << ((i & 1) * 12);
+    constants.texture_swizzles[i >> 1] |=
+        mgr::metal4::ShaderTextureSwizzle(GetBaseFormat(fetch.format), fetch.swizzle)
+        << ((i & 1) * 12);
   }
   // Preserve the shared shader output-merger contract byte for byte. Metal
   // raster-order groups serialize overlapping fragments accessing this buffer.
@@ -686,6 +761,17 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
     constants.edram_rt_base_dwords_scaled[i] = info.color_base * 1280;
     constants.edram_rt_format_flags[i] = RenderTargetCache::AddPSIColorFormatFlags(info.color_format);
     constants.edram_rt_blend_factors_ops[i] = regs[reg::RB_BLENDCONTROL::rt_register_indices[i]] & 0x1fff1fff;
+    if (trace_composite) {
+      std::fprintf(stderr,
+          "[metal4-composite] rt logical=%u physical=buffer/none writes=%u rb_mask=%x norm_mask=%x "
+          "base=%u format=%u keep=%08x,%08x blend=%08x edram_dwords=%u "
+          "host_attachment_format=none host_write_mask=0 host_blend=disabled\n",
+          i, bool(ps->writes_color_targets() & (1u << i)),
+          (regs[XE_GPU_REG_RB_COLOR_MASK] >> (i * 4)) & 15,
+          (mask >> (i * 4)) & 15, info.color_base, uint32_t(info.color_format),
+          constants.edram_rt_keep_mask[i][0], constants.edram_rt_keep_mask[i][1],
+          constants.edram_rt_blend_factors_ops[i], constants.edram_rt_base_dwords_scaled[i]);
+    }
   }
   const auto rasterizer = regs.Get<reg::PA_SU_SC_MODE_CNTL>();
   if (polygonal ? rasterizer.poly_offset_front_enable : rasterizer.poly_offset_para_enable) {
@@ -719,6 +805,14 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
       }
     if (floats.empty()) floats.resize(4);
     const auto packed = Transient(std::as_bytes(std::span(floats)));
+    if (trace_composite && stage == Stage::kFragment) {
+      std::fprintf(stderr,
+          "[metal4-composite] constants draw=%llu system_offset=%zu float_offset=%zu "
+          "float_regs=%zu first=%08x,%08x,%08x,%08x flags=%08x alpha_to_mask=%08x\n",
+          static_cast<unsigned long long>(draw_number), system.offset, packed.offset,
+          floats.size() / 4, floats[0], floats[1], floats[2], floats[3],
+          constants.flags, constants.alpha_to_mask);
+    }
     draw.buffers.push_back({stage, 0, 0, shared_memory});
     draw.buffers.push_back({stage, 0, 1, edram_buffer});
     draw.buffers.push_back({stage, 1, Translator::kConstantBufferSystem, system.buffer, system.offset});
@@ -732,7 +826,18 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
            binding.dimension == xenos::FetchOpDimension::k3DOrStacked ||
            binding.dimension == xenos::FetchOpDimension::kCube,
            "guest shader texture dimension unsupported");
-      const auto& bound = textures.at(binding.fetch_constant * 2 + binding.is_signed);
+      auto bound = textures.at(binding.fetch_constant * 2 + binding.is_signed);
+      const char* override_fetch = std::getenv("MGR_METAL4_OVERRIDE_FETCH");
+      if (stage == Stage::kFragment && ps_hash == 0xf854bf3b7bf7aa9dull &&
+          override_fetch && *override_fetch &&
+          std::strtoul(override_fetch, nullptr, 10) == binding.fetch_constant) {
+        if (!diagnostic_texture) {
+          const std::array<std::byte, 4> gray{
+              std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}};
+          diagnostic_texture = host.CreateTextureRGBA8(1, 1, gray, "diagnostic fetch", true);
+        }
+        bound = diagnostic_texture;
+      }
       if (trace_composite && stage == Stage::kFragment) {
         const auto dfetch = regs.GetTextureFetch(binding.fetch_constant);
         uint32_t w1 = 0, h1 = 0, d1 = 0, bpage = 0, mpage = 0, mmin = 0, mmax = 0;
@@ -827,6 +932,10 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
     draw.buffers.push_back({Stage::kFragment, 0, 1, edram_buffer});
     draw.buffers.push_back({Stage::kFragment, 1, Translator::kConstantBufferSystem, system.buffer, system.offset});
   }
+  if (count_fragments) {
+    if (!fragment_counters) fragment_counters = host.CreateBufferSized(16, "Composite fragment counters");
+    draw.buffers.push_back({Stage::kFragment, UINT32_MAX, 30, fragment_counters});
+  }
   if (composite_ps && ps) {
     composite_textures.clear(); composite_texture_bases.clear();
     composite_ps_hash = ps_hash;
@@ -918,8 +1027,97 @@ void MetalCommandProcessor::GuestRenderer::Draw(xenos::PrimitiveType primitive, 
   // First encounters block for correctness; the host caches the PSO and archive
   // for subsequent draws/launches. No placeholder shader is substituted.
   draw.pipeline = host.PreparePipeline(std::move(pipeline)).get();
+  const bool trace_output = std::getenv("MGR_METAL4_TRACE_OUTPUT") &&
+      frontbuffer_present + 1 >= EnvU32("MGR_METAL4_TRACE_OUTPUT_FROM", 0) &&
+      frontbuffer_present + 1 <= EnvU32("MGR_METAL4_TRACE_OUTPUT_TO", UINT32_MAX);
+  const char* trace_output_ps = std::getenv("MGR_METAL4_TRACE_OUTPUT_PS");
+  const bool trace_output_target = !trace_output_ps || !*trace_output_ps ||
+      std::strtoull(trace_output_ps, nullptr, 16) == ps_hash;
+  const uint32_t output_center_tile = (color_info.color_base +
+      (height / 2 / 16) * xenos::GetSurfacePitchTiles(width, surface.msaa_samples, false) +
+      (width / 2 / 80)) & 2047;
+  const size_t rt_offset = size_t(output_center_tile) * 5120;
+  uint64_t output_before = 0;
+  static std::set<uint64_t> counted_composites;
+  const bool count_this_draw = count_fragments && !counted_composites.contains(ps_hash);
+  std::vector<std::byte> edram_before;
+  if (count_this_draw) {
+    const std::array<uint32_t, 4> zero{};
+    host.UpdateBuffer(fragment_counters, 0, std::as_bytes(std::span(zero)));
+    edram_before = host.ReadBuffer(edram_buffer);
+  }
+  if (trace_output && trace_output_target) {
+    const auto bytes = host.ReadBufferRange(edram_buffer, rt_offset, 5120);
+    output_before = XXH3_64bits(bytes.data(), bytes.size());
+  }
   Need(host.BeginFrame(false), "could not begin guest draw");
   host.BeginPass(pass); host.Draw(draw); host.EndPass(); host.Submit();
+  if (count_this_draw) {
+    const auto values = host.ReadBuffer(fragment_counters);
+    const auto after = host.ReadBuffer(edram_buffer);
+    std::array<uint32_t, 4> counters{};
+    std::memcpy(counters.data(), values.data(), sizeof(counters));
+    size_t changed = 0;
+    for (size_t i = 0; i < after.size(); ++i) changed += edram_before[i] != after[i];
+    std::fprintf(stderr,
+        "[metal4-fragments] ps=%016llx draw=%llu entered=%u edram_access=%u "
+        "edram_stores=%u edram_bytes_changed=%zu primitive=%u count=%u indexed=%u\n",
+        static_cast<unsigned long long>(ps_hash), static_cast<unsigned long long>(draw_number),
+        counters[0], counters[1], counters[2], changed, uint32_t(draw.primitive),
+        draw.count, draw.indices ? 1u : 0u);
+    counted_composites.insert(ps_hash);
+  }
+  if (trace_output && trace_output_target) {
+    const auto bytes = host.ReadBufferRange(edram_buffer, rt_offset, 5120);
+    const auto full_edram = host.ReadBuffer(edram_buffer);
+    std::fprintf(stderr,
+        "[metal4-output] present=%u draw=%llu ps=%016llx rt0_base=%u center_tile=%u "
+        "center_before=%016llx center_after=%016llx edram=%016llx\n",
+        frontbuffer_present + 1, static_cast<unsigned long long>(draw_number),
+        static_cast<unsigned long long>(ps_hash), color_info.color_base, output_center_tile,
+        static_cast<unsigned long long>(output_before),
+        static_cast<unsigned long long>(XXH3_64bits(bytes.data(), bytes.size())),
+        static_cast<unsigned long long>(XXH3_64bits(full_edram.data(), full_edram.size())));
+  }
+  // Diagnostic only: replace each enabled 32-bpp RT with a distinct color
+  // after the fragment pass. This probes the EDRAM route consumed by later
+  // resolves and composites without changing normal shader translation.
+  const char* override_ps = std::getenv("MGR_METAL4_OVERRIDE_PS");
+  if (ps && override_ps && *override_ps &&
+      std::strtoull(override_ps, nullptr, 16) == ps->ucode_data_hash()) {
+    host.WaitIdle();
+    auto bytes = host.ReadBuffer(edram_buffer);
+    constexpr uint32_t colors[4] = {0xff0000ff, 0xff00ff00, 0xffff0000, 0xffff00ff};
+    const uint32_t pitch_tiles = xenos::GetSurfacePitchTiles(width, surface.msaa_samples, false);
+    for (uint32_t i = 0; i < 4; ++i) {
+      if (!((mask >> (i * 4)) & 15)) continue;
+      const auto info = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[i]);
+      if (info.color_format != xenos::ColorRenderTargetFormat::k_8_8_8_8) continue;
+      for (uint32_t y = 0; y < height; y += 16) {
+        for (uint32_t x = 0; x < width; x += 80) {
+          const uint32_t tile = (info.color_base + (y / 16) * pitch_tiles + x / 80) & 2047;
+          auto* words = reinterpret_cast<uint32_t*>(bytes.data() + size_t(tile) * 5120);
+          std::fill_n(words, 1280, colors[i]);
+        }
+      }
+      std::fprintf(stderr, "[metal4-override] ps=%016llx logical_rt=%u edram_base=%u color=%08x\n",
+          static_cast<unsigned long long>(ps->ucode_data_hash()), i, info.color_base, colors[i]);
+    }
+    host.UpdateBuffer(edram_buffer, 0, std::span<const std::byte>(bytes));
+  }
+  if (trace_scene && mask) {
+    host.WaitIdle();
+    for (uint32_t i = 0; i < 4; ++i) if ((mask >> (i * 4)) & 15) {
+      const auto info = regs.Get<reg::RB_COLOR_INFO>(reg::RB_COLOR_INFO::rt_register_indices[i]);
+      const uint32_t center_tile = (info.color_base +
+          (height / 2 / 16) * xenos::GetSurfacePitchTiles(width, surface.msaa_samples, false) +
+          (width / 2 / 80)) & 2047;
+      const auto tile = host.ReadBufferRange(edram_buffer, size_t(center_tile) * 5120, 5120);
+      std::fprintf(stderr, "[metal4-pm4] draw=%llu rt=%u base=%u center_tile=%u xxh3=%016llx\n",
+          static_cast<unsigned long long>(draw_number), i, info.color_base, center_tile,
+          static_cast<unsigned long long>(XXH3_64bits(tile.data(), tile.size())));
+    }
+  }
 }
 void MetalCommandProcessor::GuestRenderer::Resolve() {
   ScopeTimer timer(resolve_us);
