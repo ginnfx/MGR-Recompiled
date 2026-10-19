@@ -25,6 +25,8 @@ set(MGR_SOURCES
     src/mgr_settings.cpp
     src/mgr_qol.cpp
     src/mgr_options_dialog.cpp
+    src/mgr_game_options.cpp
+    src/mgr_menu_fonts.cpp
     src/thirdparty/mgrr_perf/perf_logger.cpp
 )
 
@@ -35,6 +37,27 @@ else()
 endif()
 
 add_subdirectory(gpu)
+# Original font data is extracted locally, never tracked in Git.
+if(EXISTS "${CMAKE_SOURCE_DIR}/private/game/media/data000.cpk")
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/mgr_ui_font.bin"
+        COMMAND ${CMAKE_COMMAND} -E env PYTHONDONTWRITEBYTECODE=1
+            $<TARGET_FILE:Python3::Interpreter> "${CMAKE_SOURCE_DIR}/tools/assets/prepare_ui_font.py"
+            "${CMAKE_SOURCE_DIR}/private/game/media/data000.cpk"
+            "${CMAKE_BINARY_DIR}/mgr_ui_font.bin"
+        DEPENDS tools/assets/prepare_ui_font.py tools/assets/mgr_cpk.py
+            "${CMAKE_SOURCE_DIR}/private/game/media/data000.cpk"
+        VERBATIM)
+    add_custom_target(mgr_menu_assets DEPENDS "${CMAKE_BINARY_DIR}/mgr_ui_font.bin")
+    add_dependencies(mgr mgr_menu_assets)
+endif()
+if(EXISTS "${CMAKE_SOURCE_DIR}/private/mgr_native_shaders.xrnb")
+    add_custom_target(mgr_native_shader_asset
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/private/mgr_native_shaders.xrnb"
+            "${CMAKE_BINARY_DIR}/mgr_native_shaders.xrnb")
+    add_dependencies(mgr mgr_native_shader_asset)
+endif()
 rexglue_setup_target(mgr GPU_PLUGINS xenos)
 foreach(_target mgr mgr_recomp rexgpu-xenos)
     mgr_apply_compiler_options(${_target})
@@ -52,6 +75,12 @@ set(MGR_RUNTIME_LIB "${CMAKE_SOURCE_DIR}/build-tools/rexruntime/librexruntimerd.
     CACHE FILEPATH "Source-built librexruntimerd.dylib to stage instead of the SDK binary")
 if(EXISTS "${MGR_RUNTIME_LIB}")
     message(STATUS "mgr: staging source-built runtime ${MGR_RUNTIME_LIB}")
+    # A runtime-only rebuild must also update the launched copy when mgr does
+    # not need relinking (POST_BUILD alone missed this case).
+    add_custom_target(mgr_runtime_stage
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${MGR_RUNTIME_LIB}" "$<TARGET_FILE_DIR:mgr>/librexruntimerd.dylib")
+    add_dependencies(mgr mgr_runtime_stage)
     add_custom_command(TARGET mgr POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy "${MGR_RUNTIME_LIB}" "$<TARGET_FILE_DIR:mgr>/"
         COMMENT "Staging source-built librexruntimerd.dylib")
@@ -101,7 +130,7 @@ endif()
 target_include_directories(mgr PRIVATE src/thirdparty/mgrr_perf)
 target_link_libraries(mgr PRIVATE "-framework CoreText" "-framework CoreGraphics"
                       "-framework CoreFoundation")
-execute_process(COMMAND git rev-parse --short HEAD WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+execute_process(COMMAND git describe --always --dirty WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
                 OUTPUT_VARIABLE MGR_GIT_REV OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 target_compile_definitions(mgr PRIVATE MGR_BUILD_ID="${MGR_GIT_REV}")
 

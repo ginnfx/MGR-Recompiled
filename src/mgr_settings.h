@@ -1,5 +1,7 @@
 #pragma once
 
+#include <string>
+
 namespace rex::ui {
 class Window;
 }
@@ -9,3 +11,12 @@ class Window;
 void MgrApplySettings();
 // UI thread only. Resolves "display" to the actual backing-pixel dimensions.
 void MgrApplyOutputResolution(rex::ui::Window* window);
+int MgrActiveResolutionScale();
+struct MgrResolutionStatus {
+  int requested = 0;
+  int active = 0;  // No initialized renderer; never label this as 720p.
+  std::string state = "requested";
+  std::string reason;
+};
+MgrResolutionStatus MgrGetResolutionStatus();
+std::string MgrActiveRenderTargetPrecision();

@@ -1,8 +1,7 @@
 // MGR options for the in-game settings overlay (F4, "MGR" category).
-// Each option is a curated front for runtime/GPU cvars, applied in OnPreSetup
-// (before the GPU plugin reads them) and mirrored on change. Only the internal
-// resolution and render-target precision need a restart: their caches read
-// those settings at creation.
+// Each option is a curated front for runtime/GPU cvars. Internal scale changes
+// are sent to the Vulkan command worker for a resource rebuild; target
+// precision still reads at cache creation and needs a restart.
 #include "mgr_settings.h"
 
 #include "mgr_timing.h"
@@ -36,8 +35,13 @@ REXCVAR_DEFINE_STRING(mgr_output_resolution, "source", "MGR/Display",
 REXCVAR_DEFINE_INT32(mgr_resolution_scale, 1, "MGR/Graphics",
                      "Internal resolution: 1 = 1280x720 (original), 2 = 2560x1440, "
                      "3 = 3840x2160. Higher costs GPU time")
-    .range(1, 3)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+    .range(1, 3);
+REXCVAR_DEFINE_INT32(mgr_resolution_active_scale, 0, "MGR/Graphics",
+                     "Active internal render scale managed by the Vulkan backend (0 = unavailable)")
+    .range(0, 3);
+REXCVAR_DEFINE_STRING(mgr_resolution_status, "0|requested|0|Waiting for Vulkan initialization",
+                      "MGR/Graphics",
+                      "Backend status snapshot: request|state|active scale|reason");
 REXCVAR_DEFINE_STRING(mgr_texture_filtering, "game", "MGR/Graphics",
                       "Anisotropic filtering: game (as requested by the Xbox 360 game), off, 2x, 4x, "
                       "8x, 16x")
@@ -53,6 +57,7 @@ namespace {
 using Mapping = std::pair<std::string_view, std::string_view>;
 // Highest guest refresh the runtime accepts (video_mode_refresh_rate range).
 constexpr uint32_t kUnlockedRefreshHz = 240;
+std::string active_render_target_precision = "high";
 
 // Xenos AnisoFilter: -1 keeps the game's value, 0 disabled, 2..5 = 2x..16x.
 constexpr std::array<Mapping, 6> kFiltering = {{
@@ -121,7 +126,11 @@ void ApplyFrameRate(std::string_view value) {
 }
 
 void ApplyStartupOptions() {
+  // A request is not evidence that Vulkan has created resources at this scale.
   const std::string scale = std::to_string(REXCVAR_GET(mgr_resolution_scale));
+  rex::cvar::SetFlagByName("mgr_resolution_active_scale", "0");
+  rex::cvar::SetFlagByName("mgr_resolution_status",
+                         scale + "|requested|0|Waiting for Vulkan initialization");
   SetCvar("draw_resolution_scale_x", scale);
   SetCvar("draw_resolution_scale_y", scale);
 }
@@ -152,6 +161,7 @@ void MgrApplySettings() {
     rex::cvar::SetFlagByName("mgr_frame_rate", "120");
   }
   ApplyStartupOptions();
+  active_render_target_precision = REXCVAR_GET(mgr_render_target_precision);
   MgrApplyOutputResolution(nullptr);
   ApplyFrameRate(REXCVAR_GET(mgr_frame_rate));
   ApplyFiltering(REXCVAR_GET(mgr_texture_filtering));
@@ -166,3 +176,22 @@ void MgrApplySettings() {
       "mgr_render_target_precision",
       [](std::string_view, std::string_view value) { ApplyPrecision(value); });
 }
+
+MgrResolutionStatus MgrGetResolutionStatus() {
+  MgrResolutionStatus result;
+  // One locked cvar read avoids mixing fields from different GPU transitions.
+  const std::string snapshot = rex::cvar::GetFlagByName("mgr_resolution_status");
+  const auto first = snapshot.find('|');
+  const auto second = first == std::string::npos ? first : snapshot.find('|', first + 1);
+  const auto third = second == std::string::npos ? second : snapshot.find('|', second + 1);
+  if (third == std::string::npos) return result;
+  result.requested = std::atoi(snapshot.substr(0, first).c_str());
+  result.state = snapshot.substr(first + 1, second - first - 1);
+  result.active = std::atoi(snapshot.substr(second + 1, third - second - 1).c_str());
+  result.reason = snapshot.substr(third + 1);
+  return result;
+}
+
+int MgrActiveResolutionScale() { return MgrGetResolutionStatus().active; }
+
+std::string MgrActiveRenderTargetPrecision() { return active_render_target_precision; }

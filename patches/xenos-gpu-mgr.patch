@@ -96,7 +96,7 @@ index 4d85a2b..8dd8613 100644
        const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) = 0;
  
 diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
-index 696ff48..28dcaa0 100644
+index 696ff48..42c0403 100644
 --- a/include/rex/graphics/vulkan/command_processor.h
 +++ b/include/rex/graphics/vulkan/command_processor.h
 @@ -42,6 +42,7 @@
@@ -107,7 +107,18 @@ index 696ff48..28dcaa0 100644
  
  namespace rex::graphics::vulkan {
  
-@@ -155,6 +156,11 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -132,6 +133,10 @@ class VulkanCommandProcessor : public CommandProcessor {
+ 
+   void ClearCaches() override;
+   void InvalidateGpuMemory() override;
++  // Rebuild scale-dependent Vulkan resources on the GPU worker. Guest memory
++  // and the Vulkan device remain alive; transient EDRAM contents are discarded.
++  void SetDrawResolutionScaleLive(uint32_t scale_x, uint32_t scale_y,
++                                  std::function<void(bool)> completion = {});
+   void InitializeShaderStorage(const std::filesystem::path& cache_root, uint32_t title_id,
+                                bool blocking) override;
+ 
+@@ -155,6 +160,11 @@ class VulkanCommandProcessor : public CommandProcessor {
      return submission_completed_ + uint64_t(submissions_in_flight_fences_.size()) + 1;
    }
    uint64_t GetCompletedSubmission() const { return submission_completed_; }
@@ -119,7 +130,18 @@ index 696ff48..28dcaa0 100644
  
    // Sparse binds are:
    // - In a single submission, all submitted in one vkQueueBindSparse.
-@@ -436,6 +442,11 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -268,6 +278,10 @@ class VulkanCommandProcessor : public CommandProcessor {
+   bool IssueCopy() override;
+ 
+  private:
++  bool resolution_change_in_progress_ = false;  // GPU worker only.
++  bool resolution_context_ready_ = false;
++  std::string resolution_initialization_error_;
++
+   struct CommandBuffer {
+     VkCommandPool pool;
+     VkCommandBuffer buffer;
+@@ -436,6 +450,11 @@ class VulkanCommandProcessor : public CommandProcessor {
    void ShutdownOcclusionQueryResources();
    bool BeginGuestOcclusionQuery(uint32_t sample_count_address);
    bool EndGuestOcclusionQuery(uint32_t sample_count_address);
@@ -131,7 +153,7 @@ index 696ff48..28dcaa0 100644
    bool AcquireOcclusionQueryIndex(uint32_t& host_index_out);
    void DisableHostOcclusionQueries();
    uint64_t NormalizeOcclusionSamples(uint64_t samples) const;
-@@ -493,6 +504,17 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -493,6 +512,17 @@ class VulkanCommandProcessor : public CommandProcessor {
        const draw_util::ViewportInfo& viewport_info, uint32_t used_texture_mask,
        reg::RB_DEPTHCONTROL normalized_depth_control, uint32_t normalized_color_mask);
    bool UpdateBindings(const VulkanShader* vertex_shader, const VulkanShader* pixel_shader);
@@ -149,7 +171,18 @@ index 696ff48..28dcaa0 100644
    // Allocates a descriptor set and fills one or two VkWriteDescriptorSet
    // structure instances (for images and samplers).
    // The descriptor set layout must be the one for the given is_vertex,
-@@ -567,6 +589,16 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -510,6 +540,10 @@ class VulkanCommandProcessor : public CommandProcessor {
+ 
+   bool device_lost_ = false;
+ 
++  std::filesystem::path shader_cache_root_;
++  uint32_t shader_cache_title_id_ = 0;
++  bool shader_cache_blocking_ = false;
++
+   bool cache_clear_requested_ = false;
+ 
+   // Host shader types that guest shaders can be translated into - they can
+@@ -567,6 +601,16 @@ class VulkanCommandProcessor : public CommandProcessor {
    // descriptors.
    std::vector<VkDescriptorImageInfo> descriptor_write_image_info_;
  
@@ -166,7 +199,7 @@ index 696ff48..28dcaa0 100644
    std::unique_ptr<ui::vulkan::VulkanUploadBufferPool> uniform_buffer_pool_;
  
    // Descriptor set layouts used by different shaders.
-@@ -584,6 +616,30 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -584,6 +628,30 @@ class VulkanCommandProcessor : public CommandProcessor {
    std::unordered_map<PipelineLayoutKey, PipelineLayout, PipelineLayoutKey::Hasher>
        pipeline_layouts_;
  
@@ -197,7 +230,7 @@ index 696ff48..28dcaa0 100644
    // No specific reason for 32768, just the "too much" descriptor count from
    // Direct3D 12 PIX warnings.
    static constexpr uint32_t kLinkedTypeDescriptorPoolSetCount = 32768;
-@@ -666,6 +722,7 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -666,6 +734,7 @@ class VulkanCommandProcessor : public CommandProcessor {
    VkPipelineLayout swap_apply_gamma_pipeline_layout_ = VK_NULL_HANDLE;
    VkPipelineLayout swap_apply_gamma_compute_pipeline_layout_ = VK_NULL_HANDLE;
    VkPipelineLayout swap_fxaa_pipeline_layout_ = VK_NULL_HANDLE;
@@ -205,7 +238,7 @@ index 696ff48..28dcaa0 100644
    // Has no dependencies on specific pipeline stages on both ends to simplify
    // use in different scenarios with different pipelines - use explicit barriers
    // for synchronization.
-@@ -741,6 +798,15 @@ class VulkanCommandProcessor : public CommandProcessor {
+@@ -741,6 +810,15 @@ class VulkanCommandProcessor : public CommandProcessor {
      uint32_t host_index = UINT32_MAX;
      bool valid = false;
    } active_occlusion_query_;
@@ -1040,6 +1073,44 @@ index a0a178d..3b05153 100644
          context.Clear();
        }
      }
+diff --git a/src/core/cvar.cpp b/src/core/cvar.cpp
+index 228728d..8c55f32 100644
+--- a/src/core/cvar.cpp
++++ b/src/core/cvar.cpp
+@@ -502,15 +502,33 @@ void ResetToDefault(std::string_view name) {
+     return;
+   }
+   auto& entry = GetRegistryStorage()[it->second];
++  const bool changed = entry.getter() != entry.default_value;
+   entry.setter(entry.default_value);
+   entry.source = Source::kDefault;
++  // Reset is a live edit too: renderer/input caches and host window callbacks
++  // must observe it just as they observe SetFlagByName.
++  if (changed && entry.lifecycle == Lifecycle::kRequiresRestart) MarkPendingRestart(name);
++  const auto callback_it = GetCallbackStorage().find(std::string(name));
++  if (callback_it != GetCallbackStorage().end()) {
++    for (const auto& callback : callback_it->second) callback(name, entry.default_value);
++  }
+ }
+ 
+ void ResetAllToDefaults() {
+   std::lock_guard lock(GetRegistryMutex());
+   for (auto& entry : GetRegistryStorage()) {
++    const bool changed = entry.getter() != entry.default_value;
+     entry.setter(entry.default_value);
+     entry.source = Source::kDefault;
++    if (changed && entry.lifecycle == Lifecycle::kRequiresRestart) MarkPendingRestart(entry.name);
++  }
++  // Notify after every raw value is reset, so curated aliases can remap their
++  // backing flags without a later raw reset immediately overwriting that work.
++  for (const auto& entry : GetRegistryStorage()) {
++    const auto callback_it = GetCallbackStorage().find(entry.name);
++    if (callback_it != GetCallbackStorage().end()) {
++      for (const auto& callback : callback_it->second) callback(entry.name, entry.default_value);
++    }
+   }
+ }
+ 
 diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
 index 9ac8d15..53fad35 100644
 --- a/src/core/threading_posix.cpp
@@ -1434,6 +1505,41 @@ index 9ce3bb4..0bec327 100644
                                    builder_->makeUintConstant(13), builder_->makeUintConstant(6)));
          {
            uint32_t result_remaining_components = used_result_nonzero_components;
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index 76f5600..e711e69 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cstdint>
+ #include <utility>
+ 
+@@ -914,7 +915,11 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+       if (REXCVAR_GET(gpu_allow_invalid_fetch_constants)) {
+         break;
+       }
+-      REXGPU_WARN(
++      // Titles can sample unused, invalid slots on every frame. Preserve the
++      // invalid binding and report the problem once instead of formatting and
++      // flushing the same warning thousands of times in the draw hot path.
++      static std::atomic_flag warned_invalid_texture = ATOMIC_FLAG_INIT;
++      if (!warned_invalid_texture.test_and_set(std::memory_order_relaxed)) REXGPU_WARN(
+           "Texture fetch constant ({:08X} {:08X} {:08X} {:08X} {:08X} {:08X}) "
+           "has \"invalid\" type! This is incorrect behavior, but you can try "
+           "bypassing this by launching Xenia with "
+@@ -922,7 +927,8 @@ void TextureCache::BindingInfoFromFetchConstant(const xenos::xe_gpu_texture_fetc
+           fetch.dword_0, fetch.dword_1, fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
+       return;
+     default:
+-      REXGPU_WARN(
++      static std::atomic_flag warned_invalid_type = ATOMIC_FLAG_INIT;
++      if (!warned_invalid_type.test_and_set(std::memory_order_relaxed)) REXGPU_WARN(
+           "Texture fetch constant ({:08X} {:08X} {:08X} {:08X} {:08X} {:08X}) "
+           "is completely invalid!",
+           fetch.dword_0, fetch.dword_1, fetch.dword_2, fetch.dword_3, fetch.dword_4, fetch.dword_5);
 diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
 index ec0df7c..09d7b5d 100644
 --- a/src/graphics/shared_memory.cpp
@@ -1467,7 +1573,7 @@ index 3027dc8..54f77a9 100644
  
  REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_with_scissor, false, "GPU",
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..580a88a 100644
+index 001f36b..71d6069 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -12,6 +12,7 @@
@@ -1503,7 +1609,25 @@ index 001f36b..580a88a 100644
  REXCVAR_DEFINE_BOOL(vulkan_readback_resolve, false, "GPU/Vulkan",
                      "Read render-to-texture results on the CPU")
      .lifecycle(rex::cvar::Lifecycle::kHotReload);
-@@ -182,6 +194,26 @@ constexpr TBuiltInResource kGlslangDefaultTBuiltInResource = {
+@@ -73,6 +85,17 @@ namespace rex::graphics::vulkan {
+ 
+ namespace {
+ 
++// Publish one coherent snapshot for the UI. Never replace the user's request
++// when an allocation or rebuild fails: failure must remain visible.
++void PublishMgrResolutionStatus(uint32_t requested, const char* state, uint32_t active,
++                                std::string_view reason = {}) {
++  rex::cvar::SetFlagByName("mgr_resolution_active_scale", std::to_string(active));
++  rex::cvar::SetFlagByName("mgr_resolution_status",
++      std::to_string(requested) + "|" + state + "|" + std::to_string(active) + "|" +
++      std::string(reason));
++}
++
++
+ // glslang default built-in resource limits.
+ constexpr TBuiltInResource kGlslangDefaultTBuiltInResource = {
+     /* .maxLights = */ 32,
+@@ -182,6 +205,26 @@ constexpr TBuiltInResource kGlslangDefaultTBuiltInResource = {
      },
  };
  
@@ -1530,7 +1654,7 @@ index 001f36b..580a88a 100644
  const char* GetSwapFxaaComputeSource(bool extreme_quality) {
    return extreme_quality ? R"(#version 450
  layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
-@@ -211,7 +243,7 @@ void main() {
+@@ -211,7 +254,7 @@ void main() {
      return;
    }
  
@@ -1539,7 +1663,7 @@ index 001f36b..580a88a 100644
    vec2 texel = xe_fxaa_size_inv;
    vec4 rgbm = textureLod(xe_fxaa_source, uv, 0.0);
  
-@@ -281,7 +313,7 @@ void main() {
+@@ -281,7 +324,7 @@ void main() {
      return;
    }
  
@@ -1548,8 +1672,132 @@ index 001f36b..580a88a 100644
    vec2 texel = xe_fxaa_size_inv;
    vec4 rgbm = textureLod(xe_fxaa_source, uv, 0.0);
  
-@@ -644,6 +676,23 @@ void VulkanCommandProcessor::InitializeShaderStorage(const std::filesystem::path
+@@ -594,9 +637,16 @@ VulkanCommandProcessor::VulkanCommandProcessor(VulkanGraphicsSystem* graphics_sy
+           kDescriptorPoolSizeTextures, uint32_t(rex::countof(kDescriptorPoolSizeTextures)),
+           kLinkedTypeDescriptorPoolSetCount) {
+   legacy_readback_memexport_cvar_name_ = "vulkan_readback_memexport";
++  rex::cvar::RegisterChangeCallback(
++      "mgr_resolution_scale", [this](std::string_view, std::string_view value) {
++        const uint32_t scale = uint32_t(std::clamp(std::atoi(std::string(value).c_str()), 1, 3));
++        SetDrawResolutionScaleLive(scale, scale);
++      });
+ }
+ 
+-VulkanCommandProcessor::~VulkanCommandProcessor() = default;
++VulkanCommandProcessor::~VulkanCommandProcessor() {
++  rex::cvar::UnregisterChangeCallbacks("mgr_resolution_scale");
++}
+ 
+ void VulkanCommandProcessor::ClearCaches() {
+   CommandProcessor::ClearCaches();
+@@ -604,6 +654,100 @@ void VulkanCommandProcessor::ClearCaches() {
+   cache_clear_requested_ = true;
+ }
+ 
++void VulkanCommandProcessor::SetDrawResolutionScaleLive(
++    uint32_t scale_x, uint32_t scale_y, std::function<void(bool)> completion) {
++  scale_x = std::clamp(scale_x, 1u, TextureCache::kMaxDrawResolutionScaleAlongAxis);
++  scale_y = std::clamp(scale_y, 1u, TextureCache::kMaxDrawResolutionScaleAlongAxis);
++  CallInThread([this, scale_x, scale_y, completion = std::move(completion)]() mutable {
++    const uint32_t old_x = texture_cache_ ? texture_cache_->draw_resolution_scale_x() : 1;
++    const uint32_t old_y = texture_cache_ ? texture_cache_->draw_resolution_scale_y() : 1;
++    if (resolution_context_ready_ && texture_cache_ && scale_x == old_x && scale_y == old_y) {
++      PublishMgrResolutionStatus(scale_x, "active", old_x);
++      if (completion) completion(true);
++      return;
++    }
++
++    PublishMgrResolutionStatus(scale_x, "applying", resolution_context_ready_ && texture_cache_ ? old_x : 0);
++
++    const bool had_vertex_shader = active_vertex_shader_ != nullptr;
++    const bool had_pixel_shader = active_pixel_shader_ != nullptr;
++    std::vector<uint32_t> vertex_ucode = had_vertex_shader
++        ? active_vertex_shader_->ucode_data() : std::vector<uint32_t>{};
++    std::vector<uint32_t> pixel_ucode = had_pixel_shader
++        ? active_pixel_shader_->ucode_data() : std::vector<uint32_t>{};
++
++    // Finish the current command list before destroying resources it references.
++    // ShutdownContext waits for submitted work and tears down all scale-specific
++    // caches, pipelines, EDRAM and descriptor layouts on this same worker thread.
++    if (submission_open_ && !EndSubmission(false)) {
++      PublishMgrResolutionStatus(scale_x, "failed", resolution_context_ready_ && texture_cache_ ? old_x : 0,
++                                 "Could not finish the current GPU submission; rebuild not started");
++      if (completion) completion(false);
++      return;
++    }
++    // Shader objects belong to the pipeline cache, which ShutdownContext
++    // destroys. Preserve their guest microcode and re-intern them afterward.
++    resolution_change_in_progress_ = true;
++    PublishMgrResolutionStatus(scale_x, "applying", 0, "Rebuilding Vulkan resources");
++    active_vertex_shader_ = nullptr;
++    active_pixel_shader_ = nullptr;
++    rex::cvar::SetFlagByName("draw_resolution_scale_x", std::to_string(scale_x));
++    rex::cvar::SetFlagByName("draw_resolution_scale_y", std::to_string(scale_y));
++    ShutdownContext();
++    auto initialize_context = [&]() {
++      if (!SetupContext()) return false;
++      if (!shader_cache_root_.empty()) {
++        InitializeShaderStorage(shader_cache_root_, shader_cache_title_id_,
++                                shader_cache_blocking_);
++      }
++      auto restore_shader = [this](xenos::ShaderType type,
++                                   const std::vector<uint32_t>& ucode) -> Shader* {
++        if (ucode.empty()) return nullptr;
++        std::vector<uint32_t> guest_ucode = ucode;
++        for (uint32_t& dword : guest_ucode) dword = rex::byte_swap(dword);
++        return LoadShader(type, 0, guest_ucode.data(), uint32_t(guest_ucode.size()));
++      };
++      if (had_vertex_shader) {
++        active_vertex_shader_ = restore_shader(xenos::ShaderType::kVertex, vertex_ucode);
++      }
++      if (had_pixel_shader) {
++        active_pixel_shader_ = restore_shader(xenos::ShaderType::kPixel, pixel_ucode);
++      }
++      return (!had_vertex_shader || active_vertex_shader_) &&
++             (!had_pixel_shader || active_pixel_shader_);
++    };
++    bool initialized = initialize_context();
++    const bool request_initialized = initialized;
++    const std::string request_error = resolution_initialization_error_;
++    if (!initialized) {
++      // Higher scales can fail allocation on constrained devices. Restore the
++      // previous scale and renderer before reporting failure to the UI.
++      active_vertex_shader_ = nullptr;
++      active_pixel_shader_ = nullptr;
++      ShutdownContext();
++      rex::cvar::SetFlagByName("draw_resolution_scale_x", std::to_string(old_x));
++      rex::cvar::SetFlagByName("draw_resolution_scale_y", std::to_string(old_y));
++      initialized = initialize_context();
++    }
++    resolution_context_ready_ = initialized;
++    resolution_change_in_progress_ = false;
++    const bool requested_scale_active = request_initialized && initialized && texture_cache_ &&
++        texture_cache_->draw_resolution_scale_x() == scale_x &&
++        texture_cache_->draw_resolution_scale_y() == scale_y;
++    std::string failure_reason;
++    if (!requested_scale_active) {
++      failure_reason = request_error.empty() ? "Vulkan shader restoration failed" : request_error;
++      failure_reason += initialized
++          ? "; previous scale recreated, render-target contents not restored. See GPU log."
++          : "; recovery also failed, no active renderer. Restart required. See GPU log.";
++    }
++    PublishMgrResolutionStatus(scale_x, requested_scale_active ? "active" : "failed",
++        initialized && texture_cache_ ? texture_cache_->draw_resolution_scale_x() : 0,
++        failure_reason);
++    if (completion) completion(requested_scale_active);
++  });
++}
++
+ void VulkanCommandProcessor::InvalidateGpuMemory() {
+   if (shared_memory_) {
+     shared_memory_->InvalidateAllPages();
+@@ -642,8 +786,28 @@ void VulkanCommandProcessor::InvalidateVertexBufferResidencyRange(uint32_t first
+ 
+ void VulkanCommandProcessor::InitializeShaderStorage(const std::filesystem::path& cache_root,
                                                       uint32_t title_id, bool blocking) {
++  shader_cache_root_ = cache_root;
++  shader_cache_title_id_ = title_id;
++  shader_cache_blocking_ = blocking;
    CommandProcessor::InitializeShaderStorage(cache_root, title_id, blocking);
    pipeline_cache_->InitializeShaderStorage(cache_root, title_id, blocking);
 +  // MGR port: native pipelines seen in earlier runs are created on workers now
@@ -1572,7 +1820,7 @@ index 001f36b..580a88a 100644
  }
  
  bool VulkanCommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
-@@ -664,6 +713,8 @@ bool VulkanCommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuff
+@@ -664,6 +828,8 @@ bool VulkanCommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuff
      DisableHostOcclusionQueries();
      return true;
    }
@@ -1581,7 +1829,31 @@ index 001f36b..580a88a 100644
  
    auto write_fallback_result = [sample_counts]() -> bool {
      auto fake_sample_count = REXCVAR_GET(query_occlusion_fake_sample_count);
-@@ -1014,6 +1065,10 @@ bool VulkanCommandProcessor::SetupContext() {
+@@ -770,6 +936,23 @@ bool VulkanCommandProcessor::CompileGlslToSpirv(VkShaderStageFlagBits stage,
+ }
+ 
+ bool VulkanCommandProcessor::SetupContext() {
++  resolution_context_ready_ = false;
++  resolution_initialization_error_ = "Vulkan context initialization failed";
++  // Covers every early return during startup without ever reporting the
++  // requested scale as active before the context is fully initialized.
++  struct StartupStatus {
++    bool enabled;
++    uint32_t requested;
++    bool succeeded = false;
++    ~StartupStatus() {
++      if (enabled && !succeeded)
++        PublishMgrResolutionStatus(requested, "failed", 0,
++                                   "Vulkan initialization failed; see GPU log");
++    }
++  } startup_status{!resolution_change_in_progress_,
++      uint32_t(std::atoi(rex::cvar::GetFlagByName("mgr_resolution_scale").c_str()))};
++  if (startup_status.enabled)
++    PublishMgrResolutionStatus(startup_status.requested, "applying", 0);
+   if (!CommandProcessor::SetupContext()) {
+     REXGPU_ERROR("Failed to initialize base command processor context");
+     return false;
+@@ -1014,6 +1197,10 @@ bool VulkanCommandProcessor::SetupContext() {
      REXGPU_ERROR("Failed to initialize the graphics pipeline cache");
      return false;
    }
@@ -1592,7 +1864,21 @@ index 001f36b..580a88a 100644
  
    // Requires the transient descriptor set layouts.
    texture_cache_ =
-@@ -1831,6 +1886,17 @@ bool VulkanCommandProcessor::SetupContext() {
+@@ -1021,6 +1208,13 @@ bool VulkanCommandProcessor::SetupContext() {
+                                  draw_resolution_scale_y, *this, guest_shader_pipeline_stages_);
+   if (!texture_cache_) {
+     REXGPU_ERROR("Failed to initialize the texture cache");
++    resolution_initialization_error_ = "Vulkan texture cache initialization failed";
++    if (draw_resolution_scale_x > 1 || draw_resolution_scale_y > 1) {
++      const uint64_t resolve_mib = (uint64_t(SharedMemory::kBufferSize) *
++          draw_resolution_scale_x * draw_resolution_scale_y) >> 20;
++      resolution_initialization_error_ += " (scaled resolve address space: " +
++          std::to_string(resolve_mib) + " MiB)";
++    }
+     return false;
+   }
+ 
+@@ -1831,6 +2025,17 @@ bool VulkanCommandProcessor::SetupContext() {
                                      "swap gamma PWL FXAA-luma compute red/blue fallback");
    }
  
@@ -1610,7 +1896,29 @@ index 001f36b..580a88a 100644
    // FXAA compute pipelines, compiled to SPIR-V at runtime.
    std::vector<uint32_t> swap_fxaa_spirv;
    std::string swap_fxaa_compile_error;
-@@ -1953,6 +2019,7 @@ void VulkanCommandProcessor::ShutdownContext() {
+@@ -1893,10 +2098,21 @@ bool VulkanCommandProcessor::SetupContext() {
+   // Just not to expose uninitialized memory.
+   std::memset(&system_constants_, 0, sizeof(system_constants_));
+ 
++  resolution_context_ready_ = true;
++  resolution_initialization_error_.clear();
++  startup_status.succeeded = true;
++  if (startup_status.enabled) {
++    const bool matches = draw_resolution_scale_x == startup_status.requested &&
++                         draw_resolution_scale_y == startup_status.requested;
++    PublishMgrResolutionStatus(startup_status.requested, matches ? "active" : "failed",
++                               draw_resolution_scale_x,
++                               matches ? "" : "Backend clamped the requested scale");
++  }
+   return true;
+ }
+ 
+ void VulkanCommandProcessor::ShutdownContext() {
++  resolution_context_ready_ = false;
+   AwaitAllQueueOperationsCompletion();
+   InvalidateAllVertexBufferResidency();
+   ShutdownOcclusionQueryResources();
+@@ -1953,6 +2169,7 @@ void VulkanCommandProcessor::ShutdownContext() {
    }
    DestroySwapFxaaSourceImage();
  
@@ -1618,7 +1926,7 @@ index 001f36b..580a88a 100644
    ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device,
                                           swap_fxaa_extreme_pipeline_);
    ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device, swap_fxaa_pipeline_);
-@@ -2034,6 +2101,15 @@ void VulkanCommandProcessor::ShutdownContext() {
+@@ -2034,6 +2251,15 @@ void VulkanCommandProcessor::ShutdownContext() {
      dfn.vkDestroyPipelineLayout(device, pipeline_layout_pair.second.GetPipelineLayout(), nullptr);
    }
    pipeline_layouts_.clear();
@@ -1634,7 +1942,7 @@ index 001f36b..580a88a 100644
    for (const auto& descriptor_set_layout_pair : descriptor_set_layouts_textures_) {
      dfn.vkDestroyDescriptorSetLayout(device, descriptor_set_layout_pair.second, nullptr);
    }
-@@ -2271,6 +2347,7 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
+@@ -2271,6 +2497,7 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
  
  void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
                                         uint32_t frontbuffer_height) {
@@ -1642,7 +1950,7 @@ index 001f36b..580a88a 100644
    SCOPE_profile_cpu_f("gpu");
    vertex_buffers_in_sync_[0] = 0;
    vertex_buffers_in_sync_[1] = 0;
-@@ -2408,10 +2485,50 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2408,10 +2635,50 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
    uint32_t display_width = std::max(uint32_t(1), uint32_t(video_mode.display_width));
    uint32_t display_height = std::max(uint32_t(1), uint32_t(video_mode.display_height));
  
@@ -1695,7 +2003,7 @@ index 001f36b..580a88a 100644
         swap_source_needs_rb_swap](ui::Presenter::GuestOutputRefreshContext& context) -> bool {
          // In case the swap command is the only one in the frame.
          if (!BeginSubmission(true)) {
-@@ -2463,7 +2580,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2463,7 +2730,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                       : swap_apply_gamma_compute_256_entry_table_pipeline_;
          };
          VkPipeline swap_apply_gamma_compute_pipeline =
@@ -1704,7 +2012,7 @@ index 001f36b..580a88a 100644
  
          if (use_fxaa) {
            if (swap_apply_gamma_compute_pipeline == VK_NULL_HANDLE ||
-@@ -2497,7 +2614,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2497,7 +2764,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
          }
          if (!use_fxaa) {
            swap_apply_gamma_compute_pipeline =
@@ -1713,7 +2021,7 @@ index 001f36b..580a88a 100644
          }
          if (swap_source_requires_compute_rb_swap &&
              swap_apply_gamma_compute_pipeline == VK_NULL_HANDLE) {
-@@ -2512,9 +2629,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2512,9 +2779,10 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
            }
          }
          bool use_compute_gamma = swap_apply_gamma_compute_pipeline != VK_NULL_HANDLE;
@@ -1725,7 +2033,7 @@ index 001f36b..580a88a 100644
  
          // Update the gamma ramp if it's out of date.
          uint32_t& gamma_ramp_frame_index_ref = use_pwl_gamma_ramp
-@@ -2617,7 +2735,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2617,7 +2885,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                                       : 0,
                                   VK_ACCESS_SHADER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                                   VK_IMAGE_LAYOUT_GENERAL);
@@ -1734,7 +2042,7 @@ index 001f36b..580a88a 100644
              PushImageMemoryBarrier(swap_fxaa_source_image_, guest_output_subresource_range,
                                     swap_fxaa_source_stage_mask_ ? swap_fxaa_source_stage_mask_
                                                                  : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
-@@ -2627,7 +2745,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2627,7 +2895,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
            }
            SubmitBarriers(true);
  
@@ -1743,7 +2051,7 @@ index 001f36b..580a88a 100644
              swap_fxaa_source_stage_mask_ = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
              swap_fxaa_source_access_mask_ = VK_ACCESS_SHADER_WRITE_BIT;
              swap_fxaa_source_layout_ = VK_IMAGE_LAYOUT_GENERAL;
-@@ -2639,7 +2757,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2639,7 +2907,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
            VkDescriptorImageInfo swap_descriptor_destination_storage_image_info;
            swap_descriptor_destination_storage_image_info.sampler = VK_NULL_HANDLE;
            swap_descriptor_destination_storage_image_info.imageView =
@@ -1752,7 +2060,7 @@ index 001f36b..580a88a 100644
            swap_descriptor_destination_storage_image_info.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
            VkWriteDescriptorSet swap_descriptor_destination_storage_write;
            swap_descriptor_destination_storage_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-@@ -2680,7 +2798,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2680,7 +2948,7 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
            uint32_t group_count_y = (guest_output_height + 7) / 8;
            deferred_command_buffer_.CmdVkDispatch(group_count_x, group_count_y, 1);
  
@@ -1761,7 +2069,7 @@ index 001f36b..580a88a 100644
              // Make the FXAA source image readable and bind a separate
              // destination storage descriptor targeting the guest output image.
              PushImageMemoryBarrier(swap_fxaa_source_image_, guest_output_subresource_range,
-@@ -2741,15 +2859,17 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
+@@ -2741,15 +3009,17 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontb
                  uint32_t(swap_fxaa_descriptor_sets.size()), swap_fxaa_descriptor_sets.data(), 0,
                  nullptr);
              SwapFxaaConstants swap_fxaa_constants = {
@@ -1782,7 +2090,7 @@ index 001f36b..580a88a 100644
            }
  
            // Insert the release barrier.
-@@ -3440,6 +3560,300 @@ const VulkanPipelineCache::PipelineLayoutProvider* VulkanCommandProcessor::GetPi
+@@ -3440,6 +3710,300 @@ const VulkanPipelineCache::PipelineLayoutProvider* VulkanCommandProcessor::GetPi
    return &emplaced_pair.first->second;
  }
  
@@ -2083,7 +2391,7 @@ index 001f36b..580a88a 100644
  VulkanCommandProcessor::ScratchBufferAcquisition VulkanCommandProcessor::AcquireScratchGpuBuffer(
      VkDeviceSize size, VkPipelineStageFlags initial_stage_mask, VkAccessFlags initial_access_mask) {
    assert_true(submission_open_);
-@@ -3502,8 +3916,8 @@ VulkanCommandProcessor::ScratchBufferAcquisition VulkanCommandProcessor::Acquire
+@@ -3502,8 +4066,8 @@ VulkanCommandProcessor::ScratchBufferAcquisition VulkanCommandProcessor::Acquire
    scratch_buffer_ = new_scratch_buffer;
    scratch_buffer_size_ = size;
    // Not used yet, no need for a barrier.
@@ -2094,7 +2402,7 @@ index 001f36b..580a88a 100644
    scratch_buffer_last_usage_submission_ = submission_current;
    scratch_buffer_used_ = true;
    return ScratchBufferAcquisition(*this, new_scratch_buffer, initial_stage_mask,
-@@ -3844,64 +4258,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3844,64 +4408,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
      return draw_fail("render_target_update");
    }
  
@@ -2162,7 +2470,7 @@ index 001f36b..580a88a 100644
    bool host_render_targets_used =
        render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets;
    uint32_t draw_resolution_scale_x = texture_cache_->draw_resolution_scale_x();
-@@ -3971,11 +4330,108 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3971,11 +4480,108 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
                               shader_32bit_index_dma, 0, viewport_info, used_texture_mask,
                               normalized_depth_control, normalized_color_mask);
  
@@ -2272,7 +2580,7 @@ index 001f36b..580a88a 100644
  
    // Ensure vertex buffers are resident.
    const Shader::ConstantRegisterMap& constant_map_vertex = vertex_shader->constant_register_map();
-@@ -4010,10 +4466,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -4010,10 +4616,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
            return false;
        }
        VertexBufferState& state = vertex_buffer_states_[vfetch_index];
@@ -2286,7 +2594,7 @@ index 001f36b..580a88a 100644
        if (!shared_memory_->RequestRange(vfetch_constant.address << 2, vfetch_constant.size << 2)) {
          REXGPU_ERROR(
              "Failed to request vertex buffer at 0x{:08X} (size {}) in the shared "
-@@ -4782,6 +5237,7 @@ bool VulkanCommandProcessor::InitializeOcclusionQueryResources() {
+@@ -4782,6 +5387,7 @@ bool VulkanCommandProcessor::InitializeOcclusionQueryResources() {
  
  void VulkanCommandProcessor::ShutdownOcclusionQueryResources() {
    DisableHostOcclusionQueries();
@@ -2294,7 +2602,7 @@ index 001f36b..580a88a 100644
  
    const ui::vulkan::VulkanDevice* vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
-@@ -4812,6 +5268,11 @@ bool VulkanCommandProcessor::AcquireOcclusionQueryIndex(uint32_t& host_index_out
+@@ -4812,6 +5418,11 @@ bool VulkanCommandProcessor::AcquireOcclusionQueryIndex(uint32_t& host_index_out
    if (occlusion_query_cursor_ >= kMaxOcclusionQueries) {
      occlusion_query_cursor_ = 0;
    }
@@ -2306,7 +2614,7 @@ index 001f36b..580a88a 100644
    host_index_out = occlusion_query_cursor_++;
    return true;
  }
-@@ -4819,6 +5280,8 @@ bool VulkanCommandProcessor::AcquireOcclusionQueryIndex(uint32_t& host_index_out
+@@ -4819,6 +5430,8 @@ bool VulkanCommandProcessor::AcquireOcclusionQueryIndex(uint32_t& host_index_out
  void VulkanCommandProcessor::DisableHostOcclusionQueries() {
    if (active_occlusion_query_.valid && occlusion_query_pool_ != VK_NULL_HANDLE) {
      if (BeginSubmission(true)) {
@@ -2315,7 +2623,7 @@ index 001f36b..580a88a 100644
        deferred_command_buffer_.CmdVkEndQuery(occlusion_query_pool_,
                                               active_occlusion_query_.host_index);
        EndSubmission(false);
-@@ -4883,13 +5346,17 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
+@@ -4883,13 +5496,17 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
                                             sizeof(uint64_t) * host_index, sizeof(uint64_t),
                                             VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
  
@@ -2339,7 +2647,7 @@ index 001f36b..580a88a 100644
    const ui::vulkan::VulkanDevice* vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -4907,9 +5374,39 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
+@@ -4907,9 +5524,39 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
    }
  
    const uint64_t* results = reinterpret_cast<const uint64_t*>(occlusion_query_readback_mapping_);
@@ -2382,7 +2690,7 @@ index 001f36b..580a88a 100644
  }
  
  uint64_t VulkanCommandProcessor::NormalizeOcclusionSamples(uint64_t samples) const {
-@@ -4943,6 +5440,23 @@ void VulkanCommandProcessor::WriteGuestOcclusionResult(uint32_t sample_count_add
+@@ -4943,6 +5590,23 @@ void VulkanCommandProcessor::WriteGuestOcclusionResult(uint32_t sample_count_add
    sample_counts->StencilFail_B = 0;
  }
  
@@ -2406,7 +2714,7 @@ index 001f36b..580a88a 100644
  void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_submission) {
    // Only report once, no need to retry a wait that won't succeed anyway.
    if (device_lost_) {
-@@ -4970,9 +5484,11 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+@@ -4970,9 +5634,11 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
      // defined by vkQueueSubmit additionally include in the first
      // synchronization scope all commands that occur earlier in submission
      // order."
@@ -2418,7 +2726,7 @@ index 001f36b..580a88a 100644
      if (wait_result == VK_SUCCESS) {
        fences_awaited += await_submission - submission_completed_;
      } else {
-@@ -4987,7 +5503,7 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+@@ -4987,7 +5653,7 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
    // that for simplicity.
    while (fences_awaited < fences_total) {
      VkResult fence_status =
@@ -2427,7 +2735,7 @@ index 001f36b..580a88a 100644
      if (fence_status != VK_SUCCESS) {
        if (fence_status == VK_ERROR_DEVICE_LOST) {
          device_lost_ = true;
-@@ -5042,6 +5558,12 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+@@ -5042,6 +5708,12 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
  
    render_target_cache_->CompletedSubmissionUpdated();
  
@@ -2440,7 +2748,7 @@ index 001f36b..580a88a 100644
    texture_cache_->CompletedSubmissionUpdated(submission_completed_);
  
    // Destroy objects scheduled for destruction.
-@@ -5167,6 +5689,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5167,6 +5839,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
      frame_used_async_placeholder_pipeline_ = false;
  
      // Reset bindings that depend on transient data.
@@ -2448,7 +2756,7 @@ index 001f36b..580a88a 100644
      std::memset(current_float_constant_map_vertex_, 0, sizeof(current_float_constant_map_vertex_));
      std::memset(current_float_constant_map_pixel_, 0, sizeof(current_float_constant_map_pixel_));
      std::memset(current_graphics_descriptor_sets_, 0, sizeof(current_graphics_descriptor_sets_));
-@@ -5181,6 +5704,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5181,6 +5854,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
      // FIXME(Triang3l): This will result in a memory leak if the guest is not
      // presenting.
      uniform_buffer_pool_->Reclaim(frame_completed_);
@@ -2456,7 +2764,7 @@ index 001f36b..580a88a 100644
      while (!single_transient_descriptors_used_.empty()) {
        const UsedSingleTransientDescriptor& used_transient_descriptor =
            single_transient_descriptors_used_.front();
-@@ -5230,6 +5754,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5230,6 +5904,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
  }
  
  bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
@@ -2464,7 +2772,7 @@ index 001f36b..580a88a 100644
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5302,14 +5827,16 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5302,14 +5977,16 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
    if (submission_open_) {
      assert_false(scratch_buffer_used_);
  
@@ -2483,7 +2791,7 @@ index 001f36b..580a88a 100644
      pipeline_cache_->EndSubmission();
  
      render_target_cache_->EndSubmission();
-@@ -5319,6 +5846,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5319,6 +5996,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
      shared_memory_->EndSubmission();
  
      uniform_buffer_pool_->FlushWrites();
@@ -2491,7 +2799,7 @@ index 001f36b..580a88a 100644
  
      // Submit sparse binds earlier, before executing the deferred command
      // buffer, to reduce latency.
-@@ -5385,6 +5913,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5385,6 +6063,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        REXGPU_ERROR("Failed to begin a Vulkan command buffer");
        return false;
      }
@@ -2499,7 +2807,7 @@ index 001f36b..580a88a 100644
      deferred_command_buffer_.Execute(command_buffer.buffer);
      if (dfn.vkEndCommandBuffer(command_buffer.buffer) != VK_SUCCESS) {
        REXGPU_ERROR("Failed to end a Vulkan command buffer");
-@@ -5489,6 +6018,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5489,6 +6168,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
  }
  
  void VulkanCommandProcessor::ClearTransientDescriptorPools() {
@@ -2507,7 +2815,7 @@ index 001f36b..580a88a 100644
    texture_transient_descriptor_sets_free_.clear();
    texture_transient_descriptor_sets_used_.clear();
    transient_descriptor_allocator_textures_.Reset();
-@@ -6559,7 +7089,7 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6559,7 +7239,7 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
      sampler_count_pixel = 0;
      texture_count_pixel = 0;
    }
@@ -2516,7 +2824,7 @@ index 001f36b..580a88a 100644
    current_graphics_descriptor_set_values_up_to_date_ &=
        ~((UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesVertex) |
          (UINT32_C(1) << SpirvShaderTranslator::kDescriptorSetTexturesPixel));
-@@ -6624,6 +7154,45 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6624,6 +7304,45 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
      }
    }
  
@@ -2562,7 +2870,7 @@ index 001f36b..580a88a 100644
    // Write the new descriptor sets.
  
    // Consecutive bindings updated via a single VkWriteDescriptorSet must have
-@@ -6711,6 +7280,30 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6711,6 +7430,30 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
      dfn.vkUpdateDescriptorSets(device, write_descriptor_set_count, write_descriptor_sets.data(), 0,
                                 nullptr);
    }
@@ -3402,6 +3710,387 @@ index ecbd940..ec4a089 100644
  VkImageView VulkanTextureCache::GetActiveBindingOrNullImageView(uint32_t fetch_constant_index,
                                                                  xenos::FetchOpDimension dimension,
                                                                  bool is_signed) {
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index 3d2c378..26a2c01 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -18,6 +18,10 @@
+ #include <rex/ui/window.h>
+ 
+ #include <algorithm>
++#include <array>
++#include <atomic>
++#include <mutex>
++#include <vector>
+ #include <cmath>
+ #include <cstdlib>
+ #include <cstring>
+@@ -77,9 +81,8 @@ constexpr size_t kMaxQueuedKeystrokes = 256;
+ // Bind values are a comma-separated list of alternatives, each optionally
+ // carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
+ // so "Up" stays silent while Shift is held and "Shift+Up" stays silent without
+-// it. That is what lets the D-pad share the arrow keys. A consequence is
+-// that binding a bare modifier name ("Shift") can never fire, since holding it
+-// makes the live mask non-zero while the bind wants zero.
++// it. That is what lets the D-pad share the arrow keys. A modifier used as the
++// action key itself implies its own bit, so a standalone Shift binding works.
+ constexpr uint8_t kModShift = 1u << 0;
+ constexpr uint8_t kModCtrl = 1u << 1;
+ constexpr uint8_t kModAlt = 1u << 2;
+@@ -131,19 +134,6 @@ std::string_view TrimSpaces(std::string_view s) {
+   return s;
+ }
+ 
+-bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t live_mods) {
+-  uint8_t want = TakeModifiers(token);
+-  if (want != live_mods) {
+-    return false;
+-  }
+-  rex::ui::VirtualKey vk = rex::ui::ParseVirtualKey(token);
+-  if (vk == rex::ui::VirtualKey::kNone) {
+-    return false;
+-  }
+-  uint16_t idx = static_cast<uint16_t>(vk);
+-  return idx < 256 && key_down[idx];
+-}
+-
+ std::atomic<bool> mouse_look_active{true};
+ 
+ // ui::VirtualKey follows Windows VK_ numbering; the guest wants USB HID usage
+@@ -262,39 +252,104 @@ uint8_t VirtualKeyToHIDUsage(rex::ui::VirtualKey vk_enum) {
+ 
+ // Sticks and triggers are included: XInput reports those as directional pad
+ // keys, which is what menu navigation reads.
++struct Chord {
++  uint16_t key;
++  uint8_t modifiers;
++};
+ struct PadBind {
+-  const std::string& keys;
++  std::vector<Chord> keys;
+   VirtualKey pad_key;
+ };
++constexpr std::array<std::pair<const char*, VirtualKey>, 25> kBindDefinitions = {{
++    {"keybind_a", VirtualKey::kXInputPadA},
++    {"keybind_b", VirtualKey::kXInputPadB},
++    {"keybind_x", VirtualKey::kXInputPadX},
++    {"keybind_y", VirtualKey::kXInputPadY},
++    {"keybind_left_shoulder", VirtualKey::kXInputPadLShoulder},
++    {"keybind_right_shoulder", VirtualKey::kXInputPadRShoulder},
++    {"keybind_left_trigger", VirtualKey::kXInputPadLTrigger},
++    {"keybind_right_trigger", VirtualKey::kXInputPadRTrigger},
++    {"keybind_lstick_press", VirtualKey::kXInputPadLThumbPress},
++    {"keybind_rstick_press", VirtualKey::kXInputPadRThumbPress},
++    {"keybind_back", VirtualKey::kXInputPadBack},
++    {"keybind_start", VirtualKey::kXInputPadStart},
++    {"keybind_dpad_up", VirtualKey::kXInputPadDpadUp},
++    {"keybind_dpad_down", VirtualKey::kXInputPadDpadDown},
++    {"keybind_dpad_left", VirtualKey::kXInputPadDpadLeft},
++    {"keybind_dpad_right", VirtualKey::kXInputPadDpadRight},
++    {"keybind_lstick_up", VirtualKey::kXInputPadLThumbUp},
++    {"keybind_lstick_down", VirtualKey::kXInputPadLThumbDown},
++    {"keybind_lstick_left", VirtualKey::kXInputPadLThumbLeft},
++    {"keybind_lstick_right", VirtualKey::kXInputPadLThumbRight},
++    {"keybind_rstick_up", VirtualKey::kXInputPadRThumbUp},
++    {"keybind_rstick_down", VirtualKey::kXInputPadRThumbDown},
++    {"keybind_rstick_left", VirtualKey::kXInputPadRThumbLeft},
++    {"keybind_rstick_right", VirtualKey::kXInputPadRThumbRight},
++    {"keybind_guide", VirtualKey::kNone},
++}};
++std::atomic<uint64_t> binding_generation{0};
++
++void InstallBindingCallbacks() {
++  static std::once_flag installed;
++  std::call_once(installed, [] {
++    const auto changed = [](std::string_view, std::string_view) {
++      binding_generation.fetch_add(1, std::memory_order_release);
++    };
++    for (const auto& [name, pad] : kBindDefinitions)
++      rex::cvar::RegisterChangeCallback(name, changed);
++    for (const auto* name : {"mnk_mode", "mnk_passthrough", "mnk_mouse", "mnk_sensitivity"})
++      rex::cvar::RegisterChangeCallback(name, changed);
++  });
++}
++
++struct InputBindings {
++  uint64_t generation = UINT64_MAX;
++  std::array<PadBind, kBindDefinitions.size()> binds;
++  bool mode = false, passthrough = false, mouse = false;
++  double sensitivity = 1;
++};
++
++const InputBindings& CurrentBindings() {
++  // Input polling and UI events may run on different threads. Each reader owns
++  // a parsed snapshot; cvar strings are copied under the registry lock only
++  // when changed. No references into a live-editable std::string escape.
++  thread_local InputBindings cache;
++  const uint64_t generation = binding_generation.load(std::memory_order_acquire);
++  if (cache.generation == generation) return cache;
++  for (size_t i = 0; i < kBindDefinitions.size(); ++i) {
++    auto& bind = cache.binds[i];
++    bind.keys.clear();
++    bind.pad_key = kBindDefinitions[i].second;
++    const auto value = rex::cvar::GetFlagByName(kBindDefinitions[i].first);
++    std::string_view rest(value);
++    while (!rest.empty()) {
++      const size_t comma = rest.find(',');
++      auto token = TrimSpaces(rest.substr(0, comma));
++      if (comma == std::string_view::npos) rest = {};
++      else rest.remove_prefix(comma + 1);
++      uint8_t modifiers = TakeModifiers(token);
++      const auto key = rex::ui::ParseVirtualKey(TrimSpaces(token));
++      if (key == VirtualKey::kShift) modifiers |= kModShift;
++      if (key == VirtualKey::kControl) modifiers |= kModCtrl;
++      if (key == VirtualKey::kMenu) modifiers |= kModAlt;
++      if (key != VirtualKey::kNone && uint16_t(key) < 256)
++        bind.keys.push_back({uint16_t(key), modifiers});
++    }
++  }
++  cache.mode = rex::cvar::Query<bool>("mnk_mode");
++  cache.passthrough = rex::cvar::Query<bool>("mnk_passthrough");
++  cache.mouse = rex::cvar::Query<bool>("mnk_mouse");
++  cache.sensitivity = rex::cvar::Query<double>("mnk_sensitivity");
++  // Retain the generation sampled before copying: an edit during refresh will
++  // be picked up on the next poll, rather than marking a mixed snapshot current.
++  cache.generation = generation;
++  return cache;
++}
+ 
+-// Rebuilt per call because the cvars are live-editable.
+-std::array<PadBind, 24> PadBinds() {
+-  return {{
+-      {REXCVAR_GET(keybind_a), VirtualKey::kXInputPadA},
+-      {REXCVAR_GET(keybind_b), VirtualKey::kXInputPadB},
+-      {REXCVAR_GET(keybind_x), VirtualKey::kXInputPadX},
+-      {REXCVAR_GET(keybind_y), VirtualKey::kXInputPadY},
+-      {REXCVAR_GET(keybind_left_shoulder), VirtualKey::kXInputPadLShoulder},
+-      {REXCVAR_GET(keybind_right_shoulder), VirtualKey::kXInputPadRShoulder},
+-      {REXCVAR_GET(keybind_left_trigger), VirtualKey::kXInputPadLTrigger},
+-      {REXCVAR_GET(keybind_right_trigger), VirtualKey::kXInputPadRTrigger},
+-      {REXCVAR_GET(keybind_lstick_press), VirtualKey::kXInputPadLThumbPress},
+-      {REXCVAR_GET(keybind_rstick_press), VirtualKey::kXInputPadRThumbPress},
+-      {REXCVAR_GET(keybind_back), VirtualKey::kXInputPadBack},
+-      {REXCVAR_GET(keybind_start), VirtualKey::kXInputPadStart},
+-      {REXCVAR_GET(keybind_dpad_up), VirtualKey::kXInputPadDpadUp},
+-      {REXCVAR_GET(keybind_dpad_down), VirtualKey::kXInputPadDpadDown},
+-      {REXCVAR_GET(keybind_dpad_left), VirtualKey::kXInputPadDpadLeft},
+-      {REXCVAR_GET(keybind_dpad_right), VirtualKey::kXInputPadDpadRight},
+-      {REXCVAR_GET(keybind_lstick_up), VirtualKey::kXInputPadLThumbUp},
+-      {REXCVAR_GET(keybind_lstick_down), VirtualKey::kXInputPadLThumbDown},
+-      {REXCVAR_GET(keybind_lstick_left), VirtualKey::kXInputPadLThumbLeft},
+-      {REXCVAR_GET(keybind_lstick_right), VirtualKey::kXInputPadLThumbRight},
+-      {REXCVAR_GET(keybind_rstick_up), VirtualKey::kXInputPadRThumbUp},
+-      {REXCVAR_GET(keybind_rstick_down), VirtualKey::kXInputPadRThumbDown},
+-      {REXCVAR_GET(keybind_rstick_left), VirtualKey::kXInputPadRThumbLeft},
+-      {REXCVAR_GET(keybind_rstick_right), VirtualKey::kXInputPadRThumbRight},
+-  }};
++bool IsBindPressed(const bool (&key_down)[256], const PadBind& bind, uint8_t modifiers) {
++  for (const auto& chord : bind.keys)
++    if (chord.modifiers == modifiers && key_down[chord.key]) return true;
++  return false;
+ }
+ 
+ }  // namespace
+@@ -308,7 +363,7 @@ bool IsMouseLookActive() {
+ }
+ 
+ MnkInputDriver::MnkInputDriver(rex::ui::Window* window, size_t window_z_order)
+-    : InputDriver(window, window_z_order) {}
++    : InputDriver(window, window_z_order) { InstallBindingCallbacks(); }
+ 
+ MnkInputDriver::~MnkInputDriver() {
+   // Detach handled by OnClosing; if window outlives the driver, clean up here.
+@@ -355,32 +410,11 @@ void MnkInputDriver::DetachFromWindow() {
+ }
+ 
+ bool MnkInputDriver::IsEnabled() const {
+-  // Passthrough enables the device on its own.
+-  return REXCVAR_GET(mnk_mode) || REXCVAR_GET(mnk_passthrough);
++  const auto& settings = CurrentBindings();
++  return settings.mode || settings.passthrough;
+ }
+ 
+-static bool IsPassthroughEnabled() {
+-  return REXCVAR_GET(mnk_passthrough);
+-}
+-
+-static bool IsBindPressed(const bool (&key_down)[256], const std::string& cvar_val) {
+-  const uint8_t live_mods = LiveModifiers(key_down);
+-  std::string_view rest(cvar_val);
+-  while (!rest.empty()) {
+-    size_t comma = rest.find(',');
+-    std::string_view token = rest.substr(0, comma);
+-    if (comma == std::string_view::npos) {
+-      rest = std::string_view();
+-    } else {
+-      rest.remove_prefix(comma + 1);
+-    }
+-    token = TrimSpaces(token);
+-    if (!token.empty() && TokenPressed(key_down, token, live_mods)) {
+-      return true;
+-    }
+-  }
+-  return false;
+-}
++static bool IsPassthroughEnabled() { return CurrentBindings().passthrough; }
+ 
+ void MnkInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
+   // Disabled means no device at all, so it never occupies a guest user slot.
+@@ -435,9 +469,10 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+     return X_ERROR_DEVICE_NOT_CONNECTED;
+   }
+ 
++  const auto& bindings = CurrentBindings();
+   // Mouse look is opt in. Without this gate, keyboard input alone would hide
+   // and lock the cursor, breaking the ImGui overlays.
+-  QueueMouseCaptureUpdate(IsEnabled() && REXCVAR_GET(mnk_mouse) && IsMouseLookActive() &&
++  QueueMouseCaptureUpdate(IsEnabled() && bindings.mouse && IsMouseLookActive() &&
+                           has_focus_ && is_active());
+ 
+   if (!is_active() || !has_focus_) {
+@@ -450,65 +485,66 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+ 
+   std::lock_guard lock(state_mutex_);
+ 
++  const auto modifiers = LiveModifiers(key_down_);
+   uint16_t buttons = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_a)))
++  if (IsBindPressed(key_down_, bindings.binds[0], modifiers))
+     buttons |= X_INPUT_GAMEPAD_A;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_b)))
++  if (IsBindPressed(key_down_, bindings.binds[1], modifiers))
+     buttons |= X_INPUT_GAMEPAD_B;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_x)))
++  if (IsBindPressed(key_down_, bindings.binds[2], modifiers))
+     buttons |= X_INPUT_GAMEPAD_X;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_y)))
++  if (IsBindPressed(key_down_, bindings.binds[3], modifiers))
+     buttons |= X_INPUT_GAMEPAD_Y;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_left_shoulder)))
++  if (IsBindPressed(key_down_, bindings.binds[4], modifiers))
+     buttons |= X_INPUT_GAMEPAD_LEFT_SHOULDER;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_right_shoulder)))
++  if (IsBindPressed(key_down_, bindings.binds[5], modifiers))
+     buttons |= X_INPUT_GAMEPAD_RIGHT_SHOULDER;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_press)))
++  if (IsBindPressed(key_down_, bindings.binds[8], modifiers))
+     buttons |= X_INPUT_GAMEPAD_LEFT_THUMB;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_press)))
++  if (IsBindPressed(key_down_, bindings.binds[9], modifiers))
+     buttons |= X_INPUT_GAMEPAD_RIGHT_THUMB;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_back)))
++  if (IsBindPressed(key_down_, bindings.binds[10], modifiers))
+     buttons |= X_INPUT_GAMEPAD_BACK;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_start)))
++  if (IsBindPressed(key_down_, bindings.binds[11], modifiers))
+     buttons |= X_INPUT_GAMEPAD_START;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_guide)))
++  if (IsBindPressed(key_down_, bindings.binds[24], modifiers))
+     buttons |= X_INPUT_GAMEPAD_GUIDE;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_up)))
++  if (IsBindPressed(key_down_, bindings.binds[12], modifiers))
+     buttons |= X_INPUT_GAMEPAD_DPAD_UP;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_down)))
++  if (IsBindPressed(key_down_, bindings.binds[13], modifiers))
+     buttons |= X_INPUT_GAMEPAD_DPAD_DOWN;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_left)))
++  if (IsBindPressed(key_down_, bindings.binds[14], modifiers))
+     buttons |= X_INPUT_GAMEPAD_DPAD_LEFT;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_right)))
++  if (IsBindPressed(key_down_, bindings.binds[15], modifiers))
+     buttons |= X_INPUT_GAMEPAD_DPAD_RIGHT;
+ 
+-  uint8_t lt = IsBindPressed(key_down_, REXCVAR_GET(keybind_left_trigger)) ? 0xFF : 0;
+-  uint8_t rt = IsBindPressed(key_down_, REXCVAR_GET(keybind_right_trigger)) ? 0xFF : 0;
++  uint8_t lt = IsBindPressed(key_down_, bindings.binds[6], modifiers) ? 0xFF : 0;
++  uint8_t rt = IsBindPressed(key_down_, bindings.binds[7], modifiers) ? 0xFF : 0;
+ 
+   int32_t lx = 0;
+   int32_t ly = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_left)))
++  if (IsBindPressed(key_down_, bindings.binds[18], modifiers))
+     lx -= INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_right)))
++  if (IsBindPressed(key_down_, bindings.binds[19], modifiers))
+     lx += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_up)))
++  if (IsBindPressed(key_down_, bindings.binds[16], modifiers))
+     ly += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_lstick_down)))
++  if (IsBindPressed(key_down_, bindings.binds[17], modifiers))
+     ly -= INT16_MAX;
+ 
+   int32_t rx = 0;
+   int32_t ry = 0;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_left)))
++  if (IsBindPressed(key_down_, bindings.binds[22], modifiers))
+     rx -= INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_right)))
++  if (IsBindPressed(key_down_, bindings.binds[23], modifiers))
+     rx += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_up)))
++  if (IsBindPressed(key_down_, bindings.binds[20], modifiers))
+     ry += INT16_MAX;
+-  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_down)))
++  if (IsBindPressed(key_down_, bindings.binds[21], modifiers))
+     ry -= INT16_MAX;
+ 
+-  if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
+-    double sensitivity = REXCVAR_GET(mnk_sensitivity);
++  if (bindings.mouse && IsMouseLookActive()) {
++    double sensitivity = bindings.sensitivity;
+     constexpr double kBaseScale = 200.0;
+     rx += static_cast<int32_t>(double(mouse_dx_) * sensitivity * kBaseScale);
+     ry += static_cast<int32_t>(double(-mouse_dy_) * sensitivity * kBaseScale);
+@@ -605,10 +641,11 @@ void MnkInputDriver::EnqueueRawKeystroke(const rex::ui::KeyEvent& e, bool down)
+ }
+ 
+ void MnkInputDriver::RefreshBoundKeystrokesLocked() {
+-  const auto binds = PadBinds();
++  const auto& binds = CurrentBindings().binds;
+   uint32_t pressed = 0;
++  const auto modifiers = LiveModifiers(key_down_);
+   for (size_t i = 0; i < binds.size(); i++) {
+-    if (IsBindPressed(key_down_, binds[i].keys)) {
++    if (IsBindPressed(key_down_, binds[i], modifiers)) {
+       pressed |= uint32_t(1) << i;
+     }
+   }
+@@ -622,7 +659,7 @@ void MnkInputDriver::RefreshBoundKeystrokesLocked() {
+   }
+   for (size_t i = 0; i < binds.size(); i++) {
+     const uint32_t bit = uint32_t(1) << i;
+-    if (changed & bit) {
++    if ((changed & bit) && binds[i].pad_key != VirtualKey::kNone) {
+       EnqueueKeystroke(static_cast<uint16_t>(binds[i].pad_key), (pressed & bit) != 0);
+     }
+   }
+@@ -770,6 +807,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
+     case rex::ui::MouseEvent::Button::kMiddle:
+       SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), true);
+       break;
++    case rex::ui::MouseEvent::Button::kX1:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton1), true);
++      break;
++    case rex::ui::MouseEvent::Button::kX2:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton2), true);
++      break;
+     default:
+       break;
+   }
+@@ -790,6 +833,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
+     case rex::ui::MouseEvent::Button::kMiddle:
+       SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), false);
+       break;
++    case rex::ui::MouseEvent::Button::kX1:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton1), false);
++      break;
++    case rex::ui::MouseEvent::Button::kX2:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton2), false);
++      break;
+     default:
+       break;
+   }
 diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
 index 77bce25..91b7d4f 100644
 --- a/src/system/xthread.cpp
@@ -3480,10 +4169,28 @@ index 77bce25..91b7d4f 100644
      CheckTitleTermination();
    }
 diff --git a/src/ui/imgui_drawer.cpp b/src/ui/imgui_drawer.cpp
-index f270f3c..edd1811 100644
+index f270f3c..34c603a 100644
 --- a/src/ui/imgui_drawer.cpp
 +++ b/src/ui/imgui_drawer.cpp
-@@ -436,7 +436,13 @@ void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
+@@ -16,6 +16,7 @@
+ 
+ #include <rex/assert.h>
+ #include <rex/chrono/clock.h>
++#include <rex/cvar.h>
+ #include <rex/logging.h>
+ #include <rex/ui/imgui_dialog.h>
+ #include <rex/ui/imgui_drawer.h>
+@@ -24,6 +25,9 @@
+ 
+ #include <imgui.h>
+ 
++REXCVAR_DEFINE_BOOL(imgui_guest_paced, false, "UI",
++                    "Draw UI on guest output refreshes instead of requesting duplicate presents");
++
+ namespace rex {
+ namespace ui {
+ 
+@@ -436,7 +440,13 @@ void ImGuiDrawer::Draw(UIDrawContext& ui_draw_context) {
    // it now if needed.
    DetachIfLastDialogRemoved();
  
@@ -3494,10 +4201,23 @@ index f270f3c..edd1811 100644
 +  // of the same ~45 guest frames, burning GPU/CPU (and thermals). With nothing
 +  // drawn, paints follow guest output refreshes (one present per guest frame).
 +  const bool drew_anything = draw_data && draw_data->TotalVtxCount > 0;
-+  if (!dialogs_.empty() && drew_anything) {
++  if (!dialogs_.empty() && drew_anything && !REXCVAR_GET(imgui_guest_paced)) {
      // Repaint (and handle input) continuously if still active. In detached mode
      // there is no presenter; the app drives repaint via its own present loop.
      if (presenter_) {
+diff --git a/src/ui/keybinds.cpp b/src/ui/keybinds.cpp
+index 9822f3b..2a30c90 100644
+--- a/src/ui/keybinds.cpp
++++ b/src/ui/keybinds.cpp
+@@ -141,6 +141,8 @@ static const std::unordered_map<std::string, VirtualKey> kKeyNames = {
+     {"LMB", VirtualKey::kLButton},
+     {"RMB", VirtualKey::kRButton},
+     {"MMB", VirtualKey::kMButton},
++    {"X1MB", VirtualKey::kXButton1},
++    {"X2MB", VirtualKey::kXButton2},
+ };
+ 
+ VirtualKey ParseVirtualKey(std::string_view name) {
 diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
 index 7360ed9..f676bfa 100644
 --- a/src/ui/presenter.cpp
@@ -3527,14 +4247,14 @@ index 7360ed9..f676bfa 100644
    if (is_in_ui_thread_paint_) {
      // Defer the refresh so no dangerous lifecycle-related changes happen during
 diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
-index 23645ef..eec6dda 100644
+index 23645ef..c27effa 100644
 --- a/src/ui/vulkan/vulkan_presenter.cpp
 +++ b/src/ui/vulkan/vulkan_presenter.cpp
 @@ -58,6 +58,10 @@ REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_mailbox, true, "UI/Vulkan",
  REXCVAR_DEFINE_BOOL(vulkan_allow_present_mode_fifo_relaxed, true, "UI/Vulkan",
                      "Allow FIFO relaxed present mode");
  
-+REXCVAR_DEFINE_BOOL(vulkan_nonblocking_guest_present, false, "UI/Vulkan",
++REXCVAR_DEFINE_BOOL(vulkan_nonblocking_guest_present, REX_PLATFORM_MAC != 0, "UI/Vulkan",
 +                    "Skip host presentation when its resources are busy instead of blocking "
 +                    "the guest output thread");
 +

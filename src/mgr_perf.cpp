@@ -22,6 +22,7 @@
 #include <cstdlib>
 
 namespace {
+std::atomic<float> guest_fps{0};
 
 using Clock = std::chrono::steady_clock;
 constexpr auto REPORT_INTERVAL = std::chrono::seconds(1);
@@ -55,7 +56,9 @@ struct FrameMeter {
     if (now - window_start < REPORT_INTERVAL) return;
     double secs = std::chrono::duration<double>(now - window_start).count();
     double worst_ms = std::chrono::duration<double, std::milli>(worst).count();
-    std::fprintf(stderr, "[mgr-fps] %.1f worst %.1f ms\n", frames / secs, worst_ms);
+    guest_fps.store(float(frames / secs), std::memory_order_relaxed);
+    if (IsReportingEnabled())
+      std::fprintf(stderr, "[mgr-fps] %.1f worst %.1f ms\n", frames / secs, worst_ms);
     window_start = now;
     worst = {};
     frames = 0;
@@ -64,11 +67,12 @@ struct FrameMeter {
 
 }  // namespace
 
+float MgrGuestFPS() { return guest_fps.load(std::memory_order_relaxed); }
+
 extern "C" REX_FUNC(__imp__VdSwap) {
   static PPCFunc* const sdk_vdswap = ResolveSdkVdSwap();
-  static const bool reporting = IsReportingEnabled();
   static FrameMeter meter;  // VdSwap is only called from the guest render thread
-  if (reporting) meter.OnFrame();
+  meter.OnFrame();
   MgrTimingOnPresent(base);
   MgrPromptsOnPresent();
   mgrr_perf::Profiler::Get().EndFrame();  // no-op unless MgrStartSessionLog ran

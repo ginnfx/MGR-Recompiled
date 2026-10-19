@@ -13,6 +13,8 @@
 
 #include "mgr_options_dialog.h"
 #include "mgr_settings.h"
+#include "mgr_game_options.h"
+#include "mgr_menu_fonts.h"
 
 #include <chrono>
 #include <cstdio>
@@ -41,10 +43,19 @@ class MgrApp : public rex::ReXApp {
   // MGR options feed the GPU/runtime cvars before the plugin loads.
   void OnPreSetup(rex::RuntimeConfig& config) override {
     (void)config;
+    // Menu repaint ownership is session state, never a boot-time preference.
+    rex::cvar::SetFlagByName("imgui_guest_paced", "false");
     MgrApplySettings();
   }
 
-  void OnConfigurePaths(rex::PathConfig& paths) override { config_path_ = paths.config_path; }
+  void OnConfigurePaths(rex::PathConfig& paths) override {
+    config_path_ = paths.config_path;
+    game_root_ = paths.game_data_root;
+  }
+
+  void OnConfigureFonts(ImFontAtlas* atlas) override {
+    MgrConfigureMenuFonts(atlas, game_root_);
+  }
 
   // F2 toggles the MGR options window (bindable in Settings > Keybinds).
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
@@ -60,6 +71,11 @@ class MgrApp : public rex::ReXApp {
           });
         });
     MgrApplyOutputResolution(window());
+    MgrGameOptionsInstall();
+    auto* native_input = runtime() ? static_cast<rex::input::InputSystem*>(runtime()->input_system())
+                                   : nullptr;
+    game_options_dialog_ = std::make_unique<MgrOptionsDialog>(
+        drawer, native_input, config_path_, window(), true);
     rex::ui::RegisterBind("bind_mgr_options", "F2", "Toggle MGR options", [this, drawer] {
       if (options_dialog_) {
         options_dialog_.reset();
@@ -79,6 +95,15 @@ class MgrApp : public rex::ReXApp {
   // every CAPTURE_INTERVAL. Pattern from XDanfr/RaymanOriginsRecomp
   // rex/src/rayman_app.h (c1bf7b9), with a joined thread instead of detached.
   void OnPostSetup() override {
+    std::fprintf(stderr,
+        "[mgr-build] %s runtime_menu_pacing=%s nonblocking_present=%s frame_rate=%s "
+        "internal_scale=%s precision=%s output=%s\n",
+        MGR_BUILD_ID, rex::cvar::GetFlagInfo("imgui_guest_paced") ? "available" : "MISSING",
+        rex::cvar::GetFlagByName("vulkan_nonblocking_guest_present").c_str(),
+        rex::cvar::GetFlagByName("mgr_frame_rate").c_str(),
+        rex::cvar::GetFlagByName("mgr_resolution_scale").c_str(),
+        rex::cvar::GetFlagByName("mgr_render_target_precision").c_str(),
+        rex::cvar::GetFlagByName("vulkan_output_resolution").c_str());
     DumpGuestImageIfRequested();
     MgrPromptDeviceInstall();
     const char* perf_log = std::getenv("MGR_PERF_LOG");
@@ -95,6 +120,8 @@ class MgrApp : public rex::ReXApp {
     settings_callbacks_alive_.reset();
     MgrPromptDeviceUninstall();
     rex::ui::UnregisterBind("bind_mgr_options");  // its callback captures this
+    MgrGameOptionsUninstall();
+    game_options_dialog_.reset();
     options_dialog_.reset();
     MgrStopSessionLog();
     capture_thread_.request_stop();
@@ -160,6 +187,8 @@ class MgrApp : public rex::ReXApp {
 
   std::jthread capture_thread_;
   std::filesystem::path config_path_;
+  std::filesystem::path game_root_;
   std::unique_ptr<MgrOptionsDialog> options_dialog_;
+  std::unique_ptr<MgrOptionsDialog> game_options_dialog_;
   std::shared_ptr<uint8_t> settings_callbacks_alive_ = std::make_shared<uint8_t>(0);
 };

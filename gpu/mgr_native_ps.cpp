@@ -3,6 +3,7 @@
 #include <rex/graphics/vulkan/mgr_native_ps.h>
 
 #include <rex/logging.h>
+#include <rex/filesystem.h>
 #include <rex/ui/vulkan/device.h>
 #include <rex/ui/vulkan/upload_buffer_pool.h>
 #include <rex/ui/vulkan/util.h>
@@ -74,15 +75,19 @@ bool NativePixelShaders::Initialize(const ui::vulkan::VulkanDevice* device) {
     REXGPU_INFO("MGR native PS: disabled by MGR_NATIVE_PS=0");
     return true;
   }
-  const char* path = std::getenv("MGR_NATIVE_SHADERS");
-  if (!path || !*path || !LoadBundle(path)) {
-    REXGPU_WARN("MGR native PS: no shader bundle (set MGR_NATIVE_SHADERS); using Xenia shaders");
+  const char* override_path = std::getenv("MGR_NATIVE_SHADERS");
+  const std::string path = override_path && *override_path
+      ? override_path
+      : (rex::filesystem::GetExecutableFolder() / "mgr_native_shaders.xrnb").string();
+  if (!LoadBundle(path)) {
+    REXGPU_WARN("MGR native PS: no shader bundle at {}; using Xenia shaders", path);
     return true;
   }
 
   VkDescriptorSetLayoutBinding bindings[kBindingCount] = {};
   const VkDescriptorType types[kBindingCount] = {
-      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
+      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC,
       VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
       VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  VK_DESCRIPTOR_TYPE_SAMPLER};
   for (uint32_t i = 0; i < kBindingCount; ++i) {
@@ -199,7 +204,7 @@ VkDescriptorPool NativePixelShaders::CreatePool() {
     return pool;
   }
   VkDescriptorPoolSize sizes[] = {
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 * kSetsPerPool},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 2 * kSetsPerPool},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 3 * kSlotCount * kSetsPerPool},
       {VK_DESCRIPTOR_TYPE_SAMPLER, kSlotCount * kSetsPerPool}};
   VkDescriptorPoolCreateInfo info = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
