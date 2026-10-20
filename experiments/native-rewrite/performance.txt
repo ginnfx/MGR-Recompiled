@@ -153,3 +153,7 @@ Final reproducibility check: rebuild completed; the game, Xenos plugin and
 runtime binaries are byte-for-byte identical to the app used for the four
 measurements. Final rebuilt differential check targets pass. Main HEAD,
 tracked diff and status match the starting snapshot.
+
+Selective-review commits: ddbe85d (math), 928d5c1 (bulk copy). Baseline
+0dfa5eb preserves the dirty input; 4fd69f0 supplies isolated launch/measurement
+infrastructure. See handoff.txt for dependencies and repeatable commands.

@@ -1,0 +1,66 @@
+Follow-up native reconstruction opportunities (observations, not implemented)
+
+The direct call graph was regenerated from the preserved guest code. Caller
+counts are static coverage, not runtime frequency. Evidence: private/callgraph.tsv.
+
+Implemented milestones
+- 822F67E0 bulk copy: 825 distinct guest callers, including XDK/engine resource
+  and container paths. Native copy removes guest cache-line state machine.
+- 826CC0E0 transform normal: 245 callers; 826CC160 transpose: 21 callers.
+- 826CBFB8 packing and 826CC010 unpacking: three callers each, bulk array APIs.
+
+Highest-confidence next guest subsystem
+- 82302700 memset: 714 callers, 266 generated lines. VMX fill/cache-line-zero
+  algorithm. Recover its global stride constant and stack-save aliases before
+  substituting host memset; do not assume the global has its usual value.
+- 826CC068 normalize: 47 callers; live tracing ~57..65 calls/present in boot/
+  attract. Recover epsilon at 0x821428a0, dot-product summation, rsqrt refinement
+  and exception/NaN behavior. Test the original, not a textbook normalize.
+- 826CC248 scale matrix and 826CC358 translation matrix: pure constructors;
+  remove guest stack temporaries, but preserve mutable constants and aliases.
+
+Game-specific algorithms and data structures
+- 82BA8CC0 handle lookup: 722 callers, index/generation-tag validation in a
+  global pool. Recover owner, entry stride, bounds and generation reuse first.
+- 828C1538 periodic-angle normalization: 576 callers, repeated float add/subtract
+  with mutable bounds. fmod is not automatically equivalent because repeated
+  single-precision rounding and NaN/infinity paths differ.
+- 8230D2C8 container growth/copy: 507 callers. Recover allocator vtable contract,
+  ownership flags, element size, overflow/trap behavior before replacing buffers.
+- 8230C4A8 variadic argument materialization: 22,940 callers, only 41 generated
+  lines. Very high fan-in is not evidence of a slow algorithm; reconstructing
+  formatting and logging callers is more promising than another register-copy
+  wrapper.
+
+D3D state and resource lifecycle
+- 826B69D8 / 826B6A18 / 826B6310 and adjacent setters use a device register
+  shadow (e.g. +10548) and 64-bit dirty fields (+16/+24/+32). Recover typed
+  state groups and replace engine state batches; preserve every observable
+  dirty-store sequence until ownership/publication has been proved.
+- 826AB228 (57 static callers): resource Release with atomic decrement, optional
+  parent-resource release and destruction. Do not replace guest global-lock and
+  memory-order behavior just because an atomic_ref counter looks simpler.
+- 826AA720 (50 callers): forwards through resource unlock/cache-flush 826AA3D8;
+  that path has a full fence and atomic state transitions. Requires concurrency
+  tests and graphics resource lifetime evidence.
+
+Xenos command processing, shaders and render targets
+- Existing native pixel shader bundle is already active for most draws.
+  Replacing translation already avoided by that path cannot explain new gains.
+- Runtime command counters show many resolve/transfer dispatches and barriers.
+  Retain their counts and capture identical render frames before replacing
+  EDRAM/resolve behavior; CPU command time is separate from GPU execution time.
+- Native engine-level draws can avoid more work than independent setters, but
+  require recovering register shadow consumption, shader constants/fetch layout,
+  texture tiling, resource identity, render-target aliasing and fence ownership.
+  Keep Xenos as fallback for unsupported draw families during staged replacement.
+
+Memory, Xbox API, threading and macOS integration
+- Ordinary CRT copies now have a native path; physical alias ranges and MMIO
+  remain original. Further work needs a typed guest memory view with canonical
+  physical identity and write-watch invariants, rather than unchecked base+addr.
+- Runtime already has source-built wait fixes, native Xbox API hooks and SDL
+  input/windowing. Identify call-time costs before replacing synchronization.
+- The local macOS app launcher provides independent state and Metal validation/
+  HUD measurements. A direct Metal backend is a separate renderer milestone;
+  original Vulkan/MoltenVK presentation and synchronization remain in service.

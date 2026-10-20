@@ -16,6 +16,9 @@ APP="${MGR_APP_PATH:-$ROOT/private/native-rewrite/MGR Native Rewrite.app}"
 mkdir -p "$OUT/user" "$OUT/cache"
 if [ ! -f "$OUT/.seeded" ]; then
   cp -R "$ROOT/private/user/." "$OUT/user/"
+  if [ -d "$ROOT/private/baseline/warmed-cache" ]; then
+    cp -R "$ROOT/private/baseline/warmed-cache/." "$OUT/cache/"
+  fi
   touch "$OUT/.seeded"
 fi
 exec open -n -W -a "$APP" --stdout "$OUT/stdout.log" --stderr "$OUT/stderr.log" \

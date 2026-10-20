@@ -6,12 +6,12 @@ Base main HEAD: de8b75a (checkpoint/perf-720p), plus preserved working changes.
 Main worktree remains outside the experiment. No integration authorized.
 
 Milestones
-M0: preserve dirty sources, vendored changes, generated code, runtime, saves,
+M0 (passed): preserve dirty sources, vendored changes, generated code, runtime, saves,
     settings; independent CMake/Ninja build, baseline executable and launch.
-M1: reconstruct XDK array float packing/unpacking, vector normal transform,
+M1 (ddbe85d; local correctness/build/runtime passed, visual pending): reconstruct XDK array float packing/unpacking, vector normal transform,
     matrix transpose; differential oracle, real dispatch microbenchmarks,
     fallback toggle, game launch, comparable frame sampling.
-M2: reconstruct central CRT guest copy using native memory operations, with
+M2 (928d5c1; local correctness/build/runtime passed, visual pending): reconstruct central CRT guest copy using native memory operations, with
     original implementation for alias/wrap/physical memory cases; independent
     differential oracle, benchmark and game validation before commit.
 Next: profile game after these replacements; reconstruct normalization and
