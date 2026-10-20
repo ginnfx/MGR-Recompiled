@@ -32,3 +32,13 @@ capture has201 encoders/676 draws/137 dispatches and no profiling session.
 CPU/architecture: source-content coherence replaces unconditional dump issue.
 This is GPU work elimination plus CPU metadata overhead, not a faster shader.
 No shader quality, resolution, frame cap or pixel precision setting changed.
+
+Renderer log diagnostics (separate from Metal API validation)
+- 171 missing-vertex-shader messages recur during stored-pipeline loading in
+  original and native runs. Source pipeline_cache.cpp drops stored entries it
+  cannot construct; this was not introduced or repaired by the reconstruction.
+- Some original and native runs report resolves wider than surface pitch
+  (1280 vs1200). Existing GetResolveInfo logs and clamps to the pitch before
+  the new coherence logic runs. Counts vary with the unverified scene sequence.
+- These logs are not error-free. No visual correctness inference is justified.
+  See rendering-diagnostics.json; later benchmark runs add their own counts.

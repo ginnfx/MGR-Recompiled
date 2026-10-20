@@ -1,0 +1,61 @@
+M5 native resolve + write-intent result
+=======================================
+
+A original dumps (both GPU switches0); B both GPU switches1. All five earlier
+guest reconstructions ON in both. Identical binary/config/cache seed,120cap,
+scale1,1280x720. Unattended boot/attract; exact scene/visible-area parity unverified.
+Selected frame window30–60 seconds. All four selected windows observed focus1.
+HUD GPU/presentation data use approximately aligned whole log batches.
+
+Run  Mode     Guest FPS  1%low  Render CPUms  GPUms  Host FPS  RSS MiB
+A1   0           52.41   19.15        12.27   18.94     51.09    943.2
+B1   1           48.75   19.21        13.07   20.42     47.71    874.3
+B2   1           46.62   19.11        11.57   21.40     45.70    932.1
+A2   0           46.39   19.61        11.71   21.50     45.49   1036.3
+Mean mode=0: 49.40 guest FPS, 20.22 GPU ms, 11.99 render CPU ms.
+Mean mode=1: 47.69 guest FPS, 20.91 GPU ms, 12.32 render CPU ms.
+
+Observed GPU change +3.39%; guest FPS change -3.47%.
+This is an adverse exploratory result, not a verified performance improvement.
+Attribution remains unresolved because visual scene identity is unverified;
+whole-run draw counts also differ. Keep BOTH GPU changes OFF by default.
+No claim that the regression is harmless or solely noise. Investigate with a
+locked scene and GPU profiling/visual comparisons before promotion.
+
+Actual commands omitted (whole launch, including warmup; not stable-window GPU timing):
+A1: dump tiles skipped 0.00%, dump dispatches skipped 0.00%; CP work 11.64 ms + fence wait 7.78 ms; draws/frame 857.4.
+B1: dump tiles skipped 12.84%, dump dispatches skipped 6.13%; CP work 12.48 ms + fence wait 7.72 ms; draws/frame 901.5.
+B2: dump tiles skipped 13.34%, dump dispatches skipped 6.33%; CP work 13.16 ms + fence wait 7.52 ms; draws/frame 881.6.
+A2: dump tiles skipped 0.00%, dump dispatches skipped 0.00%; CP work 14.44 ms + fence wait 6.28 ms; draws/frame 818.6.
+
+CPU improvement: not established by these runs. GPU execution-time improvement:
+not established; observed means regress. Architectural result: native source
+coherence and draw-write intent can suppress redundant dump operations, with
+original fallback retained. M5 incremental benefit relative to M4 was modeled
+but not isolated in a separate game benchmark. M5 game timings compare the
+combined new rendering policy against original dumps.
+
+Validation: game and runtime builds pass;524288 policy cases,100000 mixed
+content comparisons,200000 coherence cases, ASan/UBSan, previous math/memcpy/
+timing/resolve-arena checks pass. Separate60-second API-validation/live-shadow
+run completed without observed API errors or math mismatches. Renderer logs
+still contain pre-existing missing-shader-cache and pitch-clamp diagnostics.
+
+Rendering correctness remains UNVERIFIED for gameplay, postprocessing, depth/
+stencil-heavy scenes, overlapping targets, scaled/MSAA modes and Blade Mode.
+No GPU image differential comparison was performed. Captured native frame has
+676 draws/137 dispatches/201 encoders, but lacks embedded shader profiling.
+
+Focus anomaly: requested four-way matrix remains blocked by denied Computer
+Use access. Observed focused runs exclude input polling and Vulkan acquisition
+as large costs in those windows; host submission dominates the measured paint
+CPU wall time. This does not determine whether the reported10 FPS unfocused
+gain is rendering speed or pacing/composition/measurement behavior.
+
+Final reproducibility: final rebuild initially matched all measured binaries.
+A subsequent telemetry-only correction sets stdio buffering before the first
+header write. The final GPU plugin/executable remain byte-identical to measured
+ones; runtime hash changes. Rebuild, concurrent metrics check and a35-second
+API/shadow smoke passed afterward. This initialization fix is not benchmarked
+and carries no performance claim. Both hashes remain in render-binary-verification.
+json; measured M4 binaries are also saved under private/milestones/m4-resolve-bin.

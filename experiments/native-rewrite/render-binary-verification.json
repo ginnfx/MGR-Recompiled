@@ -1,0 +1,33 @@
+{
+  "matches_measured_app": {
+    "libTracyClientrd.dylib": true,
+    "librexruntimerd.dylib": true,
+    "librexgpu-xenosrd.dylib": true,
+    "mgr": true
+  },
+  "measured_sha256": {
+    "libTracyClientrd.dylib": "e0ead2feb661973bd4d8731650264c77a0a6cf512bb8e744915d8be3955113ad",
+    "librexruntimerd.dylib": "56c9f2f93234b97cac3e4edca710fd8a3d72ca54c68cc0e25b27316d48c9f339",
+    "librexgpu-xenosrd.dylib": "a6c8e71b858e27d0c5ae0dd9fa76ff18aeae4002c54c528cbd258de53d2d8fc0",
+    "mgr": "1aec3a2bdf77e888fdb68157d21f64b4ee2648238ec20ba6b7ee5441481afac4"
+  },
+  "rebuilt_sha256": {
+    "libTracyClientrd.dylib": "e0ead2feb661973bd4d8731650264c77a0a6cf512bb8e744915d8be3955113ad",
+    "librexruntimerd.dylib": "56c9f2f93234b97cac3e4edca710fd8a3d72ca54c68cc0e25b27316d48c9f339",
+    "librexgpu-xenosrd.dylib": "a6c8e71b858e27d0c5ae0dd9fa76ff18aeae4002c54c528cbd258de53d2d8fc0",
+    "mgr": "1aec3a2bdf77e888fdb68157d21f64b4ee2648238ec20ba6b7ee5441481afac4"
+  },
+  "final_sha256": {
+    "libTracyClientrd.dylib": "e0ead2feb661973bd4d8731650264c77a0a6cf512bb8e744915d8be3955113ad",
+    "librexruntimerd.dylib": "5802b4b43d5ef5a2cdbed3617433c782019e76f2800dd9d0e73a97d0d659713a",
+    "librexgpu-xenosrd.dylib": "a6c8e71b858e27d0c5ae0dd9fa76ff18aeae4002c54c528cbd258de53d2d8fc0",
+    "mgr": "1aec3a2bdf77e888fdb68157d21f64b4ee2648238ec20ba6b7ee5441481afac4"
+  },
+  "final_matches_measured_app": {
+    "libTracyClientrd.dylib": true,
+    "librexruntimerd.dylib": false,
+    "librexgpu-xenosrd.dylib": true,
+    "mgr": true
+  },
+  "post_benchmark_change": "Runtime telemetry initialization sets line buffering before its first write; GPU plugin and executable unchanged. Rebuilt, aggregation checks and35-second native-on API/shadow smoke passed. No performance claim for buffer-order fix."
+}

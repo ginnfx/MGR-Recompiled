@@ -1,0 +1,9 @@
+{
+  "head_unchanged": true,
+  "status_unchanged": true,
+  "tracked_delta_unchanged": true,
+  "untracked_contents_unchanged": true,
+  "untracked_files": {
+    "src/mgr_d3d_trace.cpp": true
+  }
+}

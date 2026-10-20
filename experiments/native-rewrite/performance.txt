@@ -157,3 +157,74 @@ tracked diff and status match the starting snapshot.
 Selective-review commits: ddbe85d (math), 928d5c1 (bulk copy). Baseline
 0dfa5eb preserves the dirty input; 4fd69f0 supplies isolated launch/measurement
 infrastructure. See handoff.txt for dependencies and repeatable commands.
+
+
+Rendering phase M3–M5 (2026-10-20)
+=================================
+All prior data above are historical M0–M2 findings. New work stayed exclusively
+in /private/tmp/macgrpc-native-rewrite on experiment/native-rewrite.
+
+M3 d9497c3: focus/input/host-presentation telemetry. Requested controlled focus
+matrix is still blocked. Four observed original/native
+runs stayed focused; input polling and Vulkan acquisition were small costs,
+host submission much larger. Queue-lock refinement shows host submission time
+mostly outside our mutex. Focus anomaly cause remains UNDETERMINED. Actual
+unique displayed frames are not counted; guest arrivals, queue-present requests
+and HUD host presentation/GPU samples are distinct metrics.
+See focus-results.txt, focus-protocol.txt and focus-observed.json.
+
+M4 cb5d925: native RT-source coherence, omits unchanged host-image→EDRAM dumps.
+Original final resolves retained. 200000 modeled content comparisons and
+ASan/UBSan passed. Native stable batches omit12/120 dump dispatches and22.5%
+of dump tiles; whole launches omit13–14% tiles. GPU means22.10 vs19.92 ms
+original: adverse/confounded. Both native windows had brief focus losses.
+Candidate retained OFF by default. See resolve-coherence-results.txt/.json.
+
+M5 (this revision): reconstruct draw write intent from normalized pipeline
+state, preserving snapshots across read-only bindings. 524288 policy cases and
+100000 mixed draw/resolve modeled content comparisons pass, including sanitized
+builds. Combined M4+M5 compared against original dumps (guest hooks on in all):
+                      Original       Native rendering
+Guest FPS                 49.40                  47.69
+1% low FPS                19.38                  19.16
+Render-thread CPU ms      11.99                  12.32
+Metal GPU ms              20.22                  20.91
+HUD host FPS              48.29                  46.71
+RSS MiB                  989.72                 903.23
+Observed GPU time+3.39%, guest FPS-3.47%; no verified improvement. All selected
+windows focused1280x720; exact visual scenes/visible area unverified, whole-run
+draw counts differ. RSS difference is not an established memory optimization.
+See render-write-intent-results.txt/.json and render-result-means.json.
+
+Classification
+- CPU: no new verified critical-path or end-to-end improvement.
+- GPU: redundant dump dispatches/tiles omitted, but no verified GPU frame-time
+  gain; measured averages adverse. Both new GPU switches default0.
+- Architecture: explicit native source coherence and write intent replace
+  unconditional materialization; no direct Metal backend/shader replacement.
+
+Fallbacks
+MGR_NATIVE_RESOLVE=0: original GPU dumps (default).
+MGR_NATIVE_RESOLVE=1 MGR_NATIVE_RESOLVE_WRITES=0: M4 conservative coherence.
+MGR_NATIVE_RESOLVE=1 MGR_NATIVE_RESOLVE_WRITES=1: M5 selective invalidation.
+MGR_NATIVE_MATH=0 MGR_NATIVE_MEMORY=0 retain previous guest-function fallbacks.
+Do not enable the rendering candidates by default or integrate on these data.
+
+Runtime/correctness limits
+Game/runtime builds, old differential/timing/arena checks and new CPU models
+pass. API-validation/live-shadow smoke runs do not show API errors or math
+mismatches. Renderer logs DO have pre-existing missing-shader-cache diagnostics
+and pitch-clamp messages in both original/native modes; see rendering-diagnostics.
+json. No full GPU image comparison or visual gameplay validation was possible.
+Captured one native frame:676 draws,137 dispatches,201 encoders,3.9GiB artifact;
+no embedded profiling data, so no shader cost ranking. Trace/debugger sessions
+were closed before benchmarks. No main-worktree modifications or integration.
+
+Reproduction/source delivery
+Vendor files are owned copies and ignored by Git. Their exact changes are
+tracked in patches/native-pipeline-metrics.patch and native-resolve-coherence.
+patch, plus pre/post SHA256 manifests. Run tools/experiment/apply_render_patches.py
+on the preserved preimage; CMake rejects missing patches. Core C++ helpers,
+checks, benchmark tools and reports are tracked. See rendering-implementation.
+txt, render-write-intent.txt and rendering-next-candidates.txt for invariants,
+remaining opportunities and visual coverage requirements.

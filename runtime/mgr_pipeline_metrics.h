@@ -18,8 +18,8 @@ inline FILE* File() {
     const char* path = std::getenv("MGR_PIPELINE_CSV");
     FILE* f = path ? std::fopen(path, "w") : nullptr;
     if (f) {
-      std::fprintf(f, "steady_ns,focus,ui,nonblocking,width,height,outcome,attempt_ns,reuse_ns,acquire_ns,submit_ns,present_ns,input_calls,input_ns,submit_lock_ns,present_lock_ns\n");
       std::setvbuf(f, nullptr, _IOLBF, 0);
+      std::fprintf(f, "steady_ns,focus,ui,nonblocking,width,height,outcome,attempt_ns,reuse_ns,acquire_ns,submit_ns,present_ns,input_calls,input_ns,submit_lock_ns,present_lock_ns\n");
     }
     return f;
   }();

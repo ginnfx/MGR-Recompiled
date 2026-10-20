@@ -1,0 +1,67 @@
+M5: native draw write-intent reconstruction
+=========================================
+
+M4 invalidated every accumulated bound attachment on every draw. The renderer
+keeps attachments bound across changes in write enables to avoid render-pass
+breaks. Binding and content modification therefore differ.
+
+M5 reconstructs a native write-intent mask from the SAME normalized controls
+used to construct Vulkan graphics pipelines: rasterization enable, depth write
+enable, stencil enable, and four per-target color-channel masks. Rasterization
+disabled means no attachment stores. Any nonzero color mask invalidates the
+entire corresponding owner. All stencil-enabled draws remain conservative;
+individual keep operations/write masks are not optimized. Depth write enable
+remains conservative even if the depth test itself is disabled.
+
+Only cache invalidation changes. Shader output, Vulkan pipeline state, draw
+submission, transfers, clears, resolve destinations and fences keep their
+existing implementation. Transfer/clear invalidation always happens regardless
+of draw mask. Read-only source snapshots can survive color-only/other draws,
+allowing a later resolve to omit an additional dump.
+
+MGR_NATIVE_RESOLVE=1 MGR_NATIVE_RESOLVE_WRITES=1 enables M5.
+MGR_NATIVE_RESOLVE=1 MGR_NATIVE_RESOLVE_WRITES=0 retains M4 conservative policy.
+MGR_NATIVE_RESOLVE=0 retains original dumps. Both new switches default0.
+
+The patch/manifest are cumulative relative to the preserved pre-M4 vendor copy.
+M5 depends on M4's source coherence helper and lifecycle invalidation. Selective
+integration must keep these dependencies; no merge is authorized or performed.
+
+CPU checks enumerate all65536 color-channel masks and8 raster/depth/stencil
+control combinations (524288 cases), plus read-only depth survival, depth/stencil
+writes and transfer/clear invalidation. These checks prove the policy function
+against its defined predicates. An additional100000 mixed draw/resolve cases
+compare complete modeled EDRAM contents with unconditional copying. The
+selective policy skipped716 model dumps vs0 for conservative invalidation.
+These synthetic counts are not game performance or GPU-image parity evidence.
+
+Source evidence: common render-target cache documents accumulated vs currently
+used attachments; Vulkan pipeline_cache.cpp uses normalized_depth_control for
+depth_write_enable and normalized_color_mask for each attachment's write mask.
+This is an extension of native GPU materialization/coherency, not a shader
+quality reduction or a direct D3D/Metal backend replacement.
+
+Runtime and benchmarking commands
+python3 tools/experiment/capture_gpu.py UNIQUE --resolve 1 --writes 1 \
+  --validate-only --warmup 60
+python3 experiments/native-rewrite/sample_runs.py --comparison render \
+  --tag UNIQUE --seconds 75 --start 30 --duration 30
+
+Pending visual coverage remains: depth/stencil-heavy gameplay, postprocessing,
+overlapping RT aliases, MSAA, scaled resolutions, clears/transitions, Blade Mode,
+and sustained gameplay. A validated boot is not evidence for those cases.
+
+The final render comparison toggles both new GPU switches against original
+dumps, while keeping the five guest reconstructions enabled. Use comparison
+writes separately to isolate M5 relative to M4; no such isolated M5 timing
+claim follows from the combined original-vs-native run.
+
+Renderer log diagnostics (separate from Metal API validation)
+- 171 missing-vertex-shader messages recur during stored-pipeline loading in
+  original and native runs. Source pipeline_cache.cpp drops stored entries it
+  cannot construct; this was not introduced or repaired by the reconstruction.
+- Some original and native runs report resolves wider than surface pitch
+  (1280 vs1200). Existing GetResolveInfo logs and clamps to the pitch before
+  the new coherence logic runs. Counts vary with the unverified scene sequence.
+- These logs are not error-free. No visual correctness inference is justified.
+  See rendering-diagnostics.json; later benchmark runs add their own counts.

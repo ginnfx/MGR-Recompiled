@@ -1,55 +1,38 @@
-Native rewrite experiment handoff
+Native rewrite experiment: rendering handoff
+============================================
+Worktree /private/tmp/macgrpc-native-rewrite; branch experiment/native-rewrite.
+No merge/push/integration. Main preservation rechecked in render-main-preservation.
+json (HEAD/status/tracked delta/untracked contents unchanged).
 
-Worktree: /private/tmp/macgrpc-native-rewrite
-Branch: experiment/native-rewrite
-Main source baseline: de8b75a plus the working delta captured by 0dfa5eb.
-No merge, push or main-working-tree source changes were performed.
+Prior hooks: ddbe85d math,928d5c1 copy; baseline0dfa5eb, instrumentation4fd69f0,
+paired reportd8ace88. New: d9497c3 focus telemetry,cb5d925 opt-in resolve coherence,
+M5 in this revision write-intent reconstruction and final results.
 
-Original executable/runtime/settings/shaders: private/baseline/bin
-M1 executable/runtime/settings/shaders: private/milestones/m1-bin
-M2 executable: build/mgr; app snapshot: private/native-rewrite/MGR Native Rewrite.app
-Input hashes and vendor patches: private/baseline/inputs.json and *.patch
-Main original tracked/untracked status and patch: private/baseline/source-state.json
-and source.patch. SDK and proprietary game assets are input links; outputs and
-modified sources are in this worktree.
+Both GPU switches OFF by default: no reliable GPU frame-time gain established.
+Combined benchmark means original49.40 FPS/20.22 GPUms vs47.69/20.91 native.
+Do not promote adverse candidates without locked-scene evidence and visual/GPU
+image comparison. Both paths remain reversible and original dumps remain available.
 
-Rebuild / validate
-  cmake --build build --target mgr mgr_native_math_checks mgr_native_memory_checks --parallel 4
-  build/mgr_native_math_checks bench
-  build/mgr_native_memory_checks bench
-  MGR_NATIVE_MEMORY=0 build/mgr_native_memory_checks
-  build/mgr_timing_checks enabled    (also disabled and forced)
-  build/mgr_resolve_arena_checks
+Focus anomaly remains unresolved: the game window can't be driven yet. A request
+for access went out; no approval assumed. Current telemetry
+separates actual observed focus, input, slot waits, Vulkan acquire, submission
+and queue locks. Guest FPS does not establish displayed-frame rate. Missing:
+controlled native-off/on × focused/unfocused, identical stationary gameplay
+scene and visible area, actual displayed/unique guest-frame correlation.
 
-Run from CLI
-  experiments/native-rewrite/run.sh <unique-label> [game cvars...]
-  MGR_NATIVE_MATH=0 MGR_NATIVE_MEMORY=0 restores both original subsystems.
+Validation: builds and CPU differential/sanitizer checks pass; standalone API-
+validation/shadow runs complete. This is NOT gameplay/rendering parity. Existing
+renderer diagnostics recur in original and native modes; they are documented.
+Captured native frame under private/native-rewrite/resolve-validation-capture/
+frame.gputrace; gpudebug static inspection works, profiling session absent.
 
-Local app / Metal validation
-  python3 experiments/native-rewrite/bundle.py build 'private/native-rewrite/MGR Native Rewrite.app'
-  experiments/native-rewrite/run-app.sh <unique-label> verify
-  Modes original/native disable/enable both replacements without live shadows.
-  Modes sample-original/sample-native also enable Metal HUD logging.
+Next priorities: locked-scene focus test; GPU encoder cost profile; fused narrow
+1x32bpp host-image→tiled resolve; compatible resolve-image texture aliases;
+state batching only where it actually removes GPU passes. D3D release/unlock
+atomic/fence semantics remain unreconstructed. See rendering-next-candidates.txt.
 
-Repeat frame comparison (no competing game/build)
-  python3 experiments/native-rewrite/sample_runs.py --tag <unique-tag>
-  It runs A/B/B/A, 80 seconds per run, samples 30..60 seconds, uses separate
-  saves/cache copies, logs metrics, and terminates only app PIDs it verifies as
-  belonging to the launched run. It does not synthesize input or inspect UI.
-  Existing evidence directories are never overwritten by this driver.
-
-Integration review
-  Native math: ddbe85d
-  Native memory: 928d5c1
-  Baseline preservation: 0dfa5eb; isolated measurement foundation: 4fd69f0
-  Review the native math and native memory commits independently. They assume
-  the preserved dirty baseline, including mgr_d3d_trace.cpp, rather than clean
-  de8b75a alone. Selective integration may need that baseline staged first.
-  Measurement/launcher tooling is separate. Generated sources are not patched.
-
-Outstanding acceptance
-  Couldn't capture the app window: visual parity and interactive gameplay
-  were not verified. Boot/automatic attract did run. Before integration, verify
-  sustained gameplay, Blade Mode, loading/saving, rendering, and concurrent
-  resource behavior. Current evidence supports tested CPU algorithms, not a
-  whole-game parity or FPS claim. See performance.txt and opportunities.txt.
+Rebuild: python3 tools/experiment/apply_render_patches.py; build owned runtime,
+then cmake --build build --target mgr --parallel 4. Snapshot via bundle.py;
+run sample_runs.py --comparison render --tag UNIQUE --seconds 75 --start 30
+--duration 30. Never overlap build or trace
+replay with selected measurement windows. Use unique evidence directories.

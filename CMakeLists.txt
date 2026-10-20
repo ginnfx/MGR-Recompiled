@@ -188,3 +188,7 @@ target_compile_options(mgr_resolve_coherence_checks PRIVATE -UNDEBUG)
 add_executable(mgr_pipeline_metrics_checks EXCLUDE_FROM_ALL
     tests/mgr_pipeline_metrics_checks.cpp)
 target_compile_options(mgr_pipeline_metrics_checks PRIVATE -UNDEBUG)
+add_executable(mgr_render_writes_checks EXCLUDE_FROM_ALL
+    tests/mgr_render_writes_checks.cpp)
+target_include_directories(mgr_render_writes_checks PRIVATE gpu)
+target_compile_options(mgr_render_writes_checks PRIVATE -UNDEBUG)

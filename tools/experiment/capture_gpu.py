@@ -11,6 +11,8 @@ import time
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('label')
 p.add_argument('--resolve', choices=['0', '1'], default='0')
+p.add_argument('--writes', choices=['0', '1'], default='0')
+p.add_argument('--validate-only', action='store_true', help='run validation without capture')
 p.add_argument('--warmup', type=int, default=40)
 a = p.parse_args()
 root = Path(__file__).resolve().parents[2]
@@ -18,7 +20,8 @@ out = root/'private/native-rewrite'/a.label
 if out.exists():
     raise SystemExit('Refusing to overwrite capture evidence')
 app = root/'private/native-rewrite/MGR Native Rewrite.app/Contents/MacOS/mgr'
-env = dict(os.environ, MGR_CAPTURE='1', MGR_NATIVE_RESOLVE=a.resolve)
+env = dict(os.environ, MGR_CAPTURE='0' if a.validate_only else '1',
+           MGR_NATIVE_RESOLVE=a.resolve, MGR_NATIVE_RESOLVE_WRITES=a.writes)
 process = subprocess.Popen([str(root/'experiments/native-rewrite/run-app.sh'),
     a.label, 'verify'], cwd=root, env=env)
 pid = None
@@ -39,6 +42,9 @@ try:
         time.sleep(1)
     if pid is None:
         raise RuntimeError('No owned capture process found')
+    if a.validate_only:
+        print('Validation-only run completed: ' + str(out))
+        raise SystemExit(0)
     for name, command in [
         ('boundaries', ['gpucapture','boundaries','--pid',str(pid)]),
         ('capture', ['gpucapture','start','--pid',str(pid),'--count','1',

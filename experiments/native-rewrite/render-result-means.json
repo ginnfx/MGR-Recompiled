@@ -1,0 +1,22 @@
+{
+  "means": {
+    "0": {
+      "average_fps": 49.399821758428146,
+      "one_percent_low_fps": 19.379061977092814,
+      "mean_render_thread_cpu_ms": 11.990017094328552,
+      "gpu_execution_time_ms": 20.222145083627776,
+      "mean_rss_mib": 989.7246685805476,
+      "metal_host_presentation_fps": 48.290182663018804
+    },
+    "1": {
+      "average_fps": 47.68544572201519,
+      "one_percent_low_fps": 19.162171481504387,
+      "mean_render_thread_cpu_ms": 12.319678304740911,
+      "gpu_execution_time_ms": 20.907343203321116,
+      "mean_rss_mib": 903.2271035433473,
+      "metal_host_presentation_fps": 46.70628807838749
+    }
+  },
+  "gpu_percent": 3.388355275168542,
+  "fps_percent": -3.4704093565286365
+}

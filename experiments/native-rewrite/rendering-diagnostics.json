@@ -1,0 +1,72 @@
+{
+  "focus-observed-A1": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 0,
+    "total_error_lines": 171
+  },
+  "focus-observed-B1": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 112,
+    "total_error_lines": 283
+  },
+  "focus-observed-B2": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 236,
+    "total_error_lines": 407
+  },
+  "focus-observed-A2": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 285,
+    "total_error_lines": 456
+  },
+  "resolve-coherence-A1": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 120,
+    "total_error_lines": 291
+  },
+  "resolve-coherence-B1": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 165,
+    "total_error_lines": 336
+  },
+  "resolve-coherence-B2": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 274,
+    "total_error_lines": 445
+  },
+  "resolve-coherence-A2": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 339,
+    "total_error_lines": 510
+  },
+  "resolve-validation-capture": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 0,
+    "total_error_lines": 171
+  },
+  "render-writes-validate": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 127,
+    "total_error_lines": 298
+  },
+  "render-write-intent-A1": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 0,
+    "total_error_lines": 171
+  },
+  "render-write-intent-B1": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 204,
+    "total_error_lines": 375
+  },
+  "render-write-intent-B2": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 62,
+    "total_error_lines": 233
+  },
+  "render-write-intent-A2": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 230,
+    "total_error_lines": 401
+  }
+}

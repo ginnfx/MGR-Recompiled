@@ -19,7 +19,7 @@ p.add_argument('--seconds', type=int, default=80)
 p.add_argument('--start', type=int, default=30)
 p.add_argument('--duration', type=int, default=30)
 p.add_argument('--tag', default='final')
-p.add_argument('--comparison', choices=['guest', 'resolve'], default='guest')
+p.add_argument('--comparison', choices=['guest', 'resolve', 'writes', 'render'], default='guest')
 a = p.parse_args()
 if a.seconds < a.start + a.duration + 5:
     p.error('run must extend beyond the entire sample window')
@@ -27,7 +27,7 @@ root = Path(__file__).resolve().parents[2]
 app = root/'private/native-rewrite/MGR Native Rewrite.app/Contents/MacOS'
 results = []
 for leg, native in [('A1',False),('B1',True),('B2',True),('A2',False)]:
-    mode = 'sample-native' if a.comparison == 'resolve' or native else 'sample-original'
+    mode = 'sample-native' if a.comparison != 'guest' or native else 'sample-original'
     label = f'{a.tag}-{leg}'
     out = root/'private/native-rewrite'/label
     if out.exists():
@@ -35,7 +35,9 @@ for leg, native in [('A1',False),('B1',True),('B2',True),('A2',False)]:
     shutil.copyfile(root/'private/baseline/mgr.toml', app/'mgr.toml')
     command = [str(root/'experiments/native-rewrite/run-app.sh'), label, mode]
     print(f'START {label} {mode}', flush=True)
-    env = dict(os.environ, MGR_NATIVE_RESOLVE=str(int(a.comparison == 'resolve' and native)))
+    env = dict(os.environ,
+        MGR_NATIVE_RESOLVE=str(int(a.comparison == 'writes' or (a.comparison in ['resolve', 'render'] and native))),
+        MGR_NATIVE_RESOLVE_WRITES=str(int(a.comparison in ['writes', 'render'] and native)))
     process = subprocess.Popen(command, cwd=root, env=env)
     started = time.monotonic()
     pid = None
@@ -75,6 +77,7 @@ for leg, native in [('A1',False),('B1',True),('B2',True),('A2',False)]:
         str(out/'stderr.log')], text=True))
     summary.update(label=label, mode=mode,
         comparison=a.comparison, native_resolve=env['MGR_NATIVE_RESOLVE'],
+        native_resolve_writes=env['MGR_NATIVE_RESOLVE_WRITES'],
         scene='unattended boot/automatic attract; visual matching unverified',
         validation=False, shadow_checks=False)
     pipeline = out/'pipeline.csv'

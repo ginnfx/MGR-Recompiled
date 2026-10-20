@@ -9,6 +9,10 @@ set(XENOS_SRC ${REXSDK_SRC}/src/graphics)
 if(NOT EXISTS ${XENOS_SRC}/plugin_main.cpp)
     message(FATAL_ERROR "Missing ${XENOS_SRC}; see PROGRESS.md (vendor setup)")
 endif()
+file(READ "${XENOS_SRC}/vulkan/render_target_cache.cpp" MGR_RESOLVE_SOURCE)
+if(NOT MGR_RESOLVE_SOURCE MATCHES "mgr::RenderTargetWriteMask")
+    message(FATAL_ERROR "Native rendering source patch missing. Run: python3 tools/experiment/apply_render_patches.py")
+endif()
 
 set(XENOS_SOURCES
     plugin_main.cpp flags.cpp register_file.cpp registers.cpp

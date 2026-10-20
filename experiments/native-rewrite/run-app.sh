@@ -29,6 +29,7 @@ exec open -n -W -a "$APP" --stdout "$OUT/stdout.log" --stderr "$OUT/stderr.log" 
   --env "MGR_NATIVE_MATH_VERIFY=${MGR_NATIVE_MATH_VERIFY:-0}" \
   --env "MGR_NATIVE_MEMORY=${MGR_NATIVE_MEMORY:-1}" \
   --env "MGR_NATIVE_RESOLVE=${MGR_NATIVE_RESOLVE:-0}" \
+  --env "MGR_NATIVE_RESOLVE_WRITES=${MGR_NATIVE_RESOLVE_WRITES:-0}" \
   --env "MGR_D3D_TRACE=${MGR_D3D_TRACE:-0}" \
   --env "MGR_GPU_STATS=${MGR_GPU_STATS:-1}" \
   --env "MTL_HUD_ENABLED=${MGR_METAL_HUD:-0}" \

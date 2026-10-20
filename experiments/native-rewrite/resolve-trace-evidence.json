@@ -12,5 +12,10 @@
   "visual_gameplay_verified": false,
   "capture_excluded_from_benchmarks": true,
   "debugger_session_terminated": true,
-  "profile_load_result": "no profiling sessions in trace"
+  "profile_load_result": "no profiling sessions in trace",
+  "renderer_diagnostics": {
+    "missing_vertex_shader_messages": 171,
+    "resolve_pitch_clamp_messages": 0,
+    "total_error_lines": 171
+  }
 }
