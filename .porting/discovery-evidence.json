@@ -106,7 +106,7 @@
     "Live vendor and project files contain changes beyond the worktree baseline, including newer resolve work. Preserve and reconcile deliberately; do not treat them as part of 5cd3077.",
     "Recommend native Metal backend under existing Xenos command semantics first. Game-specific D3D hook replacement is a separate scope decision.",
     "Apple feature tables list Metal 4 for M1 onward; placement sparse buffers/textures are Apple8+, so the mandatory M1 path must avoid requiring them.",
-    "No game launch, benchmark, dependency mutation, renderer implementation or build was performed."
+    "Discovery used source inspection and existing trace summaries; runtime and build results are recorded separately in validation-results.json."
   ],
   "sources": [
     "https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf",

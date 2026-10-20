@@ -41,7 +41,7 @@
     "branch": "metal4-rewrite",
     "targeted_metal_build": "pass",
     "source_only_regressions": "pass: coherent MSL 3.2 ROG contracts for both composite shader hashes; texture endian/swizzle; triangle fan",
-    "gpu_integration": "blocked: MTLCreateSystemDefaultDevice returned nil in the current tool environment",
+    "gpu_integration": "not run: MTLCreateSystemDefaultDevice returned nil in the test process",
     "latest_available_scene": "nonblack but visibly corrupted after the earlier sample-mask merge fix; newer MSL 3.2/pixel-interlock changes not rendered",
     "gameplay_parity": "not verified",
     "fps_improvement": "not measured; guest renderer still waits idle and submits per draw",
