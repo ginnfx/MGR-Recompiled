@@ -1,0 +1,45 @@
+{
+  "binary_sha256": "ae32fee5c0ab5f8306fa04dc9b4858a96b6ae8e3b306076e4f05dfc61f6f4f5a",
+  "copy_checks": "PASS: 36864 disjoint copy cases; overlap, stack, MMIO, physical/wrap fallbacks; strong hook and ABI\nBENCH copy n=16 alignment=0 original 7.56 ns/call\nBENCH copy n=16 alignment=0 native 4.23 ns/call\nBENCH copy n=64 alignment=0 original 13.96 ns/call\nBENCH copy n=64 alignment=0 native 3.93 ns/call\nBENCH copy n=256 alignment=0 original 28.60 ns/call\nBENCH copy n=256 alignment=0 native 5.42 ns/call\nBENCH copy n=4096 alignment=0 original 568.40 ns/call\nBENCH copy n=4096 alignment=0 native 67.44 ns/call\nBENCH copy n=16384 alignment=0 original 1749.99 ns/call\nBENCH copy n=16384 alignment=0 native 230.30 ns/call\nBENCH copy n=16 alignment=3 original 34.00 ns/call\nBENCH copy n=16 alignment=3 native 4.67 ns/call\nBENCH copy n=64 alignment=3 original 48.22 ns/call\nBENCH copy n=64 alignment=3 native 4.55 ns/call\nBENCH copy n=256 alignment=3 original 74.61 ns/call\nBENCH copy n=256 alignment=3 native 6.55 ns/call\nBENCH copy n=4096 alignment=3 original 471.65 ns/call\nBENCH copy n=4096 alignment=3 native 60.40 ns/call\nBENCH copy n=16384 alignment=3 original 1794.75 ns/call\nBENCH copy n=16384 alignment=3 native 231.60 ns/call\n",
+  "copy_disabled_checks": "PASS: 36864 disjoint copy cases; overlap, stack, MMIO, physical/wrap fallbacks; strong hook and ABI\n",
+  "math_checks": "fallback op=0 count=0\nfallback op=1 count=0\nfallback op=2 count=0\nfallback op=3 count=0\nPASS: exhaustive half decode, boundary packing, 16000 randomized/alias/alignment cases, ABI and FP modes\nBENCH pack original 40069.50 ns/call (1024 elements)\nBENCH pack native 474.37 ns/call (1024 elements)\nBENCH unpack original 17179.03 ns/call (1024 elements)\nBENCH unpack native 266.42 ns/call (1024 elements)\nBENCH transform-normal original 8.75 ns/call (1 elements)\nBENCH transform-normal native 5.63 ns/call (1 elements)\nBENCH transpose original 18.42 ns/call (1 elements)\nBENCH transpose native 6.55 ns/call (1 elements)\n",
+  "live_math_checks": {
+    "transform": 1142473,
+    "transpose": 3221301
+  },
+  "validation_elapsed_ms": 141203.045,
+  "paired_run_means": {
+    "original": {
+      "average_fps": 50.07326858497158,
+      "mean_render_thread_cpu_ms": 12.161988172673166,
+      "gpu_execution_time_ms": 19.713914445267925,
+      "mean_rss_mib": 1082.7402635431042
+    },
+    "native": {
+      "average_fps": 49.72511432433313,
+      "mean_render_thread_cpu_ms": 9.387930859943644,
+      "gpu_execution_time_ms": 20.117289079458832,
+      "mean_rss_mib": 1109.3530880381782
+    }
+  },
+  "controlled_gameplay_validation": false,
+  "final_rebuild_comparison": {
+    "mgr": {
+      "binary_identical": true,
+      "loadable_sections_identical": true,
+      "different_sections": []
+    },
+    "librexgpu-xenosrd.dylib": {
+      "binary_identical": true,
+      "loadable_sections_identical": true,
+      "different_sections": []
+    },
+    "librexruntimerd.dylib": {
+      "binary_identical": true,
+      "loadable_sections_identical": true,
+      "different_sections": []
+    }
+  },
+  "final_math_checks": "fallback op=0 count=0\nfallback op=1 count=0\nfallback op=2 count=0\nfallback op=3 count=0\nPASS: exhaustive half decode, boundary packing, 16000 randomized/alias/alignment cases, ABI and FP modes\n",
+  "final_memory_checks": "PASS: 36864 disjoint copy cases; overlap, stack, MMIO, physical/wrap fallbacks; strong hook and ABI\n"
+}

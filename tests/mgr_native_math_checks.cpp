@@ -116,6 +116,8 @@ int main(int argc, char**) {
         ctx.r3.u64 = 16384; ctx.r4.u64 = 1024; ctx.r5.u64 = array ? 1024 : 1152;
         if (native) MgrDispatchNativeMath(test.op, ctx, memory.bytes.data(), test.original);
         else test.original(ctx, memory.bytes.data());
+        // Make every output observable to the optimizer in both paths.
+        asm volatile("" : : "r"(memory.bytes.data()) : "memory");
       }
       const auto ns = std::chrono::duration<double,std::nano>(std::chrono::steady_clock::now()-start).count();
       std::printf("BENCH %s %s %.2f ns/call (%u elements)\n", test.name,

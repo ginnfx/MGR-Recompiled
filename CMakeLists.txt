@@ -150,16 +150,32 @@ target_link_libraries(mgr_prompt_checks PRIVATE rex::runtime "-framework CoreTex
                       "-framework CoreGraphics" "-framework CoreFoundation")
 
 # Experiment: high-level XDK math reconstruction, original __imp__ entries retained.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
 target_sources(mgr PRIVATE src/mgr_native_math.cpp)
 set_source_files_properties(src/mgr_native_math.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/native-math-oracle.cpp"
     COMMAND Python3::Interpreter "${CMAKE_SOURCE_DIR}/tools/experiment/extract_math_oracle.py"
         --generated "${CMAKE_SOURCE_DIR}/generated/default"
         --output "${CMAKE_BINARY_DIR}/native-math-oracle.cpp"
-    DEPENDS mgr_codegen tools/experiment/extract_math_oracle.py
+    DEPENDS mgr_codegen ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
+        tools/experiment/extract_math_oracle.py
     VERBATIM)
 add_executable(mgr_native_math_checks EXCLUDE_FROM_ALL tests/mgr_native_math_checks.cpp
     src/mgr_native_math.cpp "${CMAKE_BINARY_DIR}/native-math-oracle.cpp")
 target_include_directories(mgr_native_math_checks PRIVATE src generated/default)
 target_link_libraries(mgr_native_math_checks PRIVATE rex::runtime)
 mgr_apply_compiler_options(mgr_native_math_checks)
+
+# M2: central guest memory-copy path; do not alter generated sources.
+target_sources(mgr PRIVATE src/mgr_native_memory.cpp)
+add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/native-memory-oracle.cpp"
+    COMMAND Python3::Interpreter "${CMAKE_SOURCE_DIR}/tools/experiment/extract_math_oracle.py"
+        --memory-only --generated "${CMAKE_SOURCE_DIR}/generated/default"
+        --output "${CMAKE_BINARY_DIR}/native-memory-oracle.cpp"
+    DEPENDS mgr_codegen ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
+        tools/experiment/extract_math_oracle.py VERBATIM)
+add_executable(mgr_native_memory_checks EXCLUDE_FROM_ALL tests/mgr_native_memory_checks.cpp
+    src/mgr_native_memory.cpp "${CMAKE_BINARY_DIR}/native-memory-oracle.cpp")
+target_include_directories(mgr_native_memory_checks PRIVATE src generated/default)
+target_link_libraries(mgr_native_memory_checks PRIVATE rex::runtime)
+mgr_apply_compiler_options(mgr_native_memory_checks)

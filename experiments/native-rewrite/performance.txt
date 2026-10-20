@@ -1,5 +1,5 @@
 Native rewrite experiment: performance and correctness report
-2026-10-20; Apple Silicon macOS; branch experiment/native-rewrite
+2026-10-20; Apple M2; macOS 27.2 (26B5086k); Apple Clang 21.0.0; branch experiment/native-rewrite
 
 Isolation and baseline
   Original worktree: /Users/brajanzalta/Desktop/code/macgrpc
@@ -51,11 +51,12 @@ M1: XDK native memory-oriented math
 
   Function benchmark: exact guest ABI inputs with native dispatch included.
   Final dispatch-inclusive sample (ns/call):
-    pack 1024 elements: 39599.70 original -> 482.86 native (82.0x)
-    unpack 1024 elements: 16848.64 -> 272.80 (61.8x)
-    normal transform: 6.89 -> 5.49 (1.26x)
-    matrix transpose: 19.20 -> 6.59 (2.91x)
-  Raw results: private/math-checks-final.txt. Host load and cache state affect
+    pack 1024 elements: 40069.50 original -> 474.37 native (84.5x)
+    unpack 1024 elements: 17179.03 -> 266.42 (64.5x)
+    normal transform: 8.75 -> 5.63 (1.55x)
+    matrix transpose: 18.42 -> 6.55 (2.81x)
+  Raw results: private/math-checks-observed.txt. Each iteration includes a
+  compiler memory-observation barrier in both paths to retain every output. Host load and cache state affect
   absolute times; these numbers describe the tested buffers, not all sizes.
   These are CPU call timings, not GPU work or end-to-end frame speedups.
 
@@ -80,3 +81,75 @@ Scope still open
   replacement, Xbox APIs, thread synchronization and direct Metal integration
   require subsequent subsystem milestones. This report makes no parity or
   performance claim for those replacements.
+
+M2: central CRT guest copy (822F67E0; 825 distinct direct callers)
+  Previous: 681 lines of guest alignment/prefetch/endian-copy machinery.
+  Native: std::memcpy for ordinary disjoint RAM, unchanged full guest return
+  pointer, with original fallback for overlap, MMIO/physical/wrapping ranges,
+  size high words, and guest return-slot aliases. See m2-design.txt.
+  Correctness: 36,864 disjoint differential cases, additional fallback/ABI cases,
+  strong executable hook test; same check passes with native dispatch disabled.
+  Game build passed, then boot/automatic attract ran with Metal API validation
+  and live M1 math comparisons. No fatal, comparison or validation error observed.
+  Native copy has no live shadow implementation; offline oracle tests and the
+  actual strong hook are its direct parity evidence. Visual/gameplay gaps remain.
+  Function timings, original -> native, ns/call, including actual hook:
+    aligned 16 B: 7.56 -> 4.23; 64 B: 13.96 -> 3.93
+    aligned 256 B: 28.60 -> 5.42; 4 KiB: 568.40 -> 67.44
+    aligned 16 KiB: 1749.99 -> 230.30
+    unaligned 16 B: 34.00 -> 4.67; 64 B: 48.22 -> 4.55
+    unaligned 256 B: 74.61 -> 6.55; 4 KiB: 471.65 -> 60.40
+    unaligned 16 KiB: 1794.75 -> 231.60
+  Raw result: private/memory-checks-observed.txt. Tested-size CPU speedups range
+  from 1.8x to 11.4x. This is not an end-to-end FPS improvement claim.
+
+Measurement protocol
+  Same executable, SDK/runtime, shader bundle, original saves/settings, and
+  snapshot of warmed cache; original disables both native switches. Four runs
+  in original/native/native/original order, 80 seconds each, sample 30..60 sec
+  after first guest present. Frame cap 120, internal scale 1, fast precision,
+  source output, film grain off, texture filtering off. No user input synthesized.
+  Metal HUD enabled equally, validation and live shadow checks disabled.
+  Discarded m1-original-sample: compilation overlapped that run.
+  These boot/automatic-attract windows are exploratory, with no visual matching
+  or identical-frame replay. They cannot establish a controlled gameplay FPS
+  change or render parity. No whole CPU-frame critical path is measured; CPU
+  values are the VdSwap-calling thread only.
+  GPU time comes from Metal HUD's per-host-frame GPU-time pairs; whole HUD log
+  batches are aligned approximately to guest-frame windows by wall time. Host
+  presents and guest VdSwap calls may differ. Log format and metric definitions:
+  https://developer.apple.com/documentation/xcode/monitoring-your-metal-apps-graphics-performance
+  https://developer.apple.com/documentation/xcode/understanding-metal-performance-hud-metrics
+  No change to GPU draw/dispatch algorithms was made by M1 or M2.
+
+Four-run exploratory results (not a controlled gameplay performance claim)
+  Run   Mode       FPS avg   1% low   Render CPU ms   Metal GPU ms   RSS MiB
+  A1    original    50.57    12.74           12.93          19.66   1078.09
+  B1    native      47.02    18.30            8.34          21.49   1160.23
+  B2    native      52.43    22.34           10.43          18.75   1058.48
+  A2    original    49.58    19.70           11.39          19.77   1087.39
+  Run means: original 50.07 FPS, native 49.73 FPS (-0.70%); render-thread
+  CPU 12.16 -> 9.39 ms (-22.8%); Metal GPU 19.71 -> 20.12 ms. The two native
+  FPS samples bracket the original samples; no consistent FPS gain is verified.
+  CPU results are suggestive, not a controlled critical-path measurement.
+  Higher GPU times/RSS in B1 and lower values in B2 show run variability.
+  1% lows vary substantially; do not attribute their difference conclusively.
+
+Regressions / unresolved evidence
+  - Scalar transform parity/performance regression was repaired using ARM SIMD.
+  - Restored-source timestamp issue was corrected and live entry counters verified.
+  - No fatal, differential mismatch, or Metal API validation error was observed
+    in final validation runs or any of the four sample runs.
+  - The experiment does not demonstrate an FPS or GPU-work reduction. B1 had
+    lower FPS and higher RSS than A1; B2 reversed those tendencies. Same-frame
+    visual replay is still required to resolve frame/memory regressions.
+  - Visual capture was unavailable. Interactive gameplay, Blade Mode,
+    save/load behavior and concurrency under sustained gameplay remain unverified.
+  - Whole-game rendering/memory/synchronization parity is not established by
+    CPU differential tests or successful unattended runs.
+  - All replacements remain isolated and switchable. No integration performed.
+
+Final reproducibility check: rebuild completed; the game, Xenos plugin and
+runtime binaries are byte-for-byte identical to the app used for the four
+measurements. Final rebuilt differential check targets pass. Main HEAD,
+tracked diff and status match the starting snapshot.

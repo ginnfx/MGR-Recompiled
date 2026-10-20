@@ -1,0 +1,28 @@
+M2: central guest memory-copy reconstruction
+
+Guest function: sub_822F67E0, source body 681 generated C++ lines, multiple
+alignment/cache-line cases, guest stack return slot and endian transformations.
+Native contract: disjoint ordinary RAM copy through std::memcpy with original
+full guest return-pointer value. Byte swaps at source/load and dest/store cancel.
+No allocation, extra staging buffer or emulated register traffic is needed.
+
+Fallbacks: overlap (including self-copy), noncanonical size high word, wrapping
+ranges, MMIO [0x7f000000,0x80000000), physical alias regions >=0xa0000000,
+and ranges that intersect the guest return-save slot [sp-8,sp). Native guard
+failure has no memory side effects. Original __imp__ body remains linked.
+MGR_NATIVE_MEMORY=0 restores the original entry for all calls.
+
+Memory-watch review: system/mmio_handler.cpp ExceptionCallback handles ordinary
+RAM write watches through access_violation_callback_ before instruction decoding.
+The native libc copy retries the same page fault. MMIO instruction decoding is
+not involved because native guards exclude MMIO. The SDK CRT hook itself also
+uses std::memcpy, but this game's unrecognized address remained generated.
+
+Validation: oracle is extracted verbatim from generated code, using the same
+PPC memory macros. 36,864 disjoint cases cover all source/destination offsets
+0..31 and lengths surrounding byte/word/vector/cache-line/page boundaries.
+Additional cases check original overlap semantics, stack aliases, guard refusal
+without writes, full return value, preserved ABI state, and the actual strong
+executable hook. All memory outside the original ABI scratch slot is compared.
+Benchmark uses that same strong hook and measures aligned and unaligned copies
+from 16 bytes through 16 KiB. See performance.txt for final results and limits.

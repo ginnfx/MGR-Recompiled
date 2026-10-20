@@ -6,10 +6,13 @@ import re
 
 p = argparse.ArgumentParser()
 p.add_argument('--generated', type=pathlib.Path, required=True)
+p.add_argument('--memory-only', action='store_true')
 p.add_argument('--output', type=pathlib.Path, required=True)
 a = p.parse_args()
 names = {'sub_826CBFB8', 'sub_826CC010', 'sub_826CC0E0', 'sub_826CC160',
          '__savegprlr_25', '__restgprlr_25'}
+if a.memory_only:
+    names = {'sub_822F67E0'}
 found = {}
 for source in sorted(a.generated.glob('mgr_recomp.*.cpp')):
     text = source.read_text()
