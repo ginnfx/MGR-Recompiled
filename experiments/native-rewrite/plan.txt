@@ -1,0 +1,32 @@
+Native rewrite experiment (2026-10-20)
+
+Branch: experiment/native-rewrite
+Worktree: /private/tmp/macgrpc-native-rewrite
+Base main HEAD: de8b75a (checkpoint/perf-720p), plus preserved working changes.
+Main worktree remains outside the experiment. No integration authorized.
+
+Milestones
+M0: preserve dirty sources, vendored changes, generated code, runtime, saves,
+    settings; independent CMake/Ninja build, baseline executable and launch.
+M1: reconstruct XDK array float packing/unpacking, vector normal transform,
+    matrix transpose; differential oracle, real dispatch microbenchmarks,
+    fallback toggle, game launch, comparable frame sampling.
+M2: reconstruct central CRT guest copy using native memory operations, with
+    original implementation for alias/wrap/physical memory cases; independent
+    differential oracle, benchmark and game validation before commit.
+Next: profile game after these replacements; reconstruct normalization and
+    engine matrix/bone batches; replace state/constant upload at engine level;
+    inspect shader/resolve and CP costs before a native rendering milestone.
+
+Existing renderer: source-built Xenos Vulkan -> MoltenVK -> Metal; original
+Xenos CP, resource fences, shaders and presentation are retained this milestone.
+Replacing the entire CP without recovering device-shadow semantics is a later
+subsystem milestone, not an assumption made during math reconstruction.
+
+Validation policy
+Every enabled replacement must pass byte-for-byte differential tests against
+unchanged generated bodies. Native layouts use host values. Preserve ABI
+nonvolatile state, guest endianness, alias order and FP modes. Original __imp__
+functions remain linked. MGR_NATIVE_MATH=0 restores all original math functions.
+MGR_NATIVE_MATH_VERIFY=1 compares live transform/transpose output to the oracle.
+Record end-to-end frame changes independently from per-function CPU savings.

@@ -16,3 +16,7 @@ tools/rexglue-src/
 tools/extract-xiso/
 tools/rexglue-sdk.zip
 
+
+# Experiment input symlinks (directory patterns do not match a symlink).
+/tools/sdk
+/tools/rexglue-src

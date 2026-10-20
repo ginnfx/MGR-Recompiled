@@ -20,6 +20,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
+#include <mach/mach.h>
 
 namespace {
 std::atomic<float> guest_fps{0};
@@ -40,6 +42,43 @@ bool IsReportingEnabled() {
   const char* v = std::getenv("MGR_FPS");
   return !v || v[0] != '0';
 }
+
+// Opt-in arrival intervals and CPU consumed by the guest render thread. CPU
+// duration excludes scheduled waits but does not include other guest threads.
+// This is deliberately distinct from GPU execution time.
+struct FrameCapture {
+  FILE* file = nullptr;
+  Clock::time_point start = Clock::now(), previous = start;
+  uint64_t frame = 0, previous_cpu_ns = 0;
+  double rss_mib = 0;
+  FrameCapture() {
+    const char* path = std::getenv("MGR_FRAME_CSV");
+    if (path) file = std::fopen(path, "w");
+    if (file) std::fprintf(file, "frame,elapsed_ms,interval_ms,render_thread_cpu_ms,rss_mib\n");
+  }
+  ~FrameCapture() { if (file) std::fclose(file); }
+  void OnFrame() {
+    if (!file) return;
+    const auto now = Clock::now();
+    timespec cpu{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu);
+    const uint64_t cpu_ns = uint64_t(cpu.tv_sec)*1000000000 + cpu.tv_nsec;
+    if (frame % 60 == 0) {
+      mach_task_basic_info_data_t info{};
+      mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+      if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                    reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS)
+        rss_mib = double(info.resident_size) / (1024*1024);
+    }
+    if (frame) std::fprintf(file, "%llu,%.6f,%.6f,%.6f,%.2f\n",
+        static_cast<unsigned long long>(frame),
+        std::chrono::duration<double,std::milli>(now-start).count(),
+        std::chrono::duration<double,std::milli>(now-previous).count(),
+        double(cpu_ns-previous_cpu_ns)/1e6, rss_mib);
+    if (++frame % 60 == 0) std::fflush(file);
+    previous = now; previous_cpu_ns = cpu_ns;
+  }
+};
 
 struct FrameMeter {
   Clock::time_point window_start = Clock::now();
@@ -73,6 +112,8 @@ float MgrGuestFPS() { return guest_fps.load(std::memory_order_relaxed); }
 
 extern "C" REX_FUNC(__imp__VdSwap) {
   static PPCFunc* const sdk_vdswap = ResolveSdkVdSwap();
+  static FrameCapture capture;
+  capture.OnFrame();
   static FrameMeter meter;  // VdSwap is only called from the guest render thread
   meter.OnFrame();
   MgrD3DTraceOnPresent();
