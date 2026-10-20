@@ -1,0 +1,242 @@
+[
+  {
+    "frames": 1464,
+    "requested_start_s": 30.0,
+    "requested_duration_s": 30.0,
+    "measured_duration_s": 30.001503083,
+    "average_fps": 48.79755510748255,
+    "one_percent_low_fps": 19.59188793909259,
+    "mean_guest_present_interval_ms": 20.492829974726774,
+    "mean_render_thread_cpu_ms": 12.846882513661201,
+    "mean_rss_mib": 923.2464549180328,
+    "max_rss_mib": 985.2,
+    "gpu_execution_time_ms": 20.354661266568485,
+    "metal_host_frame_samples": 1358,
+    "metal_host_mean_present_interval_ms": 21.011067746686305,
+    "metal_host_presentation_fps": 47.59396390779388,
+    "gpu_window_alignment": "whole HUD batches by wall timestamp, approximate guest-window alignment",
+    "label": "focus-observed-A1",
+    "mode": "sample-original",
+    "comparison": "guest",
+    "native_resolve": "0",
+    "scene": "unattended boot/automatic attract; visual matching unverified",
+    "validation": false,
+    "shadow_checks": false,
+    "pipeline": {
+      "window_start_s": 30.0,
+      "window_duration_s": 30.0,
+      "displayed_frames": null,
+      "gpu_execution_ms": null,
+      "focus_groups": {
+        "1": {
+          "attempts": 1424,
+          "outcomes": {
+            "present_requested": 1424
+          },
+          "extents": [
+            [
+              1280,
+              720
+            ]
+          ],
+          "ui_attempts": 1424,
+          "input_calls": 5856,
+          "input_total_ms": 14.071621,
+          "mean_attempt_ms": 16.86368462780899,
+          "mean_reuse_ms": 0.0006355126404494382,
+          "mean_acquire_ms": 0.008259051966292135,
+          "mean_submit_ms": 16.81312687289326,
+          "mean_present_ms": 0.011652212780898877
+        }
+      },
+      "limitations": [
+        "focus -1 means no focus notification observed; it is not unfocused",
+        "focus is sampled at attempt completion; transition attempts may straddle states",
+        "Vulkan acquire timing is a drawable-acquisition proxy, not direct nextDrawable timing",
+        "submit/present include host queue locking; they are not GPU execution times",
+        "input wall time covers guest GetState, not all event handling",
+        "visible window area and scene identity require external verification"
+      ]
+    }
+  },
+  {
+    "frames": 1509,
+    "requested_start_s": 30.0,
+    "requested_duration_s": 30.0,
+    "measured_duration_s": 30.000675958,
+    "average_fps": 50.29886666928947,
+    "one_percent_low_fps": 13.3489632005035,
+    "mean_guest_present_interval_ms": 19.881163656726308,
+    "mean_render_thread_cpu_ms": 11.486568119284295,
+    "mean_rss_mib": 969.0345129224652,
+    "max_rss_mib": 1022.19,
+    "gpu_execution_time_ms": 20.35307915758896,
+    "metal_host_frame_samples": 1377,
+    "metal_host_mean_present_interval_ms": 21.141764705882352,
+    "metal_host_presentation_fps": 47.29974124259203,
+    "gpu_window_alignment": "whole HUD batches by wall timestamp, approximate guest-window alignment",
+    "label": "focus-observed-B1",
+    "mode": "sample-native",
+    "comparison": "guest",
+    "native_resolve": "0",
+    "scene": "unattended boot/automatic attract; visual matching unverified",
+    "validation": false,
+    "shadow_checks": false,
+    "pipeline": {
+      "window_start_s": 30.0,
+      "window_duration_s": 30.0,
+      "displayed_frames": null,
+      "gpu_execution_ms": null,
+      "focus_groups": {
+        "1": {
+          "attempts": 1426,
+          "outcomes": {
+            "present_requested": 1426
+          },
+          "extents": [
+            [
+              1280,
+              720
+            ]
+          ],
+          "ui_attempts": 1426,
+          "input_calls": 6036,
+          "input_total_ms": 15.454499,
+          "mean_attempt_ms": 16.05280558415147,
+          "mean_reuse_ms": 0.0006124572230014026,
+          "mean_acquire_ms": 0.00847835904628331,
+          "mean_submit_ms": 16.000873734922862,
+          "mean_present_ms": 0.012175856241234222
+        }
+      },
+      "limitations": [
+        "focus -1 means no focus notification observed; it is not unfocused",
+        "focus is sampled at attempt completion; transition attempts may straddle states",
+        "Vulkan acquire timing is a drawable-acquisition proxy, not direct nextDrawable timing",
+        "submit/present include host queue locking; they are not GPU execution times",
+        "input wall time covers guest GetState, not all event handling",
+        "visible window area and scene identity require external verification"
+      ]
+    }
+  },
+  {
+    "frames": 1459,
+    "requested_start_s": 30.0,
+    "requested_duration_s": 30.0,
+    "measured_duration_s": 29.984927583,
+    "average_fps": 48.657779678186785,
+    "one_percent_low_fps": 16.42147350391911,
+    "mean_guest_present_interval_ms": 20.551698137765595,
+    "mean_render_thread_cpu_ms": 13.565338502398903,
+    "mean_rss_mib": 937.1987936943112,
+    "max_rss_mib": 1042.14,
+    "gpu_execution_time_ms": 21.035767195767196,
+    "metal_host_frame_samples": 1323,
+    "metal_host_mean_present_interval_ms": 21.68244142101285,
+    "metal_host_presentation_fps": 46.12026757424474,
+    "gpu_window_alignment": "whole HUD batches by wall timestamp, approximate guest-window alignment",
+    "label": "focus-observed-B2",
+    "mode": "sample-native",
+    "comparison": "guest",
+    "native_resolve": "0",
+    "scene": "unattended boot/automatic attract; visual matching unverified",
+    "validation": false,
+    "shadow_checks": false,
+    "pipeline": {
+      "window_start_s": 30.0,
+      "window_duration_s": 30.0,
+      "displayed_frames": null,
+      "gpu_execution_ms": null,
+      "focus_groups": {
+        "1": {
+          "attempts": 1390,
+          "outcomes": {
+            "present_requested": 1390
+          },
+          "extents": [
+            [
+              1280,
+              720
+            ]
+          ],
+          "ui_attempts": 1390,
+          "input_calls": 5840,
+          "input_total_ms": 13.969647,
+          "mean_attempt_ms": 17.11347104892086,
+          "mean_reuse_ms": 0.0005888136690647481,
+          "mean_acquire_ms": 0.0081349690647482,
+          "mean_submit_ms": 17.063149479856115,
+          "mean_present_ms": 0.012084970503597123
+        }
+      },
+      "limitations": [
+        "focus -1 means no focus notification observed; it is not unfocused",
+        "focus is sampled at attempt completion; transition attempts may straddle states",
+        "Vulkan acquire timing is a drawable-acquisition proxy, not direct nextDrawable timing",
+        "submit/present include host queue locking; they are not GPU execution times",
+        "input wall time covers guest GetState, not all event handling",
+        "visible window area and scene identity require external verification"
+      ]
+    }
+  },
+  {
+    "frames": 1333,
+    "requested_start_s": 30.0,
+    "requested_duration_s": 30.0,
+    "measured_duration_s": 29.992513,
+    "average_fps": 44.444425180377515,
+    "one_percent_low_fps": 12.190602232346912,
+    "mean_guest_present_interval_ms": 22.50000975243811,
+    "mean_render_thread_cpu_ms": 13.867882220555138,
+    "mean_rss_mib": 925.0697899474869,
+    "max_rss_mib": 1038.45,
+    "gpu_execution_time_ms": 22.748227424749164,
+    "metal_host_frame_samples": 1196,
+    "metal_host_mean_present_interval_ms": 23.4877508361204,
+    "metal_host_presentation_fps": 42.57538352553366,
+    "gpu_window_alignment": "whole HUD batches by wall timestamp, approximate guest-window alignment",
+    "label": "focus-observed-A2",
+    "mode": "sample-original",
+    "comparison": "guest",
+    "native_resolve": "0",
+    "scene": "unattended boot/automatic attract; visual matching unverified",
+    "validation": false,
+    "shadow_checks": false,
+    "pipeline": {
+      "window_start_s": 30.0,
+      "window_duration_s": 30.0,
+      "displayed_frames": null,
+      "gpu_execution_ms": null,
+      "focus_groups": {
+        "1": {
+          "attempts": 1287,
+          "outcomes": {
+            "present_requested": 1287
+          },
+          "extents": [
+            [
+              1280,
+              720
+            ]
+          ],
+          "ui_attempts": 1287,
+          "input_calls": 5336,
+          "input_total_ms": 12.565198,
+          "mean_attempt_ms": 18.21224061693862,
+          "mean_reuse_ms": 0.0006535609945609946,
+          "mean_acquire_ms": 0.008579404817404816,
+          "mean_submit_ms": 18.15689880885781,
+          "mean_present_ms": 0.0166553682983683
+        }
+      },
+      "limitations": [
+        "focus -1 means no focus notification observed; it is not unfocused",
+        "focus is sampled at attempt completion; transition attempts may straddle states",
+        "Vulkan acquire timing is a drawable-acquisition proxy, not direct nextDrawable timing",
+        "submit/present include host queue locking; they are not GPU execution times",
+        "input wall time covers guest GetState, not all event handling",
+        "visible window area and scene identity require external verification"
+      ]
+    }
+  }
+]

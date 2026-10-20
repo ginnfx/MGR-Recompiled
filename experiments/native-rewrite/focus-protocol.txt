@@ -1,0 +1,47 @@
+Focus investigation protocol
+============================
+Status: no way to drive the game window from here yet. Four-way controlled matrix
+cannot currently be run or checked for scene/visible-area parity.
+No inference of focus follows from open -a or a native-on/off run label.
+
+Instrumentation
+- frames.csv: guest VdSwap arrivals, guest render-thread CPU, resident memory,
+  and steady_ns for exact clock alignment with runtime samples.
+- pipeline.csv (MGR_PIPELINE_CSV): observed focus (-1 unknown, 0 lost, 1 gained),
+  host paint attempts, swapchain extent, guest-thread nonblocking mode, UI draws,
+  reusable submission-slot time, Vulkan acquire time, queue submit/locking time,
+  queue present/locking time, and guest input polling wall time/call count.
+- Outcomes distinguish skipped/busy attempts from successful present requests.
+  Queue present success does NOT establish actual displayed-frame count.
+- Metal HUD: GPU execution and host presentation intervals. Its batch timestamps
+  only approximately align with guest windows; no per-frame identity join.
+- MGR_GPU_STATS: CP work and GPU-fence waits, command counts. Not GPU execution.
+
+Required controlled comparison (pending access)
+Use one stationary gameplay camera/paused deterministic scene, fixed internal
+scale/resolution, 120 FPS cap, identical window geometry, UI/HUD and warmed cache.
+Keep entire game window visible while switching focus to a non-overlapping app.
+Do not minimize, hide, resize, cover, or move the game. Hold input idle. Run
+native off/focused, native off/unfocused, native on/focused, native on/unfocused,
+then reverse the order. Confirm focus_groups has only the expected state for
+each selected interval and identical extents. Exclude transitions, loading and
+scene changes. Record actual visual scene identity and visible area externally.
+
+Commands (from experiment root)
+experiments/native-rewrite/run-app.sh UNIQUE sample-native
+MGR_NATIVE_RESOLVE=0 experiments/native-rewrite/run-app.sh UNIQUE sample-original
+python3 tools/experiment/summarize_pipeline.py RUN/frames.csv RUN/pipeline.csv \
+  --start 30 --duration 30
+python3 tools/experiment/summarize_frames.py RUN/frames.csv \
+  --metal-log RUN/stderr.log --start 30 --duration 30
+
+Interpretation
+Higher VdSwap rate alone is guest production, not faster visible rendering.
+If present requests/HUD intervals diverge, inspect mailbox skipping, slot_busy,
+acquire_busy, UI paint rate and queue waits. GPU execution must decrease under
+matched draw/dispatch workload and scene before attributing a gain to rendering.
+Focused input overhead is a hypothesis until measured; GetState coverage does
+not include every OS event or cursor capture callback. Vulkan acquire measures
+the host API boundary, not the internal MoltenVK nextDrawable call directly.
+Actual display completion/unique guest frames require drawable presentation
+callbacks or trace correlation; this telemetry does not supply those identities.

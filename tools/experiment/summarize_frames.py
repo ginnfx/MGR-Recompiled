@@ -36,6 +36,7 @@ if a.metal_log:
     # log batches by wall time, so GPU and guest-frame windows are approximate.
     origin = pathlib.Path(a.csv).stat().st_birthtime
     gpu = []
+    host_intervals = []
     for line in a.metal_log.read_text().splitlines():
         if 'metal-HUD: ' not in line:
             continue
@@ -46,8 +47,11 @@ if a.metal_log:
             continue
         if a.start <= timestamp-origin < a.start+a.duration and len(values) >= 5:
             gpu.extend(values[4::2])
+            host_intervals.extend(values[3::2])
     if gpu:
         result['gpu_execution_time_ms'] = statistics.mean(gpu)
         result['metal_host_frame_samples'] = len(gpu)
+        result['metal_host_mean_present_interval_ms'] = statistics.mean(host_intervals)
+        result['metal_host_presentation_fps'] = 1000/statistics.mean(host_intervals)
         result['gpu_window_alignment'] = 'whole HUD batches by wall timestamp, approximate guest-window alignment'
 print(json.dumps(result,indent=2))

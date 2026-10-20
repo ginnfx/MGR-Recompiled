@@ -1,0 +1,34 @@
+Focus investigation: observed baseline (2026-10-20)
+=================================================
+
+All four samples observed focus=1 and 1280x720 swapchains; the requested
+focused/unfocused matrix is still out of reach. Same saved
+settings/warmed cache and unattended boot/attract; exact visual scene and window
+visible area were not verified. These are exploratory runs, not a focus test.
+
+Run   Guest native   Guest FPS   1% low   Render CPU ms   GPU ms   HUD host FPS   RSS MiB
+A1    sample-original    48.80    19.59          12.85    20.35          47.59    923.25
+B1    sample-native     50.30    13.35          11.49    20.35          47.30    969.03
+B2    sample-native     48.66    16.42          13.57    21.04          46.12    937.20
+A2    sample-original    44.44    12.19          13.87    22.75          42.58    925.07
+
+Selected windows:30–60 seconds after first guest present. Only complete HUD
+batches selected by wall time; alignment with guest samples is approximate.
+Input polling used12.57–15.45 ms total per30 seconds (4 calls/guest frame).
+Acquisition averaged0.0081–0.0086 ms per paint; reusable-slot time0.0006 ms.
+Host submission averaged16.00–18.16 ms, including queue locking and submission.
+All attempts in these windows were UI draws and successful present requests.
+No observed slot_busy/acquire_busy in these windows. GP fence waits remain in
+the raw MGR_GPU_STATS logs. These data do not identify the focus anomaly cause.
+
+Instrumentation refinement AFTER these samples: separates submit/present
+queue-lock acquisition from the remaining host call time. That refinement is
+used by subsequent resolve comparisons. It was not retrospectively measured.
+
+Hypotheses needing the missing focus comparison: OS presentation/composition,
+queue contention between host UI and guest GPU submission, or differences in
+input/event scheduling. Input polling appears too small to explain10 FPS in
+these focused runs; this does not exclude unmeasured OS/cursor event overhead.
+Guest and HUD host FPS differ, demonstrating that guest FPS alone is not a
+displayed-frame metric. A genuine faster-rendering claim requires matched GPU
+execution and workload/scene evidence. No such focus claim is made here.

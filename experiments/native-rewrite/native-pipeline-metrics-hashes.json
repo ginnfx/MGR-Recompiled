@@ -1,0 +1,14 @@
+{
+  "src/ui/window.cpp": {
+    "before": "7904ed89cfbcdfdaabb04453916eda359494fdaa3ac9e5885507ae4e2909bd9c",
+    "after": "d249615345f63dd463943c117ea6eb5f75a49a3b26814a4032120c45abf252a0"
+  },
+  "src/ui/vulkan/vulkan_presenter.cpp": {
+    "before": "0db31be52c1c4eeb579f17fe7beface0ba2c4a26faadb439fa69ab5c148a5966",
+    "after": "38b13052bb0c8705729180bdbcd17adb5fbd0de08e744e917dbab95a48d54f23"
+  },
+  "src/input/input_system.cpp": {
+    "before": "968098818d8d89c285f12c9dc69f0dced23171bbf2b474690ed6a083367d4a8c",
+    "after": "05de6dc814eff19663e3279ca29a2101fccc1c466a0a9891d9e80be2c71d64a0"
+  }
+}

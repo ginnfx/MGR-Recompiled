@@ -23,15 +23,18 @@ if [ ! -f "$OUT/.seeded" ]; then
 fi
 exec open -n -W -a "$APP" --stdout "$OUT/stdout.log" --stderr "$OUT/stderr.log" \
   --env "MGR_FRAME_CSV=$OUT/frames.csv" \
+  --env "MGR_PIPELINE_CSV=$OUT/pipeline.csv" \
   --env "MGR_NATIVE_SHADERS=$ROOT/private/mgr_native_shaders.xrnb" \
   --env "MGR_NATIVE_MATH=${MGR_NATIVE_MATH:-1}" \
   --env "MGR_NATIVE_MATH_VERIFY=${MGR_NATIVE_MATH_VERIFY:-0}" \
   --env "MGR_NATIVE_MEMORY=${MGR_NATIVE_MEMORY:-1}" \
+  --env "MGR_NATIVE_RESOLVE=${MGR_NATIVE_RESOLVE:-0}" \
   --env "MGR_D3D_TRACE=${MGR_D3D_TRACE:-0}" \
   --env "MGR_GPU_STATS=${MGR_GPU_STATS:-1}" \
   --env "MTL_HUD_ENABLED=${MGR_METAL_HUD:-0}" \
   --env "MTL_HUD_LOG_ENABLED=${MGR_METAL_HUD:-0}" \
   --env "MTL_DEBUG_LAYER=${MTL_DEBUG_LAYER:-0}" \
+  --env "MTL_CAPTURE_ENABLED=${MGR_CAPTURE:-0}" \
   --args --gpu_plugin=xenos --game_data_root="$ROOT/private/game" \
   --user_data_root="$OUT/user" --cache_root="$OUT/cache" \
   --mnk_mode=true --vulkan_nonblocking_guest_present=true \

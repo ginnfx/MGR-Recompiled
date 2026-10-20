@@ -14,6 +14,7 @@ project(mgr_rexruntime C CXX OBJC OBJCXX)
 
 get_filename_component(MGR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/.." ABSOLUTE)
 set(REXGLUE_ROOT "${MGR_ROOT}/vendor/rexglue-sdk")
+include_directories("${MGR_ROOT}/runtime")
 set(REXSDK_PREFIX "${MGR_ROOT}/tools/sdk/mac-arm64")
 foreach(required thirdparty/imgui/imgui.cpp thirdparty/cli11/include
                  thirdparty/FFmpeg/libavcodec/avcodec.h thirdparty/libmspack/cabextract/mspack/lzx.h)

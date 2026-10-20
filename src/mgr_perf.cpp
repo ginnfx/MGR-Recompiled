@@ -54,7 +54,7 @@ struct FrameCapture {
   FrameCapture() {
     const char* path = std::getenv("MGR_FRAME_CSV");
     if (path) file = std::fopen(path, "w");
-    if (file) std::fprintf(file, "frame,elapsed_ms,interval_ms,render_thread_cpu_ms,rss_mib\n");
+    if (file) std::fprintf(file, "frame,elapsed_ms,interval_ms,render_thread_cpu_ms,rss_mib,steady_ns\n");
   }
   ~FrameCapture() { if (file) std::fclose(file); }
   void OnFrame() {
@@ -70,11 +70,13 @@ struct FrameCapture {
                     reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS)
         rss_mib = double(info.resident_size) / (1024*1024);
     }
-    if (frame) std::fprintf(file, "%llu,%.6f,%.6f,%.6f,%.2f\n",
+    if (frame) std::fprintf(file, "%llu,%.6f,%.6f,%.6f,%.2f,%lld\n",
         static_cast<unsigned long long>(frame),
         std::chrono::duration<double,std::milli>(now-start).count(),
         std::chrono::duration<double,std::milli>(now-previous).count(),
-        double(cpu_ns-previous_cpu_ns)/1e6, rss_mib);
+        double(cpu_ns-previous_cpu_ns)/1e6, rss_mib,
+        static_cast<long long>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            now.time_since_epoch()).count()));
     if (++frame % 60 == 0) std::fflush(file);
     previous = now; previous_cpu_ns = cpu_ns;
   }

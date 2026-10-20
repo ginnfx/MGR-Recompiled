@@ -19,14 +19,15 @@ p.add_argument('--seconds', type=int, default=80)
 p.add_argument('--start', type=int, default=30)
 p.add_argument('--duration', type=int, default=30)
 p.add_argument('--tag', default='final')
+p.add_argument('--comparison', choices=['guest', 'resolve'], default='guest')
 a = p.parse_args()
 if a.seconds < a.start + a.duration + 5:
     p.error('run must extend beyond the entire sample window')
 root = Path(__file__).resolve().parents[2]
 app = root/'private/native-rewrite/MGR Native Rewrite.app/Contents/MacOS'
 results = []
-for leg, mode in [('A1','sample-original'),('B1','sample-native'),
-                  ('B2','sample-native'),('A2','sample-original')]:
+for leg, native in [('A1',False),('B1',True),('B2',True),('A2',False)]:
+    mode = 'sample-native' if a.comparison == 'resolve' or native else 'sample-original'
     label = f'{a.tag}-{leg}'
     out = root/'private/native-rewrite'/label
     if out.exists():
@@ -34,7 +35,8 @@ for leg, mode in [('A1','sample-original'),('B1','sample-native'),
     shutil.copyfile(root/'private/baseline/mgr.toml', app/'mgr.toml')
     command = [str(root/'experiments/native-rewrite/run-app.sh'), label, mode]
     print(f'START {label} {mode}', flush=True)
-    process = subprocess.Popen(command, cwd=root)
+    env = dict(os.environ, MGR_NATIVE_RESOLVE=str(int(a.comparison == 'resolve' and native)))
+    process = subprocess.Popen(command, cwd=root, env=env)
     started = time.monotonic()
     pid = None
     try:
@@ -69,8 +71,15 @@ for leg, mode in [('A1','sample-original'),('B1','sample-native'),
                '--metal-log',str(out/'stderr.log')]
     summary = json.loads(subprocess.check_output(command,text=True))
     summary.update(label=label, mode=mode,
+        comparison=a.comparison, native_resolve=env['MGR_NATIVE_RESOLVE'],
         scene='unattended boot/automatic attract; visual matching unverified',
         validation=False, shadow_checks=False)
+    pipeline = out/'pipeline.csv'
+    if pipeline.exists():
+        summary['pipeline'] = json.loads(subprocess.check_output([
+            'python3', str(root/'tools/experiment/summarize_pipeline.py'),
+            str(out/'frames.csv'), str(pipeline), '--start', str(a.start),
+            '--duration', str(a.duration)], text=True))
     (out/'summary.json').write_text(json.dumps(summary,indent=2)+'\n')
     results.append(summary)
     print(json.dumps(summary),flush=True)
