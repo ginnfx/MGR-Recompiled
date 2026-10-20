@@ -1,7 +1,7 @@
 Focus investigation protocol
 ============================
-Status: no way to drive the game window from here yet. Four-way controlled matrix
-cannot currently be run or checked for scene/visible-area parity.
+Status: the four-way controlled comparison has not been completed. Scene and
+visible-area parity remain unverified.
 No inference of focus follows from open -a or a native-on/off run label.
 
 Instrumentation
@@ -17,7 +17,7 @@ Instrumentation
   only approximately align with guest windows; no per-frame identity join.
 - MGR_GPU_STATS: CP work and GPU-fence waits, command counts. Not GPU execution.
 
-Required controlled comparison (pending access)
+Required controlled comparison (pending)
 Use one stationary gameplay camera/paused deterministic scene, fixed internal
 scale/resolution, 120 FPS cap, identical window geometry, UI/HUD and warmed cache.
 Keep entire game window visible while switching focus to a non-overlapping app.

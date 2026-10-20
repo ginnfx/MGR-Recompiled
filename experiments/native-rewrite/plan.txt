@@ -3,7 +3,7 @@ Native rewrite experiment (2026-10-20)
 Branch: experiment/native-rewrite
 Worktree: /private/tmp/macgrpc-native-rewrite
 Base main HEAD: de8b75a (checkpoint/perf-720p), plus preserved working changes.
-Main worktree remains outside the experiment. No integration authorized.
+The experiment is isolated from the main worktree and has not been integrated.
 
 Milestones
 M0 (passed): preserve dirty sources, vendored changes, generated code, runtime, saves,

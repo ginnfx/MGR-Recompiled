@@ -46,8 +46,8 @@ stencil-heavy scenes, overlapping targets, scaled/MSAA modes and Blade Mode.
 No GPU image differential comparison was performed. Captured native frame has
 676 draws/137 dispatches/201 encoders, but lacks embedded shader profiling.
 
-Focus anomaly: requested four-way matrix remains blocked by denied Computer
-Use access. Observed focused runs exclude input polling and Vulkan acquisition
+Focus anomaly: the four-way controlled comparison has not been completed.
+Observed focused runs exclude input polling and Vulkan acquisition
 as large costs in those windows; host submission dominates the measured paint
 CPU wall time. This does not determine whether the reported10 FPS unfocused
 gain is rendering speed or pacing/composition/measurement behavior.

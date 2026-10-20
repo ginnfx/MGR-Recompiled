@@ -25,7 +25,7 @@ MGR_NATIVE_RESOLVE=0 retains original dumps. Both new switches default0.
 
 The patch/manifest are cumulative relative to the preserved pre-M4 vendor copy.
 M5 depends on M4's source coherence helper and lifecycle invalidation. Selective
-integration must keep these dependencies; no merge is authorized or performed.
+integration must keep these dependencies. Changes remain on the experimental branch.
 
 CPU checks enumerate all65536 color-channel masks and8 raster/depth/stencil
 control combinations (524288 cases), plus read-only depth survival, depth/stencil

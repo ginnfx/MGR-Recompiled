@@ -1,8 +1,9 @@
-Native rewrite experiment: rendering handoff
-============================================
+Native rewrite experiment: rendering status
+==========================================
 Worktree /private/tmp/macgrpc-native-rewrite; branch experiment/native-rewrite.
-No merge/push/integration. Main preservation rechecked in render-main-preservation.
-json (HEAD/status/tracked delta/untracked contents unchanged).
+Changes remain on the experimental branch. render-main-preservation.json records
+that the main worktree HEAD, status, tracked changes and untracked contents
+were unchanged during the experiment.
 
 Prior hooks: ddbe85d math,928d5c1 copy; baseline0dfa5eb, instrumentation4fd69f0,
 paired reportd8ace88. New: d9497c3 focus telemetry,cb5d925 opt-in resolve coherence,
@@ -13,8 +14,8 @@ Combined benchmark means original49.40 FPS/20.22 GPUms vs47.69/20.91 native.
 Do not promote adverse candidates without locked-scene evidence and visual/GPU
 image comparison. Both paths remain reversible and original dumps remain available.
 
-Focus anomaly remains unresolved: the game window can't be driven yet. A request
-for access went out; no approval assumed. Current telemetry
+Focus anomaly remains unresolved: controlled window-interaction tests were not
+completed. Current telemetry
 separates actual observed focus, input, slot waits, Vulkan acquire, submission
 and queue locks. Guest FPS does not establish displayed-frame rate. Missing:
 controlled native-off/on × focused/unfocused, identical stationary gameplay
@@ -30,6 +31,11 @@ Next priorities: locked-scene focus test; GPU encoder cost profile; fused narrow
 1x32bpp host-image→tiled resolve; compatible resolve-image texture aliases;
 state batching only where it actually removes GPU passes. D3D release/unlock
 atomic/fence semantics remain unreconstructed. See rendering-next-candidates.txt.
+
+Benchmark procedure: experiments/native-rewrite/next-session-benchmark-plan.txt.
+Previous Game Mode changes were not logged per run; treat earlier GPU
+comparisons as confounded. Get controlled ON/OFF and renderer-isolation
+results first.
 
 Rebuild: python3 tools/experiment/apply_render_patches.py; build owned runtime,
 then cmake --build build --target mgr --parallel 4. Snapshot via bundle.py;

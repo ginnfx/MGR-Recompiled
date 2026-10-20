@@ -1,0 +1,97 @@
+Controlled Game Mode and rendering benchmark plan
+===================================================================
+
+Purpose
+-------
+The previous rendering benchmarks were confounded by manual changes to macOS
+Game Mode between runs. The available logs do not record Game Mode state per
+run, so the prior results cannot establish whether Game Mode or the native GPU
+optimizations caused the observed FPS differences. Do not decide that the
+native GPU optimizations are beneficial from those data. Establish controlled,
+repeatable performance results first, then continue implementation based on
+measured evidence.
+
+Scope and isolation
+-------------------
+Continue exclusively in /private/tmp/macgrpc-native-rewrite on branch
+experiment/native-rewrite. Keep all experiments reversible and preserve the
+original rendering implementation as a fallback. Do not merge into main
+automatically.
+
+Phase 1 — reproducible benchmark harness
+----------------------------------------
+Extend the per-run harness and report to capture, where available:
+- Guest FPS, host presentation FPS, and 1% lows.
+- Guest frame-time percentiles, including p99.
+- Metal GPU frame time and render-thread CPU time.
+- Focus and window visibility state.
+- Game Mode state, explicitly confirmed for every run.
+- Resolution, graphics settings, frame cap, and all rendering switches.
+- Thermal conditions where observable.
+
+Never infer Game Mode from app focus, fullscreen, or window state. If macOS
+Game Mode cannot be queried reliably, require a manually supplied ON/OFF value
+for every run, record who supplied it and when, and state that the value is
+manual. Reject or mark incomplete any comparison missing this field. Include
+build identity, scene, capture interval, warmup policy, and metric definitions
+in the results report.
+
+Use the same repeatable gameplay scene and sequence whenever possible. If
+automated visual interaction is unavailable, prepare a clear manual run
+procedure and machine-readable results report for manual execution. Do not
+claim visual correctness from boot, API validation, or timing data alone.
+
+Phase 2 — isolate Game Mode with the original renderer
+------------------------------------------------------
+With the original renderer, compare Game Mode ON versus OFF while holding
+fullscreen presentation, focus, visible window area, scene, graphics settings,
+resolution, cap/vsync, and capture interval constant. Collect at least five
+repeated measurements for each condition. Alternate or randomize condition
+order to reduce order and thermal bias, and record the actual order. Report
+average FPS, frame-time distribution and consistency, GPU time, and CPU time.
+
+Phase 3 — isolate each native GPU candidate
+--------------------------------------------
+Repeat using the experimental native rendering paths with Game Mode recorded as
+an independent variable. Compare these renderer configurations separately:
+1. Original rendering.
+2. Native resolve only.
+3. Native resolve plus write-intent.
+
+Keep unrelated guest-native switches fixed across these renderer comparisons.
+Do not combine optimizations unless running an explicitly labeled combined
+experiment. Apply the same repeated-run count and controlled conditions used in
+Phase 2. Report neutral and adverse outcomes as well as repeatable gains.
+
+Phase 4 — investigate focus behavior
+------------------------------------
+Investigate the reported approximately 10 FPS increase when another app is
+focused. Keep the game window fully visible and hold Game Mode, scene, visible
+area, graphics settings, and rendering switches constant. Isolate focus as a
+separate variable. Use telemetry to distinguish input processing, drawable
+acquisition, graphics submission and presentation, macOS scheduling, guest
+frame production, and actual/unique presented frames. Do not treat queue-present
+requests or guest VdSwap intervals as proof that a unique frame reached the
+display.
+
+Phase 5 — continue native reconstruction
+-----------------------------------------
+After reliable benchmarks exist, continue replacing expensive Xbox 360
+rendering paths with high-level native C++ where evidence supports it. Prioritize
+eliminating real GPU work (passes, draws, dispatches, copies/resolves, and
+redundant state changes) over reducing CPU bookkeeping alone. Validate visual
+and behavioral correctness, retain fallbacks, and keep each experiment
+isolated and reversible. Continue beyond the first successful optimization.
+
+Decision and reporting criteria
+--------------------------------
+Call an optimization beneficial only when repeated controlled runs show a
+reproducible improvement under the same Game Mode condition, scene, settings,
+and visible area. Separate CPU, GPU, presentation/frame-pacing, and architectural
+cleanup outcomes. Record correctness coverage, regressions, and unresolved
+visual gameplay checks. No automatic integration into main.
+
+Status
+------
+Planned work: benchmark harness updates, controlled Game Mode comparisons, and
+rendering experiments. These steps have not been completed.
