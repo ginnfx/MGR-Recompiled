@@ -45,6 +45,7 @@ set_target_properties(rexgpu-xenos PROPERTIES
     VISIBILITY_INLINES_HIDDEN ON
 )
 target_include_directories(rexgpu-xenos BEFORE PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
     ${REXSDK_SRC}/include  # vendored headers (incl. MGR edits) win over the SDK copy
     ${REXSDK_SRC}
     ${REXSDK_SRC}/src

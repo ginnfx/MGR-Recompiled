@@ -1,0 +1,16 @@
+{
+  "trace_path": "private/native-rewrite/resolve-validation-capture/frame.gputrace",
+  "trace_size_bytes": 9846671278,
+  "device": "Apple M2",
+  "command_buffers": 7,
+  "encoders": 201,
+  "draws": 676,
+  "dispatches": 137,
+  "profiling_sessions": 0,
+  "profile_cost_ranking_available": false,
+  "api_validation_error_observed": false,
+  "visual_gameplay_verified": false,
+  "capture_excluded_from_benchmarks": true,
+  "debugger_session_terminated": true,
+  "profile_load_result": "no profiling sessions in trace"
+}

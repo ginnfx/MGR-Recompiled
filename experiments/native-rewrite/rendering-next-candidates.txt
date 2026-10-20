@@ -1,0 +1,38 @@
+Further reconstruction candidates discovered during the resolve milestone
+=======================================================================
+
+1. Make coherency invalidation reflect draw writes instead of attachment binding.
+The common RT cache accumulates attachments to avoid ending render passes when
+writes are disabled. Current M4 invalidates every accumulated attachment for
+safety. Color channels with normalized mask0 cannot store; depth-only reads
+without depth writes/stencil cannot store. Transfers/clears remain separately
+invalidated. A native write-intent mask could retain existing EDRAM snapshots
+across such draws, eliminating later dumps. Must use the same normalized state
+as pipeline construction; stencil stays conservative. Validate independently
+against original invalidation and gate behind a separate experiment switch.
+
+2. Fused source-image -> tiled resolve.
+Current direct_host_resolve is disabled internally because no actual source-
+image copy shaders exist. Most resolves still pay host-image -> EDRAM -> guest
+memory materialization. Narrow first to unscaled 1x32bpp single-owner cases,
+recover exact bit packing/swizzles/endian/sample/exponent/gamma semantics, and
+compose the existing dump and resolve algorithms. Fallback on all unsupported
+formats/multi-owner/depth/MSAA/scaled/wrapped cases. Requires actual GPU output
+comparison, not just a source-level arithmetic test.
+
+3. Remove resolve->texture-upload round trips.
+Captured frame:676 draws,137 dispatches,201 encoders, with many compute followed
+by vkCmdCopyBufferToImage encoders. Consider native GPU-resident image aliases
+for compatible resolves consumed immediately as textures, retaining backing
+memory publication for CPU reads, aliases and incompatible texture views. Need
+ownership/fence/version tracking and precise invalidation at shared-memory writes.
+GPU trace has no embedded profiling data, so encoder costs are not ranked yet.
+
+4. D3D state emission batching / locks / releases.
+Investigate dirty-mask construction across D3D setters and draw boundaries.
+Existing command processor already deduplicates pending identical resource
+barriers and native shader binding uploads. Repeating those optimizations at
+another layer would mainly affect CPU overhead. Need evidence that guest state
+processing causes render-pass breaks/extra GPU operations before replacing it.
+Atomic release/refcount and unlock fence semantics remain unproven for a native
+replacement; CPU-only savings cannot be advertised as GPU-time reductions.

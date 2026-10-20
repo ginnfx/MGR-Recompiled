@@ -179,3 +179,12 @@ add_executable(mgr_native_memory_checks EXCLUDE_FROM_ALL tests/mgr_native_memory
 target_include_directories(mgr_native_memory_checks PRIVATE src generated/default)
 target_link_libraries(mgr_native_memory_checks PRIVATE rex::runtime)
 mgr_apply_compiler_options(mgr_native_memory_checks)
+
+# Rendering experiment checks: keep assertions active in optimized builds.
+add_executable(mgr_resolve_coherence_checks EXCLUDE_FROM_ALL
+    tests/mgr_resolve_coherence_checks.cpp)
+target_include_directories(mgr_resolve_coherence_checks PRIVATE gpu)
+target_compile_options(mgr_resolve_coherence_checks PRIVATE -UNDEBUG)
+add_executable(mgr_pipeline_metrics_checks EXCLUDE_FROM_ALL
+    tests/mgr_pipeline_metrics_checks.cpp)
+target_compile_options(mgr_pipeline_metrics_checks PRIVATE -UNDEBUG)

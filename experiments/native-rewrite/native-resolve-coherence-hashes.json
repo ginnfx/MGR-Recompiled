@@ -1,0 +1,10 @@
+{
+  "src/graphics/vulkan/render_target_cache.cpp": {
+    "before": "940ce73923aad8a18abd9fefadc85ad29946e7479a369fae63eb31e38b7f43ce",
+    "after": "51d2c7798d85b5f5ac921177398be3df29db9675d3c8cdebaa8ea60e79504506"
+  },
+  "include/rex/graphics/vulkan/render_target_cache.h": {
+    "before": "848a84f910031eb61b73c3291b7c90a6d66891910a8af7ce4b37fa30cf5c9008",
+    "after": "8598ade225cb97aae5e1d5c2e9e5a617e2ce0b0fbf3e3dedb704de7f40c8c46c"
+  }
+}

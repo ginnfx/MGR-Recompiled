@@ -57,6 +57,24 @@
         "input wall time covers guest GetState, not all event handling",
         "visible window area and scene identity require external verification"
       ]
+    },
+    "gpu_commands_whole_run": {
+      "scope": "entire run including warmup; different from 30-second frame window",
+      "cp_frames": 3212,
+      "cp_work_wall_ms": 14.008365504358656,
+      "cp_gpu_fence_wait_ms": 6.245632004981321,
+      "cp_frame_wall_ms": 21.848284557907846,
+      "commands_per_cp_frame": {
+        "BeginRenderPass": 0.0,
+        "BeginRendering": 48.65843711083437,
+        "Dispatch": 88.903300124533,
+        "CopyBuffer": 5.445672478206725,
+        "CopyBufferToImage": 0.0,
+        "Barrier": 153.15071606475715,
+        "Draw": 896.0494396014943,
+        "ClearAttachments": 0.0,
+        "Submission": 2.9736612702366125
+      }
     }
   },
   {
@@ -117,6 +135,24 @@
         "input wall time covers guest GetState, not all event handling",
         "visible window area and scene identity require external verification"
       ]
+    },
+    "gpu_commands_whole_run": {
+      "scope": "entire run including warmup; different from 30-second frame window",
+      "cp_frames": 3417,
+      "cp_work_wall_ms": 13.861878841088675,
+      "cp_gpu_fence_wait_ms": 6.136344746853966,
+      "cp_frame_wall_ms": 20.539394205443372,
+      "commands_per_cp_frame": {
+        "BeginRenderPass": 0.0,
+        "BeginRendering": 46.14635645302897,
+        "Dispatch": 87.81685689201053,
+        "CopyBuffer": 5.478811823236757,
+        "CopyBufferToImage": 0.0,
+        "Barrier": 146.04424934152766,
+        "Draw": 903.551214515657,
+        "ClearAttachments": 0.0,
+        "Submission": 2.934679543459175
+      }
     }
   },
   {
@@ -177,6 +213,24 @@
         "input wall time covers guest GetState, not all event handling",
         "visible window area and scene identity require external verification"
       ]
+    },
+    "gpu_commands_whole_run": {
+      "scope": "entire run including warmup; different from 30-second frame window",
+      "cp_frames": 3339,
+      "cp_work_wall_ms": 14.04809523809524,
+      "cp_gpu_fence_wait_ms": 6.338802036537886,
+      "cp_frame_wall_ms": 21.024070080862533,
+      "commands_per_cp_frame": {
+        "BeginRenderPass": 0.0,
+        "BeginRendering": 51.613177598083254,
+        "Dispatch": 95.53372267145853,
+        "CopyBuffer": 8.59748427672956,
+        "CopyBufferToImage": 0.0,
+        "Barrier": 161.25486672656484,
+        "Draw": 892.6128481581312,
+        "ClearAttachments": 0.0,
+        "Submission": 2.940670859538784
+      }
     }
   },
   {
@@ -237,6 +291,24 @@
         "input wall time covers guest GetState, not all event handling",
         "visible window area and scene identity require external verification"
       ]
+    },
+    "gpu_commands_whole_run": {
+      "scope": "entire run including warmup; different from 30-second frame window",
+      "cp_frames": 3241,
+      "cp_work_wall_ms": 14.09418389385992,
+      "cp_gpu_fence_wait_ms": 6.90436593643937,
+      "cp_frame_wall_ms": 21.650043196544274,
+      "commands_per_cp_frame": {
+        "BeginRenderPass": 0.0,
+        "BeginRendering": 52.62594878124036,
+        "Dispatch": 90.9502314100586,
+        "CopyBuffer": 9.764116013576057,
+        "CopyBufferToImage": 0.0,
+        "Barrier": 157.67775377969764,
+        "Draw": 976.9484109842641,
+        "ClearAttachments": 0.0,
+        "Submission": 2.955538414069732
+      }
     }
   }
 ]

@@ -1,0 +1,69 @@
+Rendering reconstruction: native resolve coherence
+=================================================
+
+Previous path
+Each Xenos resolve enumerated all host render targets owning the source EDRAM
+span, transitioned those images to compute-read, dumped them into the EDRAM
+buffer, then resolved EDRAM into the tiled/converted destination. Repeated
+resolves could dump unchanged source tiles again. The existing direct-host
+resolve option is a stub: its source-image resolve shaders are unavailable.
+
+Native replacement
+A native C++ coherence table describes which host-image contents are already
+materialized in each of 2048 EDRAM tiles. A valid stamp contains render-target
+identity, its write generation, and the nonwrapped source tile index. Whole
+dispatches are omitted only when every tile's stamp is current. A rectangle
+with no required writes also avoids its source-image transitions; an entirely
+current dump avoids the EDRAM write transition. The final destination resolve,
+texture invalidation, memory publication, clear operations and existing GPU
+ordering remain in the original path.
+
+Invalidation
+- Draw preparation bumps generations for every accumulated bound attachment,
+  conservatively including attachments whose write masks may suppress stores.
+- Transfers and resolve clears invalidate destination owners.
+- Host-depth preservation and fragment-interlock EDRAM writes invalidate all.
+- Initialize/shutdown/cache-clear reset owners and tile stamps before reuse.
+- Generation overflow resets all metadata.
+- Uncacheable dump footprints use the original operation and invalidate all
+  stamps; whole-dump fallback avoids uncertain intermediate aliases.
+
+Addressing proof and conservative limits
+The dump shader's destination wraps modulo 2048 tiles, but source coordinates
+use the nonwrapped tile minus the host render-target base. Tracking physical
+EDRAM tile alone was rejected. A dispatch's span must fit within one physical
+period. Tile widths (80 samples for 32-bit,40 for64-bit) and heights16, multiplied
+by integer resolution scales, divide the8x16 compute group size. Depth's half-
+width swap remains in the tile. Thus accepted dispatches do not write untracked
+border tiles. The source coordinates after raw tile selection do not depend on
+the destination pitch. MSAA selects samples within the same tile footprint.
+
+Files
+- gpu/mgr_resolve_coherence.h: metadata and conservative validity checks.
+- patches/native-resolve-coherence.patch: integration into owned vendor copy.
+- tests/mgr_resolve_coherence_checks.cpp: deterministic differential model.
+- tools/experiment/apply_render_patches.py: checksum-gated reproduction.
+
+Controls and evidence
+MGR_NATIVE_RESOLVE=0 preserves original dump operations (default).
+MGR_NATIVE_RESOLVE=1 enables cache. MGR_GPU_STATS=1 logs requested/skipped/issued
+GPU dump tiles and dispatches per120 resolves. Counter reductions establish
+omitted work, not whole-game rendering correctness or an FPS improvement.
+The CPU model compares complete simulated EDRAM contents after every dispatch;
+it is not a GPU shader comparison. Gameplay, overlapping render-target effects,
+Blade Mode, depth/MSAA/scaled rendering, transitions and long sessions need
+visual testing. No claim of parity follows from successful boot/API validation.
+
+Reproduction
+python3 tools/experiment/apply_render_patches.py
+cmake --build build-tools/rexruntime --target rexruntime --parallel 4
+cmake --build build --target mgr mgr_resolve_coherence_checks \
+  mgr_pipeline_metrics_checks --parallel 4
+build/mgr_resolve_coherence_checks
+build/mgr_pipeline_metrics_checks private/pipeline-checks.csv
+python3 tests/mgr_pipeline_summary_checks.py
+python3 experiments/native-rewrite/bundle.py build \
+  'private/native-rewrite/MGR Native Rewrite.app'
+python3 experiments/native-rewrite/sample_runs.py --comparison resolve \
+  --tag UNIQUE --seconds 75 --start 30 --duration 30
+

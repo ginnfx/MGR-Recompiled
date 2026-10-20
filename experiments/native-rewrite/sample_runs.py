@@ -70,6 +70,9 @@ for leg, native in [('A1',False),('B1',True),('B2',True),('A2',False)]:
                '--start',str(a.start),'--duration',str(a.duration),
                '--metal-log',str(out/'stderr.log')]
     summary = json.loads(subprocess.check_output(command,text=True))
+    summary['gpu_commands_whole_run'] = json.loads(subprocess.check_output([
+        'python3', str(root/'tools/experiment/summarize_gpu_stats.py'),
+        str(out/'stderr.log')], text=True))
     summary.update(label=label, mode=mode,
         comparison=a.comparison, native_resolve=env['MGR_NATIVE_RESOLVE'],
         scene='unattended boot/automatic attract; visual matching unverified',

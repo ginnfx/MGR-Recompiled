@@ -1,0 +1,252 @@
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -14,6 +14,8 @@
+ #include <cstddef>
+ #include <cstdint>
+ #include <cstring>
++#include <cstdio>
++#include <cstdlib>
+ #include <memory>
+ #include <tuple>
+ #include <utility>
+@@ -63,6 +65,16 @@
+ //     "GPU");
+ 
+ namespace rex::graphics::vulkan {
++namespace {
++bool NativeResolveEnabled() {
++  // Opt in until controlled GPU timings and visual gameplay evidence exist.
++  static const bool enabled = [] {
++    const char* value = std::getenv("MGR_NATIVE_RESOLVE");
++    return value && value[0] == '1';
++  }();
++  return enabled;
++}
++}  // namespace
+ 
+ // Generated with `xb buildshaders`.
+ namespace shaders {
+@@ -193,6 +205,7 @@
+ }
+ 
+ bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
++  native_resolve_coherence_.Reset();
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();
+   const VkPhysicalDevice physical_device = vulkan_device->physical_device();
+@@ -970,6 +983,7 @@
+ }
+ 
+ void VulkanRenderTargetCache::Shutdown(bool from_destructor) {
++  native_resolve_coherence_.Reset();
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
+@@ -1091,6 +1105,7 @@
+ }
+ 
+ void VulkanRenderTargetCache::ClearCache() {
++  native_resolve_coherence_.Reset();
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
+@@ -1128,6 +1143,24 @@
+                                       VulkanSharedMemory& shared_memory,
+                                       VulkanTextureCache& texture_cache,
+                                       uint32_t& written_address_out, uint32_t& written_length_out) {
++  if (native_resolve_calls_ && native_resolve_calls_ % 120 == 0) {
++    const char* stats_env = std::getenv("MGR_GPU_STATS");
++    if (stats_env && stats_env[0] == '1') {
++      const auto& stats = native_resolve_stats_;
++      std::fprintf(stderr,
++          "[mgr-resolve] native=%d resolves=120 tiles requested=%llu skipped=%llu dispatched=%llu "
++          "dispatches requested=%llu skipped=%llu dispatched=%llu\n",
++          int(NativeResolveEnabled()),
++          static_cast<unsigned long long>(stats.requested_tiles),
++          static_cast<unsigned long long>(stats.skipped_tiles),
++          static_cast<unsigned long long>(stats.dispatched_tiles),
++          static_cast<unsigned long long>(stats.requested_dispatches),
++          static_cast<unsigned long long>(stats.skipped_dispatches),
++          static_cast<unsigned long long>(stats.dispatched_dispatches));
++    }
++    native_resolve_stats_ = {};
++  }
++  ++native_resolve_calls_;
+   written_address_out = 0;
+   written_length_out = 0;
+ 
+@@ -1326,6 +1359,7 @@
+         cleared = true;
+       } break;
+       case Path::kPixelShaderInterlock: {
++        if (NativeResolveEnabled()) native_resolve_coherence_.InvalidateAll();
+         UseEdramBuffer(EdramBufferUsage::kComputeWrite);
+         // Should be safe to only commit once (if was accessed as unordered or
+         // with fragment shader interlock previously - if there was nothing to
+@@ -1401,6 +1435,13 @@
+       RenderTarget* const* depth_and_color_render_targets =
+           last_update_accumulated_render_targets();
+ 
++      if (NativeResolveEnabled()) {
++        for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
++          native_resolve_coherence_.InvalidateOwner(
++              reinterpret_cast<uintptr_t>(depth_and_color_render_targets[i]));
++        }
++      }
++
+       PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
+                                        depth_and_color_render_targets, last_update_transfers());
+ 
+@@ -1494,6 +1535,7 @@
+     } break;
+ 
+     case Path::kPixelShaderInterlock: {
++      if (NativeResolveEnabled()) native_resolve_coherence_.InvalidateAll();
+       // For FSI, only the barrier is needed - already scheduled if required.
+       // But the buffer will be used for FSI drawing now.
+       UseEdramBuffer(EdramBufferUsage::kFragmentReadWrite);
+@@ -4578,6 +4620,14 @@
+     resolve_clear_rect.layerCount = 1;
+   }
+ 
++  if (NativeResolveEnabled()) {
++    for (uint32_t i = 0; i < render_target_count; ++i) {
++      if (render_targets[i] && (resolve_clear_needed || !render_target_transfers[i].empty())) {
++        native_resolve_coherence_.InvalidateOwner(reinterpret_cast<uintptr_t>(render_targets[i]));
++      }
++    }
++  }
++
+   // Do host depth storing for the depth destination (assuming there can be only
+   // one depth destination) where depth destination == host depth source.
+   bool host_depth_store_set_up = false;
+@@ -4654,6 +4704,8 @@
+             sizeof(host_depth_store_rectangle_constant), &host_depth_store_rectangle_constant);
+         command_processor_.SubmitBarriers(true);
+         command_buffer.CmdVkDispatch(group_count_x, group_count_y, 1);
++        // Host-depth preservation writes a different representation to EDRAM.
++        if (NativeResolveEnabled()) native_resolve_coherence_.InvalidateAll();
+         MarkEdramBufferModified();
+       }
+     }
+@@ -6053,18 +6105,63 @@
+     return true;
+   }
+ 
++  bool cache_allowed = NativeResolveEnabled();
++  if (cache_allowed) {
++    // Keep all original dispatches if an unusual footprint could touch the
++    // same physical tile more than once. Do not mix preselected cache hits
++    // with an uncacheable dispatch that might overwrite them later.
++    for (const auto& rectangle : dump_rectangles_) {
++      ResolveCopyDumpRectangle::Dispatch dispatches[ResolveCopyDumpRectangle::kMaxDispatches];
++      const uint32_t count = rectangle.GetDispatches(dump_pitch, dump_row_length_used, dispatches);
++      for (uint32_t i = 0; i < count; ++i) {
++        const auto& dispatch = dispatches[i];
++        if (!dispatch.width_tiles || !dispatch.height_tiles ||
++            dispatch.width_tiles > dump_pitch ||
++            uint64_t(dispatch.height_tiles - 1) * dump_pitch + dispatch.width_tiles >
++                xenos::kEdramTileCount) {
++          cache_allowed = false;
++        }
++      }
++    }
++    if (!cache_allowed) native_resolve_coherence_.InvalidateAll();
++  }
++
+   // Clear previously set temporary indices.
+   for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
+     static_cast<VulkanRenderTarget*>(rectangle.render_target)->SetTemporarySortIndex(UINT32_MAX);
+   }
+   // Gather all needed barriers and info needed to sort the invocations.
+-  UseEdramBuffer(EdramBufferUsage::kComputeWrite);
++  bool edram_write_needed = false;
+   dump_invocations_.clear();
+   dump_invocations_.reserve(dump_rectangles_.size());
+   uint32_t rt_sort_index = 0;
+   for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
+     auto& vulkan_rt = *static_cast<VulkanRenderTarget*>(rectangle.render_target);
+     RenderTargetKey rt_key = vulkan_rt.key();
++    ResolveCopyDumpRectangle::Dispatch dispatches[ResolveCopyDumpRectangle::kMaxDispatches];
++    const uint32_t dispatch_count =
++        rectangle.GetDispatches(dump_pitch, dump_row_length_used, dispatches);
++    bool rectangle_write_needed = false;
++    for (uint32_t i = 0; i < dispatch_count; ++i) {
++      const auto& dispatch = dispatches[i];
++      const uint64_t tiles = uint64_t(dispatch.width_tiles) * dispatch.height_tiles;
++      ++native_resolve_stats_.requested_dispatches;
++      native_resolve_stats_.requested_tiles += tiles;
++      const bool current = cache_allowed && native_resolve_coherence_.IsCurrent(
++          reinterpret_cast<uintptr_t>(&vulkan_rt), dump_base + dispatch.offset,
++          dispatch.width_tiles, dispatch.height_tiles, dump_pitch);
++      if (current) {
++        ++native_resolve_stats_.skipped_dispatches;
++        native_resolve_stats_.skipped_tiles += tiles;
++      } else {
++        rectangle_write_needed = true;
++      }
++    }
++    if (!rectangle_write_needed) continue;
++    if (!edram_write_needed) {
++      edram_write_needed = true;
++      UseEdramBuffer(EdramBufferUsage::kComputeWrite);
++    }
+     command_processor_.PushImageMemoryBarrier(
+         vulkan_rt.image(),
+         ui::vulkan::util::InitializeSubresourceRange(
+@@ -6148,6 +6245,11 @@
+     uint32_t dispatch_count = rectangle.GetDispatches(dump_pitch, dump_row_length_used, dispatches);
+     for (uint32_t i = 0; i < dispatch_count; ++i) {
+       const ResolveCopyDumpRectangle::Dispatch& dispatch = dispatches[i];
++      if (cache_allowed && native_resolve_coherence_.IsCurrent(
++              reinterpret_cast<uintptr_t>(&vulkan_rt), dump_base + dispatch.offset,
++              dispatch.width_tiles, dispatch.height_tiles, dump_pitch)) {
++        continue;
++      }
+       offsets.dispatch_first_tile = dump_base + dispatch.offset;
+       if (last_offsets != offsets) {
+         last_offsets = offsets;
+@@ -6170,6 +6272,17 @@
+            (kDumpSamplesPerGroupY - 1)) /
+               kDumpSamplesPerGroupY,
+           1);
++      ++native_resolve_stats_.dispatched_dispatches;
++      native_resolve_stats_.dispatched_tiles +=
++          uint64_t(dispatch.width_tiles) * dispatch.height_tiles;
++      if (cache_allowed) {
++        // The dump writes whole 5120-byte tiles for both 32bpp and 64bpp.
++        // Group dimensions (8x16) divide the 80x16 / 40x16 tile dimensions,
++        // so there is no over-dispatch outside this exact wrapped footprint.
++        native_resolve_coherence_.MarkCurrent(
++            reinterpret_cast<uintptr_t>(&vulkan_rt), dump_base + dispatch.offset,
++            dispatch.width_tiles, dispatch.height_tiles, dump_pitch);
++      }
+     }
+     MarkEdramBufferModified();
+   }
+--- a/include/rex/graphics/vulkan/render_target_cache.h
++++ b/include/rex/graphics/vulkan/render_target_cache.h
+@@ -9,6 +9,8 @@
+  *
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
++
++#include <mgr_resolve_coherence.h>
+ 
+ #include <array>
+ #include <cstdint>
+@@ -857,6 +859,14 @@
+   std::unordered_map<DirectResolvePipelineKey, VkPipeline, DirectResolvePipelineKey::Hasher>
+       direct_resolve_pipelines_;
+ 
++  // Metadata only: the original dump/resolve path remains the fallback.
++  mgr::ResolveCoherence<xenos::kEdramTileCount> native_resolve_coherence_;
++  uint64_t native_resolve_calls_ = 0;
++  struct NativeResolveStats {
++    uint64_t requested_tiles = 0, skipped_tiles = 0, dispatched_tiles = 0;
++    uint64_t requested_dispatches = 0, skipped_dispatches = 0, dispatched_dispatches = 0;
++  } native_resolve_stats_;
++
+   // Temporary storage for Resolve.
+   std::vector<Transfer> clear_transfers_[2];
+ 

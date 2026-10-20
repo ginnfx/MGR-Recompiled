@@ -32,3 +32,9 @@ these focused runs; this does not exclude unmeasured OS/cursor event overhead.
 Guest and HUD host FPS differ, demonstrating that guest FPS alone is not a
 displayed-frame metric. A genuine faster-rendering claim requires matched GPU
 execution and workload/scene evidence. No such focus claim is made here.
+
+Whole-run CP work/fence measurements (includes warmup, unlike table above):
+focus-observed-A1: CP work 14.01 ms/frame; GPU-fence wait 6.25 ms/frame.
+focus-observed-B1: CP work 13.86 ms/frame; GPU-fence wait 6.14 ms/frame.
+focus-observed-B2: CP work 14.05 ms/frame; GPU-fence wait 6.34 ms/frame.
+focus-observed-A2: CP work 14.09 ms/frame; GPU-fence wait 6.90 ms/frame.

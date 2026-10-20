@@ -1,0 +1,414 @@
+[
+  {
+    "frames": 1422,
+    "requested_start_s": 30.0,
+    "requested_duration_s": 30.0,
+    "measured_duration_s": 30.001627250000002,
+    "average_fps": 47.39742908445075,
+    "one_percent_low_fps": 19.51141149290427,
+    "mean_guest_present_interval_ms": 21.09819075246132,
+    "mean_render_thread_cpu_ms": 12.711087640646976,
+    "mean_rss_mib": 1096.673670886076,
+    "max_rss_mib": 1123.92,
+    "gpu_execution_time_ms": 21.409700230591852,
+    "metal_host_frame_samples": 1301,
+    "metal_host_mean_present_interval_ms": 21.848170637970792,
+    "metal_host_presentation_fps": 45.77042245642575,
+    "gpu_window_alignment": "whole HUD batches by wall timestamp, approximate guest-window alignment",
+    "label": "resolve-coherence-A1",
+    "mode": "sample-native",
+    "comparison": "resolve",
+    "native_resolve": "0",
+    "scene": "unattended boot/automatic attract; visual matching unverified",
+    "validation": false,
+    "shadow_checks": false,
+    "pipeline": {
+      "window_start_s": 30.0,
+      "window_duration_s": 30.0,
+      "displayed_frames": null,
+      "gpu_execution_ms": null,
+      "focus_groups": {
+        "1": {
+          "attempts": 1379,
+          "outcomes": {
+            "present_requested": 1379
+          },
+          "extents": [
+            [
+              1280,
+              720
+            ]
+          ],
+          "ui_attempts": 1379,
+          "input_calls": 5688,
+          "input_total_ms": 12.731842,
+          "mean_attempt_ms": 17.458849221899925,
+          "mean_reuse_ms": 0.005669263959390863,
+          "mean_acquire_ms": 0.008455002175489485,
+          "mean_submit_ms": 17.40246009137056,
+          "mean_present_ms": 0.011938919506889049,
+          "mean_submit_lock_ms": 0.0011723176214648297,
+          "mean_submit_excluding_lock_ms": 17.401287773749093,
+          "mean_present_lock_ms": 0.001720630891950689,
+          "mean_present_excluding_lock_ms": 0.010218288614938361
+        }
+      },
+      "limitations": [
+        "focus -1 means no focus notification observed; it is not unfocused",
+        "focus is sampled at attempt completion; transition attempts may straddle states",
+        "Vulkan acquire timing is a drawable-acquisition proxy, not direct nextDrawable timing",
+        "submit/present include host queue locking; they are not GPU execution times",
+        "input wall time covers guest GetState, not all event handling",
+        "visible window area and scene identity require external verification"
+      ]
+    },
+    "gpu_commands_whole_run": {
+      "scope": "entire run including warmup; different from 30-second frame window",
+      "cp_frames": 3330,
+      "cp_work_wall_ms": 13.236267267267268,
+      "cp_gpu_fence_wait_ms": 7.251708708708708,
+      "cp_frame_wall_ms": 21.069156156156154,
+      "commands_per_cp_frame": {
+        "BeginRenderPass": 0.0,
+        "BeginRendering": 50.22558558558559,
+        "Dispatch": 89.92954954954953,
+        "CopyBuffer": 8.198078078078078,
+        "CopyBufferToImage": 0.0,
+        "Barrier": 154.16108108108108,
+        "Draw": 899.9563063063063,
+        "ClearAttachments": 0.0,
+        "Submission": 2.9842042042042047
+      },
+      "resolve_batches": 579,
+      "tiles_requested": 24488241,
+      "tiles_skipped": 0,
+      "tiles_dispatched": 24488241,
+      "dispatches_requested": 69479,
+      "dispatches_skipped": 0,
+      "dispatches_dispatched": 69479,
+      "resolve_tile_skip_percent": 0.0,
+      "resolve_dispatch_skip_percent": 0.0
+    }
+  },
+  {
+    "frames": 1451,
+    "requested_start_s": 30.0,
+    "requested_duration_s": 30.0,
+    "measured_duration_s": 30.009956125000002,
+    "average_fps": 48.35062050594718,
+    "one_percent_low_fps": 15.730737973268521,
+    "mean_guest_present_interval_ms": 20.682257839421087,
+    "mean_render_thread_cpu_ms": 12.464735240523776,
+    "mean_rss_mib": 968.2138731909029,
+    "max_rss_mib": 1027.98,
+    "gpu_execution_time_ms": 21.100446886446885,
+    "metal_host_frame_samples": 1365,
+    "metal_host_mean_present_interval_ms": 21.505076923076924,
+    "metal_host_presentation_fps": 46.50064743209117,
+    "gpu_window_alignment": "whole HUD batches by wall timestamp, approximate guest-window alignment",
+    "label": "resolve-coherence-B1",
+    "mode": "sample-native",
+    "comparison": "resolve",
+    "native_resolve": "1",
+    "scene": "unattended boot/automatic attract; visual matching unverified",
+    "validation": false,
+    "shadow_checks": false,
+    "pipeline": {
+      "window_start_s": 30.0,
+      "window_duration_s": 30.0,
+      "displayed_frames": null,
+      "gpu_execution_ms": null,
+      "focus_groups": {
+        "1": {
+          "attempts": 1322,
+          "outcomes": {
+            "present_requested": 1322
+          },
+          "extents": [
+            [
+              1280,
+              720
+            ]
+          ],
+          "ui_attempts": 1322,
+          "input_calls": 5468,
+          "input_total_ms": 12.038534,
+          "mean_attempt_ms": 15.875657748108924,
+          "mean_reuse_ms": 0.0007077934947049924,
+          "mean_acquire_ms": 0.008324215582450832,
+          "mean_submit_ms": 15.827943113464448,
+          "mean_present_ms": 0.011536753403933436,
+          "mean_submit_lock_ms": 5.454084720121029e-05,
+          "mean_submit_excluding_lock_ms": 15.827888572617246,
+          "mean_present_lock_ms": 0.0014551505295007565,
+          "mean_present_excluding_lock_ms": 0.010081602874432678
+        },
+        "0": {
+          "attempts": 82,
+          "outcomes": {
+            "present_requested": 82
+          },
+          "extents": [
+            [
+              1280,
+              720
+            ]
+          ],
+          "ui_attempts": 82,
+          "input_calls": 332,
+          "input_total_ms": 0.708083,
+          "mean_attempt_ms": 24.488785036585366,
+          "mean_reuse_ms": 0.0006352926829268292,
+          "mean_acquire_ms": 0.008449182926829267,
+          "mean_submit_ms": 24.439434524390244,
+          "mean_present_ms": 0.011258146341463415,
+          "mean_submit_lock_ms": 5.445121951219512e-05,
+          "mean_submit_excluding_lock_ms": 24.43938007317073,
+          "mean_present_lock_ms": 0.0001153048780487805,
+          "mean_present_excluding_lock_ms": 0.011142841463414634
+        }
+      },
+      "limitations": [
+        "focus -1 means no focus notification observed; it is not unfocused",
+        "focus is sampled at attempt completion; transition attempts may straddle states",
+        "Vulkan acquire timing is a drawable-acquisition proxy, not direct nextDrawable timing",
+        "submit/present include host queue locking; they are not GPU execution times",
+        "input wall time covers guest GetState, not all event handling",
+        "visible window area and scene identity require external verification"
+      ]
+    },
+    "gpu_commands_whole_run": {
+      "scope": "entire run including warmup; different from 30-second frame window",
+      "cp_frames": 3319,
+      "cp_work_wall_ms": 11.5783910816511,
+      "cp_gpu_fence_wait_ms": 8.727875866224766,
+      "cp_frame_wall_ms": 21.12585115998795,
+      "commands_per_cp_frame": {
+        "BeginRenderPass": 0.0,
+        "BeginRendering": 52.939861404037366,
+        "Dispatch": 103.59117203977101,
+        "CopyBuffer": 10.40813498041579,
+        "CopyBufferToImage": 0.0,
+        "Barrier": 166.34200060259116,
+        "Draw": 818.3679120216933,
+        "ClearAttachments": 0.0,
+        "Submission": 2.971135884302501
+      },
+      "resolve_batches": 574,
+      "tiles_requested": 24488829,
+      "tiles_skipped": 3444219,
+      "tiles_dispatched": 21044610,
+      "dispatches_requested": 68879,
+      "dispatches_skipped": 4622,
+      "dispatches_dispatched": 64257,
+      "resolve_tile_skip_percent": 14.064449549629343,
+      "resolve_dispatch_skip_percent": 6.710318094048985
+    }
+  },
+  {
+    "frames": 1323,
+    "requested_start_s": 30.0,
+    "requested_duration_s": 30.0,
+    "measured_duration_s": 30.018082,
+    "average_fps": 44.07343547132692,
+    "one_percent_low_fps": 18.78911011146872,
+    "mean_guest_present_interval_ms": 22.689404383975813,
+    "mean_render_thread_cpu_ms": 13.245899533635676,
+    "mean_rss_mib": 966.1880045351475,
+    "max_rss_mib": 1119.64,
+    "gpu_execution_time_ms": 23.10953821656051,
+    "metal_host_frame_samples": 1256,
+    "metal_host_mean_present_interval_ms": 23.550390127388535,
+    "metal_host_presentation_fps": 42.46214158622468,
+    "gpu_window_alignment": "whole HUD batches by wall timestamp, approximate guest-window alignment",
+    "label": "resolve-coherence-B2",
+    "mode": "sample-native",
+    "comparison": "resolve",
+    "native_resolve": "1",
+    "scene": "unattended boot/automatic attract; visual matching unverified",
+    "validation": false,
+    "shadow_checks": false,
+    "pipeline": {
+      "window_start_s": 30.0,
+      "window_duration_s": 30.0,
+      "displayed_frames": null,
+      "gpu_execution_ms": null,
+      "focus_groups": {
+        "1": {
+          "attempts": 1206,
+          "outcomes": {
+            "present_requested": 1206
+          },
+          "extents": [
+            [
+              1280,
+              720
+            ]
+          ],
+          "ui_attempts": 1206,
+          "input_calls": 4968,
+          "input_total_ms": 10.921193,
+          "mean_attempt_ms": 18.089214048092867,
+          "mean_reuse_ms": 0.0006450671641791045,
+          "mean_acquire_ms": 0.008614140132669984,
+          "mean_submit_ms": 18.03948043946932,
+          "mean_present_ms": 0.010716096185737977,
+          "mean_submit_lock_ms": 0.0005267470978441127,
+          "mean_submit_excluding_lock_ms": 18.038953692371475,
+          "mean_present_lock_ms": 0.0001225049751243781,
+          "mean_present_excluding_lock_ms": 0.010593591210613599
+        },
+        "0": {
+          "attempts": 80,
+          "outcomes": {
+            "present_requested": 80
+          },
+          "extents": [
+            [
+              1280,
+              720
+            ]
+          ],
+          "ui_attempts": 80,
+          "input_calls": 320,
+          "input_total_ms": 0.660197,
+          "mean_attempt_ms": 23.8717135375,
+          "mean_reuse_ms": 0.00076715,
+          "mean_acquire_ms": 0.00851825,
+          "mean_submit_ms": 23.820397425,
+          "mean_present_ms": 0.010511524999999999,
+          "mean_submit_lock_ms": 4.5799999999999995e-05,
+          "mean_submit_excluding_lock_ms": 23.820351625,
+          "mean_present_lock_ms": 9.96e-05,
+          "mean_present_excluding_lock_ms": 0.010411924999999999
+        }
+      },
+      "limitations": [
+        "focus -1 means no focus notification observed; it is not unfocused",
+        "focus is sampled at attempt completion; transition attempts may straddle states",
+        "Vulkan acquire timing is a drawable-acquisition proxy, not direct nextDrawable timing",
+        "submit/present include host queue locking; they are not GPU execution times",
+        "input wall time covers guest GetState, not all event handling",
+        "visible window area and scene identity require external verification"
+      ]
+    },
+    "gpu_commands_whole_run": {
+      "scope": "entire run including warmup; different from 30-second frame window",
+      "cp_frames": 3218,
+      "cp_work_wall_ms": 14.367569919204474,
+      "cp_gpu_fence_wait_ms": 6.792343070229956,
+      "cp_frame_wall_ms": 21.86824735860783,
+      "commands_per_cp_frame": {
+        "BeginRenderPass": 0.0,
+        "BeginRendering": 53.83589185829709,
+        "Dispatch": 92.41438781852081,
+        "CopyBuffer": 10.832256059664386,
+        "CopyBufferToImage": 0.0,
+        "Barrier": 160.81836544437536,
+        "Draw": 990.4120882535736,
+        "ClearAttachments": 0.0,
+        "Submission": 2.9614356743318835
+      },
+      "resolve_batches": 566,
+      "tiles_requested": 24005941,
+      "tiles_skipped": 3175233,
+      "tiles_dispatched": 20830708,
+      "dispatches_requested": 67919,
+      "dispatches_skipped": 4302,
+      "dispatches_dispatched": 63617,
+      "resolve_tile_skip_percent": 13.226863300213893,
+      "resolve_dispatch_skip_percent": 6.334015518485255
+    }
+  },
+  {
+    "frames": 1603,
+    "requested_start_s": 30.0,
+    "requested_duration_s": 30.0,
+    "measured_duration_s": 29.992790292000002,
+    "average_fps": 53.44617771116712,
+    "one_percent_low_fps": 19.799417366970893,
+    "mean_guest_present_interval_ms": 18.710411910168435,
+    "mean_render_thread_cpu_ms": 11.535250676232065,
+    "mean_rss_mib": 1011.4508047411105,
+    "max_rss_mib": 1042.59,
+    "gpu_execution_time_ms": 18.426834677419354,
+    "metal_host_frame_samples": 1488,
+    "metal_host_mean_present_interval_ms": 19.078797043010752,
+    "metal_host_presentation_fps": 52.41420608152734,
+    "gpu_window_alignment": "whole HUD batches by wall timestamp, approximate guest-window alignment",
+    "label": "resolve-coherence-A2",
+    "mode": "sample-native",
+    "comparison": "resolve",
+    "native_resolve": "0",
+    "scene": "unattended boot/automatic attract; visual matching unverified",
+    "validation": false,
+    "shadow_checks": false,
+    "pipeline": {
+      "window_start_s": 30.0,
+      "window_duration_s": 30.0,
+      "displayed_frames": null,
+      "gpu_execution_ms": null,
+      "focus_groups": {
+        "1": {
+          "attempts": 1576,
+          "outcomes": {
+            "present_requested": 1576
+          },
+          "extents": [
+            [
+              1280,
+              720
+            ]
+          ],
+          "ui_attempts": 1576,
+          "input_calls": 6408,
+          "input_total_ms": 13.284132,
+          "mean_attempt_ms": 15.380268537436548,
+          "mean_reuse_ms": 0.007072637055837563,
+          "mean_acquire_ms": 0.008432678299492385,
+          "mean_submit_ms": 15.32119576967005,
+          "mean_present_ms": 0.01340414657360406,
+          "mean_submit_lock_ms": 0.00035986865482233503,
+          "mean_submit_excluding_lock_ms": 15.320835901015228,
+          "mean_present_lock_ms": 0.0023038001269035536,
+          "mean_present_excluding_lock_ms": 0.011100346446700507
+        }
+      },
+      "limitations": [
+        "focus -1 means no focus notification observed; it is not unfocused",
+        "focus is sampled at attempt completion; transition attempts may straddle states",
+        "Vulkan acquire timing is a drawable-acquisition proxy, not direct nextDrawable timing",
+        "submit/present include host queue locking; they are not GPU execution times",
+        "input wall time covers guest GetState, not all event handling",
+        "visible window area and scene identity require external verification"
+      ]
+    },
+    "gpu_commands_whole_run": {
+      "scope": "entire run including warmup; different from 30-second frame window",
+      "cp_frames": 3644,
+      "cp_work_wall_ms": 12.73976399560922,
+      "cp_gpu_fence_wait_ms": 5.921580680570801,
+      "cp_frame_wall_ms": 19.267834796926454,
+      "commands_per_cp_frame": {
+        "BeginRenderPass": 0.0,
+        "BeginRendering": 44.73652579582876,
+        "Dispatch": 86.16366630076838,
+        "CopyBuffer": 5.69810647639956,
+        "CopyBufferToImage": 0.0,
+        "Barrier": 146.45194840834245,
+        "Draw": 824.7664379802414,
+        "ClearAttachments": 0.0,
+        "Submission": 2.9571899012074643
+      },
+      "resolve_batches": 634,
+      "tiles_requested": 27437616,
+      "tiles_skipped": 0,
+      "tiles_dispatched": 27437616,
+      "dispatches_requested": 76079,
+      "dispatches_skipped": 0,
+      "dispatches_dispatched": 76079,
+      "resolve_tile_skip_percent": 0.0,
+      "resolve_dispatch_skip_percent": 0.0
+    }
+  }
+]
