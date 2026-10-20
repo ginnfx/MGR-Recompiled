@@ -24,6 +24,7 @@ set(MGR_SOURCES
     src/mgr_prompt_device.cpp
     src/mgr_settings.cpp
     src/mgr_qol.cpp
+    src/mgr_d3d_trace.cpp
     src/mgr_options_dialog.cpp
     src/mgr_game_options.cpp
     src/mgr_menu_fonts.cpp

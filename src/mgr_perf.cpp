@@ -67,12 +67,15 @@ struct FrameMeter {
 
 }  // namespace
 
+void MgrD3DTraceOnPresent();  // mgr_d3d_trace.cpp
+
 float MgrGuestFPS() { return guest_fps.load(std::memory_order_relaxed); }
 
 extern "C" REX_FUNC(__imp__VdSwap) {
   static PPCFunc* const sdk_vdswap = ResolveSdkVdSwap();
   static FrameMeter meter;  // VdSwap is only called from the guest render thread
   meter.OnFrame();
+  MgrD3DTraceOnPresent();
   MgrTimingOnPresent(base);
   MgrPromptsOnPresent();
   mgrr_perf::Profiler::Get().EndFrame();  // no-op unless MgrStartSessionLog ran
