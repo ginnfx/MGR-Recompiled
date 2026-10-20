@@ -6,7 +6,7 @@ vendor/
 build/
 generated/
 *.log
-# Documentation is maintained locally and excluded from Git at every depth.
+# Local documentation
 *.[mM][dD]
 build-tools/
 
