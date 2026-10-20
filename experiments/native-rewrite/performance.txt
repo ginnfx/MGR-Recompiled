@@ -1,0 +1,82 @@
+Native rewrite experiment: performance and correctness report
+2026-10-20; Apple Silicon macOS; branch experiment/native-rewrite
+
+Isolation and baseline
+  Original worktree: /Users/brajanzalta/Desktop/code/macgrpc
+  Experimental worktree: /private/tmp/macgrpc-native-rewrite
+  Parent: de8b75a; dirty version preserved by commit 0dfa5eb.
+  Generated code, source-built runtime dylib, shader bundle, saves and settings
+  copied. SDK and proprietary game files are read-only input links; all builds,
+  caches, logs, settings writes and saves are in the experiment.
+  Vendored source copied (not linked). Main-tree patches, input hashes and
+  original build logs are under private/baseline. Build configuration matches
+  O2, native tuning, leaf localization, ThinLTO with two linker workers.
+
+M1: XDK native memory-oriented math
+  826CBFB8: float array -> packed 16-bit array
+    Previous: per-element guest stack staging, VMX permutation/packing, FPCR
+    writes, register-bank round trips. Native: direct big-endian integer
+    conversion, one FP mode transition at function exit, forward alias order.
+    Preserve generated cutoff 65504, truncation, underflow, signed zeros and
+    NaN/overflow saturation. This is not an IEEE-half conversion substitution.
+  826CC010: packed array -> float array
+    Previous: per-element VMX unpack and guest stack staging. Native: direct
+    exponent rebiasing, exponent-zero flush, big-endian store, exit FP mode.
+    Exponent 31 remains finite, matching the generated implementation.
+  826CC0E0: vector normal transform
+    Previous: emulated VMX registers with repeated load/permute/splat operations.
+    Native: host vector/matrix row algebra using ARM NEON with identical
+    multiplication/addition order, FP flush and no fused contraction.
+    Initial scalar reconstruction failed NaN payload/sign parity and was
+    slower through dispatch. Replaced by native SIMD; no ARM NaN fallback needed.
+  826CC160: matrix transpose
+    Previous: guest ABI save/restore, VMX load/merge/permute and scalar stores.
+    Native: snapshot a typed 4x4 matrix, transpose its raw words; preserves
+    NaNs and signed zeros without FP arithmetic; supports overlapping matrices.
+
+  Boundary contract: leave guest return pointer and nonvolatile registers intact.
+  Keep original __imp__ implementations linked. Physical aliases, MMIO,
+  wrapping ranges, unaligned output-word layouts and array/transpose aliases
+  with guest stack scratch retain the original implementation.
+  MGR_NATIVE_MATH=0 restores originals; MGR_NATIVE_MATH_VERIFY=1 checks live
+  transform and transpose outputs. Array parity is checked offline exhaustively
+  and randomly; live array shadowing is not currently provided.
+
+  Correctness checks: all 65,536 half encodings; boundary floats including NaNs,
+  infinities, signed zeros and subnormals; 16,000 random tests across array
+  overlap directions, matrix aliases, every input byte alignment, FP rounding
+  modes, canaries, ABI state and unsupported-range fallbacks.
+  Existing timing checks pass enabled, disabled and forced configurations.
+  Existing resolve-arena preservation/overlap/bounds/fence checks pass.
+
+  Function benchmark: exact guest ABI inputs with native dispatch included.
+  Final dispatch-inclusive sample (ns/call):
+    pack 1024 elements: 39599.70 original -> 482.86 native (82.0x)
+    unpack 1024 elements: 16848.64 -> 272.80 (61.8x)
+    normal transform: 6.89 -> 5.49 (1.26x)
+    matrix transpose: 19.20 -> 6.59 (2.91x)
+  Raw results: private/math-checks-final.txt. Host load and cache state affect
+  absolute times; these numbers describe the tested buffers, not all sizes.
+  These are CPU call timings, not GPU work or end-to-end frame speedups.
+
+Runtime measurements
+  M1 game build passed. Original-source game ran 90 seconds. Native app boot
+  and automatic attract sequence run with Metal API validation enabled.
+  Latest live matches before M1 commit: transform=729493, transpose=2031395.
+  No mismatch, fatal error or Metal validation error observed in this run.
+  The local app window could not be captured. Visual rendering parity,
+  interactive gameplay, Blade Mode and synchronization under sustained gameplay
+  remain unverified. Runtime counters do not establish visual correctness.
+  Controlled FPS/GPU comparisons pending; no end-to-end speedup claimed.
+  Frame CSV records VdSwap arrival intervals and render-thread CPU consumption.
+  The latter excludes CPU time on other game threads and is not whole-frame
+  CPU critical-path time. RSS is sampled every 60 presents.
+  1% low = 1000 / mean slowest ceil(1% of frames) interval in milliseconds.
+  GPU CP work/fence statistics are CPU wall times, not GPU execution times.
+  No GPU execution-time result will be inferred from those counters.
+
+Scope still open
+  Full native engine renderer, Xenos command processor, GPU resource/shader/RT
+  replacement, Xbox APIs, thread synchronization and direct Metal integration
+  require subsequent subsystem milestones. This report makes no parity or
+  performance claim for those replacements.

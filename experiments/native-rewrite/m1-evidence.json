@@ -1,0 +1,9 @@
+{
+  "binary_sha256": "c694d1c61cad2da13eed0248666649bc950c3f94f8abaf0437f5c5e6807024b8",
+  "live_comparisons": {
+    "transform": 729493,
+    "transpose": 2031395
+  },
+  "microbench_raw": "fallback op=0 count=0\nfallback op=1 count=0\nfallback op=2 count=0\nfallback op=3 count=0\nPASS: exhaustive half decode, boundary packing, 16000 randomized/alias/alignment cases, ABI and FP modes\nBENCH pack original 39599.70 ns/call (1024 elements)\nBENCH pack native 482.86 ns/call (1024 elements)\nBENCH unpack original 16848.64 ns/call (1024 elements)\nBENCH unpack native 272.80 ns/call (1024 elements)\nBENCH transform-normal original 6.89 ns/call (1 elements)\nBENCH transform-normal native 5.49 ns/call (1 elements)\nBENCH transpose original 19.20 ns/call (1 elements)\nBENCH transpose native 6.59 ns/call (1 elements)\n",
+  "rendering_visual_check": "unavailable: window capture blocked"
+}

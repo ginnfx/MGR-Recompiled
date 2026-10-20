@@ -3,6 +3,7 @@
 // implementation; this gathers per-present call and inclusive-time evidence
 // before any native renderer starts replacing them.
 
+#include "mgr_native_math.h"
 #include <rex/ppc/context.h>
 #include <rex/ppc/func.h>
 
@@ -59,6 +60,7 @@ uint64_t present_count = 0;  // VdSwap runs on the guest render thread.
 // Called by the existing VdSwap wrapper, so report windows follow guest frames
 // rather than assuming a D3D helper is called exactly once per present.
 void MgrD3DTraceOnPresent() {
+  MgrNativeMathOnPresent();
   if (!TraceEnabled() || ++present_count % kReportEveryPresents) return;
 
   std::fprintf(stderr, "[mgr-d3d] average calls/frame over %llu presents:",
@@ -77,10 +79,10 @@ void MgrD3DTraceOnPresent() {
 extern "C" REX_FUNC(sub_826CC0E0) {
   if (TraceEnabled()) {
     const auto start = Clock::now();
-    __imp__sub_826CC0E0(ctx, base);
+    MgrDispatchNativeMath(MgrNativeMathOp::TransformNormal, ctx, base, __imp__sub_826CC0E0);
     AddTime(0, start);
   } else {
-    __imp__sub_826CC0E0(ctx, base);
+    MgrDispatchNativeMath(MgrNativeMathOp::TransformNormal, ctx, base, __imp__sub_826CC0E0);
   }
 }
 
