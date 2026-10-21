@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 REXCVAR_DEFINE_STRING(mgr_frame_rate, "60", "MGR/Display",
                       "Frame rate: 60 (original), 120 or unlocked (fractional gameplay "
@@ -198,21 +199,44 @@ int MgrActiveResolutionScale() { return MgrGetResolutionStatus().active; }
 
 std::string MgrActiveRenderTargetPrecision() { return active_render_target_precision; }
 
+namespace {
+
+std::string_view ConfigKey(std::string_view line) { return line.substr(0, line.find(" =")); }
+
+}  // namespace
+
 void MgrSaveConfig(const std::filesystem::path& path) {
-  static constexpr std::string_view kNotSaved[] = {
-      // Backend-owned status and per-launch values.
-      "imgui_guest_paced", "mgr_resolution_status", "mgr_resolution_active_scale", "log_file",
+  static constexpr std::string_view kNeverSaved[] = {
+      // Backend-owned status.
+      "imgui_guest_paced", "mgr_resolution_status", "mgr_resolution_active_scale",
       // Derived from mgr_* settings by MgrApplySettings on every launch.
-      "video_mode_refresh_rate", "anisotropic_override", "gamma_render_target_as_unorm16", "draw_resolution_scale_x",
-      "draw_resolution_scale_y"};
+      "video_mode_refresh_rate", "anisotropic_override", "gamma_render_target_as_unorm16",
+      "draw_resolution_scale_x", "draw_resolution_scale_y"};
+  // Often passed on the command line (scripts/run.sh): the file keeps the line
+  // the user wrote, if any, instead of this launch's value.
+  static constexpr std::string_view kPerLaunch[] = {"log_file"};
+  const auto listed = [](const auto& keys, std::string_view key) {
+    return std::find(std::begin(keys), std::end(keys), key) != std::end(keys);
+  };
+  std::vector<std::string> user_lines;
+  if (std::ifstream before(path); before) {
+    for (std::string line; std::getline(before, line);)
+      if (listed(kPerLaunch, ConfigKey(line))) user_lines.push_back(line);
+  }
   rex::cvar::SaveConfig(path);
   std::ifstream in(path);
   if (!in) return;
   std::ostringstream kept;
   for (std::string line; std::getline(in, line);) {
-    const std::string_view key = std::string_view(line).substr(0, line.find(" ="));
-    if (std::find(std::begin(kNotSaved), std::end(kNotSaved), key) == std::end(kNotSaved))
-      kept << line << '\n';
+    const std::string_view key = ConfigKey(line);
+    if (listed(kNeverSaved, key)) continue;
+    if (listed(kPerLaunch, key)) {
+      const auto user = std::find_if(user_lines.begin(), user_lines.end(),
+                                     [&](const std::string& u) { return ConfigKey(u) == key; });
+      if (user != user_lines.end()) kept << *user << '\n';
+      continue;
+    }
+    kept << line << '\n';
   }
   in.close();
   std::ofstream(path, std::ios::trunc) << kept.str();
