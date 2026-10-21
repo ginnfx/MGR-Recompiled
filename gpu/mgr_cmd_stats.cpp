@@ -39,23 +39,6 @@ State& GetState() {
   return state;
 }
 
-std::string Symbolize(const void* addr) {
-  Dl_info info{};
-  if (!dladdr(addr, &info)) return "?";
-  if (!info.dli_sname) {  // hidden symbol: resolve offline with atos -o <dylib> <offset>
-    const char* file = info.dli_fname ? std::strrchr(info.dli_fname, '/') : nullptr;
-    char buf[160];
-    std::snprintf(buf, sizeof(buf), "%s+0x%lx", file ? file + 1 : "?",
-                  static_cast<unsigned long>(static_cast<const char*>(addr) -
-                                             static_cast<const char*>(info.dli_fbase)));
-    return buf;
-  }
-  std::string name = info.dli_sname;
-  // Keep mangled names short; they are still unique enough to grep.
-  if (name.size() > 110) name.resize(110);
-  return name;
-}
-
 void Report(State& s) {
   if (!s.frames) return;
   const double n = static_cast<double>(s.frames);
@@ -93,6 +76,23 @@ bool Enabled() {
 long long NowNanoseconds() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
              Clock::now().time_since_epoch()).count();
+}
+
+std::string Symbolize(const void* addr) {
+  Dl_info info{};
+  if (!dladdr(addr, &info)) return "?";
+  if (!info.dli_sname) {  // hidden symbol: resolve offline with atos -o <dylib> <offset>
+    const char* file = info.dli_fname ? std::strrchr(info.dli_fname, '/') : nullptr;
+    char buf[160];
+    std::snprintf(buf, sizeof(buf), "%s+0x%lx", file ? file + 1 : "?",
+                  static_cast<unsigned long>(static_cast<const char*>(addr) -
+                                             static_cast<const char*>(info.dli_fbase)));
+    return buf;
+  }
+  std::string name = info.dli_sname;
+  // Keep mangled names short; they are still unique enough to grep.
+  if (name.size() > 110) name.resize(110);
+  return name;
 }
 
 void AddBusyNanoseconds(long long ns) { GetState().busy_ns += ns; }

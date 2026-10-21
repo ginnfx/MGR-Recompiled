@@ -16,3 +16,7 @@ tools/rexglue-src/
 tools/extract-xiso/
 tools/rexglue-sdk.zip
 
+
+# Local experiment harnesses and their measurement notes.
+experiments/
+__pycache__/

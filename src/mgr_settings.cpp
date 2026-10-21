@@ -11,6 +11,8 @@
 #include <rex/ui/window.h>
 
 #include <array>
+#include <fstream>
+#include <sstream>
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -195,3 +197,23 @@ MgrResolutionStatus MgrGetResolutionStatus() {
 int MgrActiveResolutionScale() { return MgrGetResolutionStatus().active; }
 
 std::string MgrActiveRenderTargetPrecision() { return active_render_target_precision; }
+
+void MgrSaveConfig(const std::filesystem::path& path) {
+  static constexpr std::string_view kNotSaved[] = {
+      // Backend-owned status and per-launch values.
+      "imgui_guest_paced", "mgr_resolution_status", "mgr_resolution_active_scale", "log_file",
+      // Derived from mgr_* settings by MgrApplySettings on every launch.
+      "video_mode_refresh_rate", "anisotropic_override", "gamma_render_target_as_unorm16", "draw_resolution_scale_x",
+      "draw_resolution_scale_y"};
+  rex::cvar::SaveConfig(path);
+  std::ifstream in(path);
+  if (!in) return;
+  std::ostringstream kept;
+  for (std::string line; std::getline(in, line);) {
+    const std::string_view key = std::string_view(line).substr(0, line.find(" ="));
+    if (std::find(std::begin(kNotSaved), std::end(kNotSaved), key) == std::end(kNotSaved))
+      kept << line << '\n';
+  }
+  in.close();
+  std::ofstream(path, std::ios::trunc) << kept.str();
+}

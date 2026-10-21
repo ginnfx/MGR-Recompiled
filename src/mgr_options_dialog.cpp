@@ -61,8 +61,10 @@ int MenuRow(const char* id, const char* label, const char* value, const char* he
   draw->AddTriangleFilled(ImVec2(ax + 12*s, ay), ImVec2(ax + 5*s, ay - 5*s),
                           ImVec2(ax + 5*s, ay + 5*s), color);
   int direction = pressed ? 1 : 0;
-  if (pressed && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-      ImGui::GetIO().MousePos.x > ax - 22 * s && ImGui::GetIO().MousePos.x < ax) direction = -1;
+  // Selectable reports a mouse press on release, so test where the click began.
+  const float click_x = ImGui::GetIO().MouseClickedPos[ImGuiMouseButton_Left].x;
+  if (pressed && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && click_x > ax - 22 * s &&
+      click_x < ax) direction = -1;
   if (active && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) direction = -1;
   if (ImGui::IsItemFocused()) {
     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft)) direction = -1;
@@ -148,8 +150,6 @@ const char* ScaleLabel(int scale) {
 }
 
 bool IsPendingRestart(const char* cvar, const std::string& requested) {
-  if (std::string_view(cvar) == "mgr_resolution_scale")
-    return std::atoi(requested.c_str()) != MgrActiveResolutionScale();
   if (std::string_view(cvar) == "mgr_render_target_precision")
     return requested != MgrActiveRenderTargetPrecision();
   return false;
@@ -351,8 +351,8 @@ MgrOptionsDialog::~MgrOptionsDialog() {
       window_->RemoveListener(this);
     }
     ReleaseController(GetIO());
-    SavePending();
   }
+  SavePending();
   SetInputBlocked(false);
 }
 
@@ -375,18 +375,18 @@ void MgrOptionsDialog::OnDraw(ImGuiIO& io) {
   changed |= DrawSection("Graphics", kGraphics);
   changed |= DrawSection("Game", kGame);
   changed |= DrawSection("Controls", kControls);
-  if (changed) saved_ = false;
+  if (changed) { dirty_ = true; saved_ = false; }
   ImGui::TextWrapped("Free Blade Mode uses Blade Mode + right-stick direction. "
                      "Keyboard defaults: hold Q and use the arrow keys, or enable mouse input.");
-  ImGui::TextDisabled("Rebind keys: Settings (F4) > Input > Keybinds.");
+  ImGui::TextDisabled("Rebind keys: OPTIONS > KEYBOARD / MOUSE.");
 
   ImGui::Separator();
   if (ImGui::Button("Save")) {
-    rex::cvar::SaveConfig(config_path_);
-    saved_ = true;
+    dirty_ = true;
+    SavePending();
   }
   ImGui::SameLine();
-  ImGui::TextDisabled(saved_ ? "Saved to %s" : "Writes %s",
+  ImGui::TextDisabled(saved_ ? "Saved to %s" : "Saved to %s when closed",
                       config_path_.filename().string().c_str());
   ImGui::End();
 }
@@ -501,7 +501,7 @@ void MgrOptionsDialog::SetInputBlocked(bool blocked) {
 
 void MgrOptionsDialog::SavePending() {
   if (!dirty_) return;
-  rex::cvar::SaveConfig(config_path_);
+  MgrSaveConfig(config_path_);
   dirty_ = false;
   saved_ = true;
 }
@@ -895,6 +895,7 @@ void MgrOptionsDialog::DrawIntegrated(ImGuiIO& io) {
       changed = DrawSection("DISPLAY", kDisplay);
       changed |= DrawOutputResolution();
       changed |= DrawSection("GRAPHICS", kGraphics);
+      changed |= DrawSection("GAME", kGame);
     } else changed = DrawKeyboard();
     if (changed) { dirty_ = true; saved_ = false; }
     ImGui::EndChild();

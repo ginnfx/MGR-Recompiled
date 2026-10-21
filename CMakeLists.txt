@@ -24,6 +24,7 @@ set(MGR_SOURCES
     src/mgr_prompt_device.cpp
     src/mgr_settings.cpp
     src/mgr_qol.cpp
+    src/mgr_d3d_trace.cpp
     src/mgr_options_dialog.cpp
     src/mgr_game_options.cpp
     src/mgr_menu_fonts.cpp
@@ -147,3 +148,64 @@ add_executable(mgr_prompt_checks EXCLUDE_FROM_ALL
 target_include_directories(mgr_prompt_checks PRIVATE src)
 target_link_libraries(mgr_prompt_checks PRIVATE rex::runtime "-framework CoreText"
                       "-framework CoreGraphics" "-framework CoreFoundation")
+
+# Native XDK math reconstruction (MGR_NATIVE_MATH=0 restores the guest bodies).
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+target_sources(mgr PRIVATE src/mgr_native_math.cpp)
+set_source_files_properties(src/mgr_native_math.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/native-math-oracle.cpp"
+    COMMAND Python3::Interpreter "${CMAKE_SOURCE_DIR}/tools/codegen/extract_oracle.py"
+        --generated "${CMAKE_SOURCE_DIR}/generated/default"
+        --output "${CMAKE_BINARY_DIR}/native-math-oracle.cpp"
+    DEPENDS mgr_codegen ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
+        tools/codegen/extract_oracle.py
+    VERBATIM)
+add_executable(mgr_native_math_checks EXCLUDE_FROM_ALL tests/mgr_native_math_checks.cpp
+    src/mgr_native_math.cpp "${CMAKE_BINARY_DIR}/native-math-oracle.cpp")
+target_include_directories(mgr_native_math_checks PRIVATE src generated/default)
+target_link_libraries(mgr_native_math_checks PRIVATE rex::runtime)
+mgr_apply_compiler_options(mgr_native_math_checks)
+
+# Native guest memcpy (MGR_NATIVE_MEMORY=0 restores the guest body).
+target_sources(mgr PRIVATE src/mgr_native_memory.cpp)
+add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/native-memory-oracle.cpp"
+    COMMAND Python3::Interpreter "${CMAKE_SOURCE_DIR}/tools/codegen/extract_oracle.py"
+        --memory-only --generated "${CMAKE_SOURCE_DIR}/generated/default"
+        --output "${CMAKE_BINARY_DIR}/native-memory-oracle.cpp"
+    DEPENDS mgr_codegen ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
+        tools/codegen/extract_oracle.py VERBATIM)
+add_executable(mgr_native_memory_checks EXCLUDE_FROM_ALL tests/mgr_native_memory_checks.cpp
+    src/mgr_native_memory.cpp "${CMAKE_BINARY_DIR}/native-memory-oracle.cpp")
+target_include_directories(mgr_native_memory_checks PRIVATE src generated/default)
+target_link_libraries(mgr_native_memory_checks PRIVATE rex::runtime)
+mgr_apply_compiler_options(mgr_native_memory_checks)
+
+# Resolve arena unit test; header-only SDK code from the patched vendor tree.
+add_executable(mgr_resolve_arena_checks EXCLUDE_FROM_ALL tests/resolve_arena_test.cpp)
+target_include_directories(mgr_resolve_arena_checks PRIVATE
+    "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
+target_compile_options(mgr_resolve_arena_checks PRIVATE -UNDEBUG)
+add_executable(mgr_scale_ratio_checks EXCLUDE_FROM_ALL tests/scale_ratio_test.cpp)
+target_include_directories(mgr_scale_ratio_checks PRIVATE
+    "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
+target_compile_options(mgr_scale_ratio_checks PRIVATE -UNDEBUG)
+add_executable(mgr_scaled_viewport_checks EXCLUDE_FROM_ALL tests/scaled_viewport_test.cpp)
+target_include_directories(mgr_scaled_viewport_checks PRIVATE
+    "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
+target_link_libraries(mgr_scaled_viewport_checks PRIVATE rex::runtime)
+target_compile_options(mgr_scaled_viewport_checks PRIVATE -UNDEBUG)
+
+# `ninja -C build mgr_tests && ctest --test-dir build` runs every host-only check.
+enable_testing()
+set(MGR_TEST_TARGETS mgr_resolve_arena_checks mgr_scale_ratio_checks mgr_scaled_viewport_checks
+    mgr_timing_checks
+    mgr_native_math_checks mgr_native_memory_checks)
+add_custom_target(mgr_tests DEPENDS ${MGR_TEST_TARGETS})
+add_test(NAME resolve_arena COMMAND mgr_resolve_arena_checks)
+add_test(NAME scale_ratio COMMAND mgr_scale_ratio_checks)
+add_test(NAME scaled_viewport COMMAND mgr_scaled_viewport_checks)
+foreach(_mode enabled disabled forced)
+    add_test(NAME timing_${_mode} COMMAND mgr_timing_checks ${_mode})
+endforeach()
+add_test(NAME native_math COMMAND mgr_native_math_checks)
+add_test(NAME native_memory COMMAND mgr_native_memory_checks)

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <string>
 
 namespace rex::ui {
@@ -20,3 +21,6 @@ struct MgrResolutionStatus {
 };
 MgrResolutionStatus MgrGetResolutionStatus();
 std::string MgrActiveRenderTargetPrecision();
+// Saves user choices only: status cvars, per-launch values and the GPU cvars
+// that MgrApplySettings derives at startup are left out of the file.
+void MgrSaveConfig(const std::filesystem::path& path);
