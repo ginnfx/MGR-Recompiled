@@ -80,7 +80,7 @@ index da8e432..d5a01af 100644
    // MicroEngine binary from PM4_ME_INIT
    std::vector<uint32_t> me_bin_;
 diff --git a/include/rex/graphics/pipeline/render_target/cache.h b/include/rex/graphics/pipeline/render_target/cache.h
-index 3bbd52e..11b4230 100644
+index 3bbd52e..5d447fc 100644
 --- a/include/rex/graphics/pipeline/render_target/cache.h
 +++ b/include/rex/graphics/pipeline/render_target/cache.h
 @@ -1,4 +1,6 @@
@@ -90,7 +90,7 @@ index 3bbd52e..11b4230 100644
  /**
   ******************************************************************************
   * Xenia : Xbox 360 Emulator Research Project                                 *
-@@ -158,10 +160,20 @@ class RenderTargetCache {
+@@ -158,10 +160,23 @@ class RenderTargetCache {
    // would participate in filtering. However, 1x1 scissor rounded to 1x1, with
    // the half-pixel offset of vertices, would cause the entire 0.75...2.25 quad
    // to be discarded.
@@ -108,13 +108,16 @@ index 3bbd52e..11b4230 100644
 +  }
 +  ScaleRatio draw_resolution_ratio_x() const { return draw_resolution_ratio_x_; }
 +  ScaleRatio draw_resolution_ratio_y() const { return draw_resolution_ratio_y_; }
++  // Guest rows the draw prepared by the last Update can touch, from the same
++  // estimate used for EDRAM ownership; UINT32_MAX when not estimated.
++  uint32_t last_update_height_used() const { return last_update_height_used_; }
    bool IsDrawResolutionScaled() const {
 -    return draw_resolution_scale_x() > 1 || draw_resolution_scale_y() > 1;
 +    return draw_resolution_ratio_x_.IsScaled() || draw_resolution_ratio_y_.IsScaled();
    }
  
    // Virtual (both the common code and the implementation may do something
-@@ -185,8 +197,8 @@ class RenderTargetCache {
+@@ -185,8 +200,8 @@ class RenderTargetCache {
                      uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y)
        : register_file_(register_file),
          draw_extent_estimator_(register_file, memory),
@@ -125,7 +128,7 @@ index 3bbd52e..11b4230 100644
      assert_not_zero(draw_resolution_scale_x);
      assert_not_zero(draw_resolution_scale_y);
    }
-@@ -550,8 +562,8 @@ class RenderTargetCache {
+@@ -550,10 +565,13 @@ class RenderTargetCache {
  
   private:
    const RegisterFile& register_file_;
@@ -135,6 +138,11 @@ index 3bbd52e..11b4230 100644
 +  ScaleRatio draw_resolution_ratio_y_;
  
    DrawExtentEstimator draw_extent_estimator_;
++  // MGR port: rows (guest pixels) the last Update estimated the draw uses,
++  // UINT32_MAX if Update did not estimate (see last_update_height_used()).
++  uint32_t last_update_height_used_ = UINT32_MAX;
+ 
+   // For host render targets.
  
 diff --git a/include/rex/graphics/pipeline/texture/cache.h b/include/rex/graphics/pipeline/texture/cache.h
 index d26cd4f..b927259 100644
@@ -632,7 +640,7 @@ index 696ff48..eab1af5 100644
      uint32_t address = UINT32_MAX;
      uint32_t size = UINT32_MAX;
 diff --git a/include/rex/graphics/vulkan/deferred_command_buffer.h b/include/rex/graphics/vulkan/deferred_command_buffer.h
-index 9d2a848..30dc509 100644
+index 9d2a848..8018286 100644
 --- a/include/rex/graphics/vulkan/deferred_command_buffer.h
 +++ b/include/rex/graphics/vulkan/deferred_command_buffer.h
 @@ -1,4 +1,7 @@
@@ -643,13 +651,21 @@ index 9d2a848..30dc509 100644
  /**
   ******************************************************************************
   * Xenia : Xbox 360 Emulator Research Project                                 *
-@@ -30,10 +33,14 @@ class DeferredCommandBuffer {
+@@ -30,10 +33,22 @@ class DeferredCommandBuffer {
  
    void Reset();
    void Execute(VkCommandBuffer command_buffer);
 +  // MGR port: brackets passes, dispatches and copies with timestamps during
 +  // Execute when MGR_GPU_TIMING=2 (see mgr_gpu_timing.h).
 +  void SetGpuTimer(mgr_timing::GpuTimer* gpu_timer) { gpu_timer_ = gpu_timer; }
++  // MGR port: host rows the next draw can touch (render target cache
++  // estimate), used only to bound render areas; no Vulkan command.
++  static bool TightRenderAreaRequested();
++  void MgrNoteNextDrawMaxY(uint32_t max_y) {
++    auto& args = *reinterpret_cast<ArgsMgrNextDrawMaxY*>(
++        WriteCommand(Command::kMgrNextDrawMaxY, sizeof(ArgsMgrNextDrawMaxY)));
++    args.max_y = max_y;
++  }
  
    // render_pass_begin->pNext of all barriers must be null.
 -  void CmdVkBeginRenderPass(const VkRenderPassBeginInfo* render_pass_begin,
@@ -659,7 +675,7 @@ index 9d2a848..30dc509 100644
      assert_null(render_pass_begin->pNext);
      size_t arguments_size = sizeof(ArgsVkBeginRenderPass);
      uint32_t clear_value_count = render_pass_begin->clearValueCount;
-@@ -49,6 +56,7 @@ class DeferredCommandBuffer {
+@@ -49,6 +64,7 @@ class DeferredCommandBuffer {
      args.render_pass = render_pass_begin->renderPass;
      args.framebuffer = render_pass_begin->framebuffer;
      args.render_area = render_pass_begin->renderArea;
@@ -667,7 +683,7 @@ index 9d2a848..30dc509 100644
      args.clear_value_count = clear_value_count;
      args.contents = contents;
      if (clear_value_count) {
-@@ -134,8 +142,9 @@ class DeferredCommandBuffer {
+@@ -134,8 +150,9 @@ class DeferredCommandBuffer {
      attachments_out = reinterpret_cast<VkClearAttachment*>(args_ptr + attachments_offset);
      rects_out = reinterpret_cast<VkClearRect*>(args_ptr + rects_offset);
    }
@@ -678,7 +694,7 @@ index 9d2a848..30dc509 100644
      VkClearAttachment* attachments_arg;
      VkClearRect* rects_arg;
      CmdClearAttachmentsEmplace(attachment_count, attachments_arg, rect_count, rects_arg);
-@@ -164,8 +173,9 @@ class DeferredCommandBuffer {
+@@ -164,8 +181,9 @@ class DeferredCommandBuffer {
                  sizeof(VkImageSubresourceRange) * range_count);
    }
  
@@ -690,7 +706,7 @@ index 9d2a848..30dc509 100644
      const size_t header_size = rex::align(sizeof(ArgsVkCopyBuffer), alignof(VkBufferCopy));
      uint8_t* args_ptr = reinterpret_cast<uint8_t*>(
          WriteCommand(Command::kVkCopyBuffer, header_size + sizeof(VkBufferCopy) * region_count));
-@@ -173,11 +183,14 @@ class DeferredCommandBuffer {
+@@ -173,11 +191,14 @@ class DeferredCommandBuffer {
      args.src_buffer = src_buffer;
      args.dst_buffer = dst_buffer;
      args.region_count = region_count;
@@ -707,7 +723,7 @@ index 9d2a848..30dc509 100644
                  sizeof(VkBufferCopy) * region_count);
    }
  
-@@ -189,9 +202,9 @@ class DeferredCommandBuffer {
+@@ -189,9 +210,9 @@ class DeferredCommandBuffer {
      args.flags = flags;
    }
  
@@ -720,7 +736,7 @@ index 9d2a848..30dc509 100644
      const size_t header_size =
          rex::align(sizeof(ArgsVkCopyBufferToImage), alignof(VkBufferImageCopy));
      uint8_t* args_ptr = reinterpret_cast<uint8_t*>(WriteCommand(
-@@ -201,12 +214,15 @@ class DeferredCommandBuffer {
+@@ -201,15 +222,28 @@ class DeferredCommandBuffer {
      args.dst_image = dst_image;
      args.dst_image_layout = dst_image_layout;
      args.region_count = region_count;
@@ -738,7 +754,20 @@ index 9d2a848..30dc509 100644
                  regions, sizeof(VkBufferImageCopy) * region_count);
    }
  
-@@ -224,16 +240,21 @@ class DeferredCommandBuffer {
++  void CmdVkFillBuffer(VkBuffer dst_buffer, VkDeviceSize dst_offset, VkDeviceSize size,
++                       uint32_t data) {
++    auto& args = *reinterpret_cast<ArgsVkFillBuffer*>(
++        WriteCommand(Command::kVkFillBuffer, sizeof(ArgsVkFillBuffer)));
++    args.dst_buffer = dst_buffer;
++    args.dst_offset = dst_offset;
++    args.size = size;
++    args.data = data;
++  }
++
+   void CmdVkCopyQueryPoolResults(VkQueryPool query_pool, uint32_t first_query, uint32_t query_count,
+                                  VkBuffer dst_buffer, VkDeviceSize dst_offset, VkDeviceSize stride,
+                                  VkQueryResultFlags flags) {
+@@ -224,16 +258,21 @@ class DeferredCommandBuffer {
      args.flags = flags;
    }
  
@@ -762,7 +791,7 @@ index 9d2a848..30dc509 100644
      auto& args = *reinterpret_cast<ArgsVkDraw*>(WriteCommand(Command::kVkDraw, sizeof(ArgsVkDraw)));
      args.vertex_count = vertex_count;
      args.instance_count = instance_count;
-@@ -241,8 +262,10 @@ class DeferredCommandBuffer {
+@@ -241,8 +280,10 @@ class DeferredCommandBuffer {
      args.first_instance = first_instance;
    }
  
@@ -774,7 +803,7 @@ index 9d2a848..30dc509 100644
      auto& args = *reinterpret_cast<ArgsVkDrawIndexed*>(
          WriteCommand(Command::kVkDrawIndexed, sizeof(ArgsVkDrawIndexed)));
      args.index_count = index_count;
-@@ -262,7 +285,7 @@ class DeferredCommandBuffer {
+@@ -262,7 +303,7 @@ class DeferredCommandBuffer {
    void CmdVkEndRenderPass() { WriteCommand(Command::kVkEndRenderPass, 0); }
  
    // Dynamic rendering (VK_KHR_dynamic_rendering / Vulkan 1.3).
@@ -783,7 +812,46 @@ index 9d2a848..30dc509 100644
    void CmdVkEndRendering() { WriteCommand(Command::kVkEndRendering, 0); }
  
    void CmdVkResetQueryPool(VkQueryPool query_pool, uint32_t first_query, uint32_t query_count) {
-@@ -394,6 +417,7 @@ class DeferredCommandBuffer {
+@@ -352,7 +393,30 @@ class DeferredCommandBuffer {
+   }
+ 
+  private:
++  // MGR port: dynamic state that bounds where a draw can produce fragments.
++  // Vulkan clips primitives to the viewport and discards outside the scissor.
++  struct DrawClipState {
++    VkRect2D scissor{};
++    bool scissor_known = false;
++    float viewport_max_x = 0.0f, viewport_max_y = 0.0f;
++    bool viewport_known = false;
++    // Estimated rows of the next draw only (consumed by it).
++    uint32_t next_draw_max_y = 0;
++    bool next_draw_bounded = false;
++    void SetScissor(const VkRect2D& rect) {
++      scissor = rect;
++      scissor_known = true;
++    }
++    void SetViewport(const VkViewport& viewport);
++  };
++  // Smallest render area at the origin covering every draw (scissor clipped to
++  // the viewport) and clear rect of the pass whose arguments start at
++  // `stream`. False if the pass cannot be bounded safely.
++  bool GetRenderPassDrawBounds(const uintmax_t* stream, size_t stream_remaining,
++                               DrawClipState clip, VkExtent2D& bounds_out) const;
++
+   enum class Command {
++    kMgrNextDrawMaxY,
+     kVkBeginRenderPass,
+     kVkBeginQuery,
+     kVkBindDescriptorSets,
+@@ -369,6 +433,7 @@ class DeferredCommandBuffer {
+     kVkDrawIndexed,
+     kVkEndQuery,
+     kVkEndRenderPass,
++    kVkFillBuffer,
+     kVkBeginRendering,
+     kVkEndRendering,
+     kVkPipelineBarrier,
+@@ -394,6 +459,7 @@ class DeferredCommandBuffer {
      VkRenderPass render_pass;
      VkFramebuffer framebuffer;
      VkRect2D render_area;
@@ -791,7 +859,7 @@ index 9d2a848..30dc509 100644
      uint32_t clear_value_count;
      VkSubpassContents contents;
      // Followed by aligned optional VkClearValue[].
-@@ -403,6 +427,7 @@ class DeferredCommandBuffer {
+@@ -403,6 +469,7 @@ class DeferredCommandBuffer {
    struct ArgsVkBeginRendering {
      VkRenderingFlags flags;
      VkRect2D render_area;
@@ -799,7 +867,7 @@ index 9d2a848..30dc509 100644
      uint32_t layer_count;
      uint32_t view_mask;
      uint32_t color_attachment_count;
-@@ -470,6 +495,7 @@ class DeferredCommandBuffer {
+@@ -470,6 +537,7 @@ class DeferredCommandBuffer {
    struct ArgsVkCopyBuffer {
      VkBuffer src_buffer;
      VkBuffer dst_buffer;
@@ -807,7 +875,7 @@ index 9d2a848..30dc509 100644
      uint32_t region_count;
      // Followed by aligned VkBufferCopy[].
      static_assert(alignof(VkBufferCopy) <= alignof(uintmax_t));
-@@ -479,6 +505,7 @@ class DeferredCommandBuffer {
+@@ -479,6 +547,7 @@ class DeferredCommandBuffer {
      VkBuffer src_buffer;
      VkImage dst_image;
      VkImageLayout dst_image_layout;
@@ -815,7 +883,18 @@ index 9d2a848..30dc509 100644
      uint32_t region_count;
      // Followed by aligned VkBufferImageCopy[].
      static_assert(alignof(VkBufferImageCopy) <= alignof(uintmax_t));
-@@ -498,6 +525,7 @@ class DeferredCommandBuffer {
+@@ -494,10 +563,18 @@ class DeferredCommandBuffer {
+     VkQueryResultFlags flags;
+   };
+ 
++  struct ArgsVkFillBuffer {
++    VkBuffer dst_buffer;
++    VkDeviceSize dst_offset;
++    VkDeviceSize size;
++    uint32_t data;
++  };
++
+   struct ArgsVkDispatch {
      uint32_t group_count_x;
      uint32_t group_count_y;
      uint32_t group_count_z;
@@ -823,7 +902,18 @@ index 9d2a848..30dc509 100644
    };
  
    struct ArgsVkDraw {
-@@ -583,6 +611,7 @@ class DeferredCommandBuffer {
+@@ -558,6 +635,10 @@ class DeferredCommandBuffer {
+     float depth_bias_slope_factor;
+   };
+ 
++  struct ArgsMgrNextDrawMaxY {
++    uint32_t max_y;
++  };
++
+   struct ArgsVkSetScissor {
+     uint32_t first_scissor;
+     uint32_t scissor_count;
+@@ -583,6 +664,7 @@ class DeferredCommandBuffer {
  
    // uintmax_t to ensure uint64_t and pointer alignment of all structures.
    std::vector<uintmax_t> command_stream_;
@@ -886,10 +976,10 @@ index 0000000..13e8e0f
 +  } while (0)
 diff --git a/include/rex/graphics/vulkan/mgr_gpu_timing.h b/include/rex/graphics/vulkan/mgr_gpu_timing.h
 new file mode 100644
-index 0000000..3324d12
+index 0000000..3614a38
 --- /dev/null
 +++ b/include/rex/graphics/vulkan/mgr_gpu_timing.h
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,134 @@
 +// MGR port diagnostic: GPU execution time from Vulkan timestamp queries.
 +//   MGR_GPU_TIMING=1  per guest frame: start/end of every submission.
 +//   MGR_GPU_TIMING=2  also every render pass, dispatch and buffer copy, keyed
@@ -925,7 +1015,12 @@ index 0000000..3324d12
 + public:
 +  bool Initialize(const ui::vulkan::VulkanDevice* device);
 +  void Shutdown();
++  bool enabled() const { return query_pool_ != VK_NULL_HANDLE; }
 +  bool zones_enabled() const { return zone_pool_ != VK_NULL_HANDLE; }
++  // A/B experiments: variant applied to the command buffer being recorded.
++  // Frames take the variant of their last submission; reports and the CSV
++  // are split by variant.
++  void SetVariant(uint32_t variant) { recording_variant_ = variant; }
 +
 +  // Called with the primary command buffer of `submission` right after
 +  // vkBeginCommandBuffer and right before vkEndCommandBuffer.
@@ -949,6 +1044,7 @@ index 0000000..3324d12
 +  struct Slot {
 +    uint64_t submission = 0;
 +    bool pending = false;
++    uint32_t variant = 0;
 +  };
 +  struct Zone {
 +    ZoneKind kind;
@@ -967,6 +1063,7 @@ index 0000000..3324d12
 +  };
 +  struct FrameSample {
 +    double busy_ms, span_ms, gap_ms;
++    uint32_t variant;
 +  };
 +
 +  bool ReadZones(const ZoneSubmission& submission);
@@ -987,6 +1084,8 @@ index 0000000..3324d12
 +  std::array<Slot, kSlotCount> slots_{};
 +  uint32_t recording_slot_ = UINT32_MAX;
 +  uint64_t recording_submission_ = 0;
++  uint32_t recording_variant_ = 0;
++  uint32_t frame_variant_ = 0;
 +  uint64_t next_collect_ = 1;
 +  std::deque<uint64_t> frame_ends_;
 +
@@ -1263,10 +1362,10 @@ index 7b938b9..caf1d0a 100644
    std::unique_ptr<rex::thread::Event> creation_completion_event_;
 diff --git a/include/rex/graphics/vulkan/resolve_arena.h b/include/rex/graphics/vulkan/resolve_arena.h
 new file mode 100644
-index 0000000..75a7a62
+index 0000000..de95a4e
 --- /dev/null
 +++ b/include/rex/graphics/vulkan/resolve_arena.h
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,163 @@
 +#pragma once
 +
 +#include <algorithm>
@@ -1279,11 +1378,13 @@ index 0000000..75a7a62
 +// newly published mapping. Retired blocks remain unavailable until the
 +// submission containing those copies ends. When space runs out, live blocks
 +// that no in-flight submission uses and that were idle for at least
-+// kEvictIdleSubmissions are evicted least-recently-used first; their scaled
-+// contents are lost, which replaces the previous behavior of failing the draw.
++// kEvictIdleSubmissions are evicted least-recently-used first. Their scaled
++// contents are lost: a later commit over that range reads zeros (see `fills`)
++// instead of failing the draw.
 +class ResolveArena {
 + public:
 +  struct Copy { uint64_t source, destination, length; };
++  struct Fill { uint64_t offset, length; };
 +  struct Block {
 +    uint64_t guest_begin, guest_end, offset, size;
 +    uint64_t retire_after = 0;
@@ -1316,21 +1417,23 @@ index 0000000..75a7a62
 +    return false;
 +  }
 +
++  // Publishes a mapping for [begin, begin + length), page-aligned. `copies`
++  // move every overlapped live block into the new one (a resolve may write only
++  // a rectangle of its range, so no overlapped byte is assumed overwritten).
++  // `fills` are the new block's arena ranges that no previous mapping covered;
++  // the caller zeroes them, because the space may hold data of a retired or
++  // evicted block, and a range whose block was evicted is still flagged as
++  // scaled-resolved by the texture cache.
 +  bool Commit(uint64_t begin, uint64_t length, uint64_t submission,
-+              uint64_t completed, std::vector<Copy>& copies,
-+              bool overwrite_existing = false) {
++              uint64_t completed, std::vector<Copy>& copies, std::vector<Fill>& fills) {
 +    copies.clear();
++    fills.clear();
 +    if (!length) return true;
 +    if (!area_ || begin > kGuestSize || length > kGuestSize - begin) return false;
 +    uint64_t existing;
 +    if (Lookup(begin, length, existing, submission)) return true;
 +    uint64_t end = (begin + length + 4095) & ~uint64_t(4095);
 +    begin &= ~uint64_t(4095);
-+    // Retain the range actually being resolved before expanding to include
-+    // whole overlapped blocks. A block fully inside the requested range is
-+    // overwritten by the new resolve and does not need to be copied.
-+    const uint64_t requested_begin = begin;
-+    const uint64_t requested_end = end;
 +    // Existing mappings are disjoint. Expand to preserve the full contents of
 +    // every overlapped allocation, including bytes outside the new resolve.
 +    bool expanded;
@@ -1355,18 +1458,26 @@ index 0000000..75a7a62
 +    while (!FindSpace(size, offset)) {
 +      if (!EvictOne(begin, end, submission, completed)) return false;
 +    }
++    // FindSpace sorted blocks_ by offset; the overlapped ones are collected in
++    // guest order to find the uncovered gaps.
++    std::vector<const Block*> overlapped;
 +    for (Block& block : blocks_) {
 +      if (block.retired || block.guest_end <= begin || block.guest_begin >= end) continue;
-+      // A resolve that is known to overwrite this whole block does not need to
-+      // preserve it. Texture-load commits only read the arena, so they still
-+      // copy any overlapping contents.
-+      if (!overwrite_existing || block.guest_begin < requested_begin ||
-+          block.guest_end > requested_end) {
-+        copies.push_back({block.offset, offset + (block.guest_begin - begin) * area_, block.size});
-+      }
++      copies.push_back({block.offset, offset + (block.guest_begin - begin) * area_, block.size});
 +      block.retired = true;
 +      block.retire_after = submission;
++      overlapped.push_back(&block);
 +    }
++    std::sort(overlapped.begin(), overlapped.end(), [](const Block* a, const Block* b) {
++      return a->guest_begin < b->guest_begin;
++    });
++    uint64_t covered = begin;
++    for (const Block* block : overlapped) {
++      if (block->guest_begin > covered)
++        fills.push_back({offset + (covered - begin) * area_, (block->guest_begin - covered) * area_});
++      covered = block->guest_end;
++    }
++    if (covered < end) fills.push_back({offset + (covered - begin) * area_, (end - covered) * area_});
 +    Block& added = blocks_.emplace_back(Block{begin, end, offset, size});
 +    added.last_use = submission;
 +    return true;
@@ -1470,7 +1581,7 @@ index 104bdad..f6d4fed 100644
    std::vector<VkDeviceMemory> buffer_memory_;
  
 diff --git a/include/rex/graphics/vulkan/texture_cache.h b/include/rex/graphics/vulkan/texture_cache.h
-index 04856ee..f7e495c 100644
+index 04856ee..622fa1d 100644
 --- a/include/rex/graphics/vulkan/texture_cache.h
 +++ b/include/rex/graphics/vulkan/texture_cache.h
 @@ -18,6 +18,7 @@
@@ -1500,7 +1611,7 @@ index 04856ee..f7e495c 100644
 -    return EnsureScaledResolveMemoryCommitted(start_unscaled, length_unscaled,
 -                                              length_scaled_alignment_log2);
 +    return EnsureScaledResolveMemoryCommittedImpl(start_unscaled, length_unscaled,
-+                                                  length_scaled_alignment_log2, true);
++                                                  length_scaled_alignment_log2);
    }
    VkBuffer scaled_resolve_buffer() const { return scaled_resolve_buffer_; }
    void UseScaledResolveBufferForRead();
@@ -1511,22 +1622,21 @@ index 04856ee..f7e495c 100644
 -                                          uint32_t length_scaled_alignment_log2 = 0) override;
 +                                          uint32_t length_scaled_alignment_log2 = 0) override {
 +    return EnsureScaledResolveMemoryCommittedImpl(start_unscaled, length_unscaled,
-+                                                  length_scaled_alignment_log2, false);
++                                                  length_scaled_alignment_log2);
 +  }
  
    bool LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base,
                                               bool load_mips) override;
-@@ -152,6 +161,9 @@ class VulkanTextureCache final : public TextureCache {
+@@ -152,6 +161,8 @@ class VulkanTextureCache final : public TextureCache {
    void UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) override;
  
   private:
 +  bool EnsureScaledResolveMemoryCommittedImpl(uint32_t start_unscaled, uint32_t length_unscaled,
-+                                              uint32_t length_scaled_alignment_log2,
-+                                              bool range_will_be_written);
++                                              uint32_t length_scaled_alignment_log2);
    enum LoadDescriptorSetIndex {
      kLoadDescriptorSetIndexDestination,
      kLoadDescriptorSetIndexSource,
-@@ -321,7 +333,6 @@ class VulkanTextureCache final : public TextureCache {
+@@ -321,7 +332,6 @@ class VulkanTextureCache final : public TextureCache {
  
    void GetTextureUsageMasks(VulkanTexture::Usage usage, VkPipelineStageFlags& stage_mask,
                              VkAccessFlags& access_mask, VkImageLayout& layout);
@@ -1534,7 +1644,7 @@ index 04856ee..f7e495c 100644
    void GetScaledResolveUsageMasks(VkPipelineStageFlags& stage_mask_out,
                                    VkAccessFlags& access_mask_out, bool write) const;
  
-@@ -382,11 +393,9 @@ class VulkanTextureCache final : public TextureCache {
+@@ -382,11 +392,9 @@ class VulkanTextureCache final : public TextureCache {
  
    VkBuffer scaled_resolve_buffer_ = VK_NULL_HANDLE;
    uint64_t scaled_resolve_buffer_size_ = 0;
@@ -1563,6 +1673,18 @@ index afb4a30..350c994 100644
    // For calling from the painting implementations if requested.
    void ExecuteUIDrawersFromUIThread(UIDrawContext& ui_draw_context);
  
+diff --git a/include/rex/ui/vulkan/functions/device_1_0.inc b/include/rex/ui/vulkan/functions/device_1_0.inc
+index aa55a4a..8d061e4 100644
+--- a/include/rex/ui/vulkan/functions/device_1_0.inc
++++ b/include/rex/ui/vulkan/functions/device_1_0.inc
+@@ -19,6 +19,7 @@ XE_UI_VULKAN_FUNCTION(vkCmdCopyQueryPoolResults)
+ XE_UI_VULKAN_FUNCTION(vkCmdDispatch)
+ XE_UI_VULKAN_FUNCTION(vkCmdDraw)
+ XE_UI_VULKAN_FUNCTION(vkCmdDrawIndexed)
++XE_UI_VULKAN_FUNCTION(vkCmdFillBuffer)
+ XE_UI_VULKAN_FUNCTION(vkCmdEndRenderPass)
+ XE_UI_VULKAN_FUNCTION(vkCmdBeginQuery)
+ XE_UI_VULKAN_FUNCTION(vkCmdEndQuery)
 diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
 index 11b83be..9194349 100644
 --- a/src/audio/xma_context.cpp
@@ -2297,6 +2419,27 @@ index 8f2fcb0..4062ff4 100644
            while (current_time - last_frame_time >= interval_ticks) {
              MarkVblank();
              last_frame_time += interval_ticks;
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 953c5fd..1a2a7be 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -400,6 +400,7 @@ void RenderTargetCache::BeginFrame() {
+ bool RenderTargetCache::Update(bool is_rasterization_done,
+                                reg::RB_DEPTHCONTROL normalized_depth_control,
+                                uint32_t normalized_color_mask, const Shader& vertex_shader) {
++  last_update_height_used_ = UINT32_MAX;
+   const RegisterFile& regs = register_file();
+   bool interlock_barrier_only = GetPath() == Path::kPixelShaderInterlock;
+ 
+@@ -573,6 +574,8 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+                        ? REXCVAR_GET(execute_unclipped_draw_vs_on_cpu_for_psi_render_backend)
+                        : true,
+                    vertex_shader));
++  // Rows map 1:1 to host rows only for single-sample targets.
++  last_update_height_used_ = msaa_samples == xenos::MsaaSamples::k1X ? height_used : UINT32_MAX;
+ 
+   // Sorted by EDRAM base and then by index in the pipeline - for simplicity,
+   // treat render targets placed closer to the end of the EDRAM as truncating
 diff --git a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp b/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
 index 9ce3bb4..0bec327 100644
 --- a/src/graphics/pipeline/shader/spirv_translator_fetch.cpp
@@ -2645,7 +2788,7 @@ index 3027dc8..54f77a9 100644
  
  REXCVAR_DEFINE_BOOL(execute_unclipped_draw_vs_on_cpu_with_scissor, false, "GPU",
 diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
-index 001f36b..48074f9 100644
+index 001f36b..3c00138 100644
 --- a/src/graphics/vulkan/command_processor.cpp
 +++ b/src/graphics/vulkan/command_processor.cpp
 @@ -12,6 +12,7 @@
@@ -2930,7 +3073,7 @@ index 001f36b..48074f9 100644
      return false;
    }
 +  gpu_timer_.Initialize(GetVulkanDevice());
-+  deferred_command_buffer_.SetGpuTimer(gpu_timer_.zones_enabled() ? &gpu_timer_ : nullptr);
++  deferred_command_buffer_.SetGpuTimer(gpu_timer_.enabled() ? &gpu_timer_ : nullptr);
 +  if (!native_ps_.Initialize(GetVulkanDevice())) {
 +    REXGPU_ERROR("Failed to initialize MGR native pixel shaders");
 +    return false;
@@ -3204,32 +3347,18 @@ index 001f36b..48074f9 100644
            }
  
            // Insert the release barrier.
-@@ -3060,7 +3344,13 @@ bool VulkanCommandProcessor::SubmitBarriers(bool force_end_render_pass) {
+@@ -3060,6 +3344,10 @@ bool VulkanCommandProcessor::SubmitBarriers(bool force_end_render_pass) {
      }
      return false;
    }
--  EndRenderPass();
-+  // Keeping a Metal render pass open across buffer-only barriers is not safe:
-+  // uploads may still be consumed with stale contents on tile-based GPUs.
-+  // Preserve the original conservative behavior and end the pass before the
-+  // barrier, then reopen it afterward.
-+  if (force_end_render_pass) {
-+    EndRenderPass();
-+  }
++  // Buffer and image barriers are not allowed inside a render pass instance,
++  // and keeping a Metal pass open across them lets uploads be consumed with
++  // stale contents on tile-based GPUs. End the pass before the barriers; the
++  // caller reopens it.
+   EndRenderPass();
    for (auto it = pending_barriers_.cbegin(); it != pending_barriers_.cend(); ++it) {
      auto it_next = std::next(it);
-     bool is_last = it_next == pending_barriers_.cend();
-@@ -3085,6 +3375,9 @@ bool VulkanCommandProcessor::SubmitBarriers(bool force_end_render_pass) {
-   pending_barriers_image_memory_barriers_.clear();
-   current_pending_barrier_.buffer_memory_barriers_offset = 0;
-   current_pending_barrier_.image_memory_barriers_offset = 0;
-+  if (force_end_render_pass) {
-+    EndRenderPass();
-+  }
-   return true;
- }
- 
-@@ -3163,7 +3456,8 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
+@@ -3163,7 +3451,8 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
  
  void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
      VkRenderPass render_pass, const VulkanRenderTargetCache::Framebuffer* framebuffer,
@@ -3239,7 +3368,7 @@ index 001f36b..48074f9 100644
    SubmitBarriers(false);
    const ui::vulkan::VulkanDevice* vulkan_device = GetVulkanDevice();
    bool use_dynamic_rendering =
-@@ -3197,6 +3491,8 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
+@@ -3197,6 +3486,8 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
      VkRenderingAttachmentInfo depth_attachment = {};
      VkRenderingAttachmentInfo stencil_attachment = {};
  
@@ -3248,7 +3377,7 @@ index 001f36b..48074f9 100644
      if (transfer_dest_is_depth) {
        depth_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
        depth_attachment.pNext = nullptr;
-@@ -3205,7 +3501,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
+@@ -3205,7 +3496,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
        depth_attachment.resolveMode = VK_RESOLVE_MODE_NONE;
        depth_attachment.resolveImageView = VK_NULL_HANDLE;
        depth_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -3257,7 +3386,7 @@ index 001f36b..48074f9 100644
        depth_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
        depth_attachment.clearValue = {};
        stencil_attachment = depth_attachment;
-@@ -3217,7 +3513,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
+@@ -3217,7 +3508,7 @@ void VulkanCommandProcessor::SubmitBarriersAndEnterRenderTargetCacheRenderPass(
        color_attachment.resolveMode = VK_RESOLVE_MODE_NONE;
        color_attachment.resolveImageView = VK_NULL_HANDLE;
        color_attachment.resolveImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -3266,7 +3395,7 @@ index 001f36b..48074f9 100644
        color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
        color_attachment.clearValue = {};
      }
-@@ -3440,6 +3736,314 @@ const VulkanPipelineCache::PipelineLayoutProvider* VulkanCommandProcessor::GetPi
+@@ -3440,6 +3731,314 @@ const VulkanPipelineCache::PipelineLayoutProvider* VulkanCommandProcessor::GetPi
    return &emplaced_pair.first->second;
  }
  
@@ -3581,7 +3710,7 @@ index 001f36b..48074f9 100644
  VulkanCommandProcessor::ScratchBufferAcquisition VulkanCommandProcessor::AcquireScratchGpuBuffer(
      VkDeviceSize size, VkPipelineStageFlags initial_stage_mask, VkAccessFlags initial_access_mask) {
    assert_true(submission_open_);
-@@ -3502,8 +4106,8 @@ VulkanCommandProcessor::ScratchBufferAcquisition VulkanCommandProcessor::Acquire
+@@ -3502,8 +4101,8 @@ VulkanCommandProcessor::ScratchBufferAcquisition VulkanCommandProcessor::Acquire
    scratch_buffer_ = new_scratch_buffer;
    scratch_buffer_size_ = size;
    // Not used yet, no need for a barrier.
@@ -3592,7 +3721,7 @@ index 001f36b..48074f9 100644
    scratch_buffer_last_usage_submission_ = submission_current;
    scratch_buffer_used_ = true;
    return ScratchBufferAcquisition(*this, new_scratch_buffer, initial_stage_mask,
-@@ -3844,64 +4448,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3844,64 +4443,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
      return draw_fail("render_target_update");
    }
  
@@ -3660,7 +3789,7 @@ index 001f36b..48074f9 100644
    bool host_render_targets_used =
        render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets;
    uint32_t draw_resolution_scale_x = texture_cache_->draw_resolution_scale_x();
-@@ -3971,11 +4520,108 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -3971,11 +4515,112 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
                               shader_32bit_index_dma, 0, viewport_info, used_texture_mask,
                               normalized_depth_control, normalized_color_mask);
  
@@ -3754,6 +3883,10 @@ index 001f36b..48074f9 100644
 +      // indeterminate state.
 +      current_graphics_descriptor_sets_bound_up_to_date_ = 0;
 +    }
++    // Binding lower sets with another layout can disturb the native set 3
++    // even when this draw does not rebind set 3 (A -> B -> A).
++    native_bound_pixel_set_ = VK_NULL_HANDLE;
++    native_bound_pixel_layout_ = nullptr;
 +    current_guest_graphics_pipeline_layout_ = pipeline_layout;
 +  }
 +
@@ -3770,7 +3903,7 @@ index 001f36b..48074f9 100644
  
    // Ensure vertex buffers are resident.
    const Shader::ConstantRegisterMap& constant_map_vertex = vertex_shader->constant_register_map();
-@@ -4010,10 +4656,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -4010,10 +4655,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
            return false;
        }
        VertexBufferState& state = vertex_buffer_states_[vfetch_index];
@@ -3784,7 +3917,22 @@ index 001f36b..48074f9 100644
        if (!shared_memory_->RequestRange(vfetch_constant.address << 2, vfetch_constant.size << 2)) {
          REXGPU_ERROR(
              "Failed to request vertex buffer at 0x{:08X} (size {}) in the shared "
-@@ -4166,8 +4811,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+@@ -4115,6 +4759,14 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+       render_target_cache_->last_update_render_pass(),
+       render_target_cache_->last_update_framebuffer());
+ 
++  // MGR port: rows this draw can touch, recorded directly before it so it
++  // never applies to another draw (see DeferredCommandBuffer::Execute).
++  if (DeferredCommandBuffer::TightRenderAreaRequested() &&
++      render_target_cache_->last_update_height_used() != UINT32_MAX) {
++    deferred_command_buffer_.MgrNoteNextDrawMaxY(texture_cache_->draw_resolution_ratio_y().ScaleCeil(
++        render_target_cache_->last_update_height_used()));
++  }
++
+   // Draw.
+   if (primitive_processing_result.index_buffer_type ==
+           PrimitiveProcessor::ProcessedIndexBufferType::kNone ||
+@@ -4166,8 +4818,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
      shared_memory_->RangeWrittenByGpu(0, SharedMemory::kBufferSize);
    }
  
@@ -3795,7 +3943,7 @@ index 001f36b..48074f9 100644
      uint32_t memexport_total_size = 0;
      for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
        memexport_total_size += memexport_range.size_bytes;
-@@ -4782,6 +5427,7 @@ bool VulkanCommandProcessor::InitializeOcclusionQueryResources() {
+@@ -4782,6 +5434,7 @@ bool VulkanCommandProcessor::InitializeOcclusionQueryResources() {
  
  void VulkanCommandProcessor::ShutdownOcclusionQueryResources() {
    DisableHostOcclusionQueries();
@@ -3803,7 +3951,7 @@ index 001f36b..48074f9 100644
  
    const ui::vulkan::VulkanDevice* vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
-@@ -4812,6 +5458,11 @@ bool VulkanCommandProcessor::AcquireOcclusionQueryIndex(uint32_t& host_index_out
+@@ -4812,6 +5465,11 @@ bool VulkanCommandProcessor::AcquireOcclusionQueryIndex(uint32_t& host_index_out
    if (occlusion_query_cursor_ >= kMaxOcclusionQueries) {
      occlusion_query_cursor_ = 0;
    }
@@ -3815,7 +3963,7 @@ index 001f36b..48074f9 100644
    host_index_out = occlusion_query_cursor_++;
    return true;
  }
-@@ -4819,6 +5470,8 @@ bool VulkanCommandProcessor::AcquireOcclusionQueryIndex(uint32_t& host_index_out
+@@ -4819,6 +5477,8 @@ bool VulkanCommandProcessor::AcquireOcclusionQueryIndex(uint32_t& host_index_out
  void VulkanCommandProcessor::DisableHostOcclusionQueries() {
    if (active_occlusion_query_.valid && occlusion_query_pool_ != VK_NULL_HANDLE) {
      if (BeginSubmission(true)) {
@@ -3824,7 +3972,7 @@ index 001f36b..48074f9 100644
        deferred_command_buffer_.CmdVkEndQuery(occlusion_query_pool_,
                                               active_occlusion_query_.host_index);
        EndSubmission(false);
-@@ -4883,13 +5536,17 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
+@@ -4883,13 +5543,17 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
                                             sizeof(uint64_t) * host_index, sizeof(uint64_t),
                                             VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
  
@@ -3848,7 +3996,7 @@ index 001f36b..48074f9 100644
    const ui::vulkan::VulkanDevice* vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -4907,9 +5564,39 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
+@@ -4907,9 +5571,39 @@ bool VulkanCommandProcessor::EndGuestOcclusionQuery(uint32_t sample_count_addres
    }
  
    const uint64_t* results = reinterpret_cast<const uint64_t*>(occlusion_query_readback_mapping_);
@@ -3891,7 +4039,7 @@ index 001f36b..48074f9 100644
  }
  
  uint64_t VulkanCommandProcessor::NormalizeOcclusionSamples(uint64_t samples) const {
-@@ -4943,6 +5630,23 @@ void VulkanCommandProcessor::WriteGuestOcclusionResult(uint32_t sample_count_add
+@@ -4943,6 +5637,23 @@ void VulkanCommandProcessor::WriteGuestOcclusionResult(uint32_t sample_count_add
    sample_counts->StencilFail_B = 0;
  }
  
@@ -3915,7 +4063,7 @@ index 001f36b..48074f9 100644
  void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_submission) {
    // Only report once, no need to retry a wait that won't succeed anyway.
    if (device_lost_) {
-@@ -4970,9 +5674,11 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+@@ -4970,9 +5681,11 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
      // defined by vkQueueSubmit additionally include in the first
      // synchronization scope all commands that occur earlier in submission
      // order."
@@ -3927,7 +4075,7 @@ index 001f36b..48074f9 100644
      if (wait_result == VK_SUCCESS) {
        fences_awaited += await_submission - submission_completed_;
      } else {
-@@ -4987,7 +5693,7 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+@@ -4987,7 +5700,7 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
    // that for simplicity.
    while (fences_awaited < fences_total) {
      VkResult fence_status =
@@ -3936,7 +4084,7 @@ index 001f36b..48074f9 100644
      if (fence_status != VK_SUCCESS) {
        if (fence_status == VK_ERROR_DEVICE_LOST) {
          device_lost_ = true;
-@@ -5015,6 +5721,7 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+@@ -5015,6 +5728,7 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
    submissions_in_flight_fences_.erase(submissions_in_flight_fences_.cbegin(),
                                        submissions_in_flight_fences_awaited_end);
    submission_completed_ += fences_awaited;
@@ -3944,7 +4092,7 @@ index 001f36b..48074f9 100644
  
    // Reclaim semaphores.
    while (!submissions_in_flight_semaphores_.empty()) {
-@@ -5042,6 +5749,14 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
+@@ -5042,6 +5756,14 @@ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_su
  
    render_target_cache_->CompletedSubmissionUpdated();
  
@@ -3959,7 +4107,7 @@ index 001f36b..48074f9 100644
    texture_cache_->CompletedSubmissionUpdated(submission_completed_);
  
    // Destroy objects scheduled for destruction.
-@@ -5156,6 +5871,8 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5156,6 +5878,8 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
      current_external_compute_pipeline_ = VK_NULL_HANDLE;
      current_guest_graphics_pipeline_layout_ = nullptr;
      current_graphics_descriptor_sets_bound_up_to_date_ = 0;
@@ -3968,7 +4116,7 @@ index 001f36b..48074f9 100644
  
      primitive_processor_->BeginSubmission();
  
-@@ -5167,6 +5884,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5167,6 +5891,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
      frame_used_async_placeholder_pipeline_ = false;
  
      // Reset bindings that depend on transient data.
@@ -3976,7 +4124,7 @@ index 001f36b..48074f9 100644
      std::memset(current_float_constant_map_vertex_, 0, sizeof(current_float_constant_map_vertex_));
      std::memset(current_float_constant_map_pixel_, 0, sizeof(current_float_constant_map_pixel_));
      std::memset(current_graphics_descriptor_sets_, 0, sizeof(current_graphics_descriptor_sets_));
-@@ -5181,6 +5899,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5181,6 +5906,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
      // FIXME(Triang3l): This will result in a memory leak if the guest is not
      // presenting.
      uniform_buffer_pool_->Reclaim(frame_completed_);
@@ -3984,7 +4132,7 @@ index 001f36b..48074f9 100644
      while (!single_transient_descriptors_used_.empty()) {
        const UsedSingleTransientDescriptor& used_transient_descriptor =
            single_transient_descriptors_used_.front();
-@@ -5230,6 +5949,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
+@@ -5230,6 +5956,7 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
  }
  
  bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
@@ -3992,7 +4140,7 @@ index 001f36b..48074f9 100644
    const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
    const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
    const VkDevice device = vulkan_device->device();
-@@ -5302,14 +6022,16 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5302,14 +6029,16 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
    if (submission_open_) {
      assert_false(scratch_buffer_used_);
  
@@ -4011,7 +4159,7 @@ index 001f36b..48074f9 100644
      pipeline_cache_->EndSubmission();
  
      render_target_cache_->EndSubmission();
-@@ -5319,6 +6041,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5319,6 +6048,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
      shared_memory_->EndSubmission();
  
      uniform_buffer_pool_->FlushWrites();
@@ -4019,7 +4167,7 @@ index 001f36b..48074f9 100644
  
      // Submit sparse binds earlier, before executing the deferred command
      // buffer, to reduce latency.
-@@ -5385,7 +6108,10 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5385,7 +6115,10 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
        REXGPU_ERROR("Failed to begin a Vulkan command buffer");
        return false;
      }
@@ -4030,7 +4178,7 @@ index 001f36b..48074f9 100644
      if (dfn.vkEndCommandBuffer(command_buffer.buffer) != VK_SUCCESS) {
        REXGPU_ERROR("Failed to end a Vulkan command buffer");
        return false;
-@@ -5451,6 +6177,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5451,6 +6184,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
      frame_open_ = false;
      // Submission already closed now, so minus 1.
      closed_frame_submissions_[(frame_current_++) % kMaxFramesInFlight] = GetCurrentSubmission() - 1;
@@ -4038,7 +4186,7 @@ index 001f36b..48074f9 100644
  
      if (cache_clear_requested_ && AwaitAllQueueOperationsCompletion()) {
        cache_clear_requested_ = false;
-@@ -5489,6 +6216,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+@@ -5489,6 +6223,7 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
  }
  
  void VulkanCommandProcessor::ClearTransientDescriptorPools() {
@@ -4046,7 +4194,7 @@ index 001f36b..48074f9 100644
    texture_transient_descriptor_sets_free_.clear();
    texture_transient_descriptor_sets_used_.clear();
    transient_descriptor_allocator_textures_.Reset();
-@@ -5692,15 +6420,16 @@ void VulkanCommandProcessor::UpdateDynamicState(const draw_util::ViewportInfo& v
+@@ -5692,15 +6427,16 @@ void VulkanCommandProcessor::UpdateDynamicState(const draw_util::ViewportInfo& v
    // Scissor.
    draw_util::Scissor scissor;
    draw_util::GetScissor(regs, scissor);
@@ -4071,7 +4219,7 @@ index 001f36b..48074f9 100644
    SetScissor(scissor_rect);
  
    if (render_target_cache_->GetPath() == RenderTargetCache::Path::kHostRenderTargets) {
-@@ -6559,15 +7288,18 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6559,15 +7295,18 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
      sampler_count_pixel = 0;
      texture_count_pixel = 0;
    }
@@ -4097,7 +4245,7 @@ index 001f36b..48074f9 100644
  
    // Fill the texture and sampler write image infos.
  
-@@ -6624,6 +7356,50 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6624,6 +7363,50 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
      }
    }
  
@@ -4148,7 +4296,7 @@ index 001f36b..48074f9 100644
    // Write the new descriptor sets.
  
    // Consecutive bindings updated via a single VkWriteDescriptorSet must have
-@@ -6711,6 +7487,30 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6711,6 +7494,30 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
      dfn.vkUpdateDescriptorSets(device, write_descriptor_set_count, write_descriptor_sets.data(), 0,
                                 nullptr);
    }
@@ -4179,7 +4327,7 @@ index 001f36b..48074f9 100644
    // Only make valid if all descriptor sets have been allocated and written
    // successfully.
    current_graphics_descriptor_set_values_up_to_date_ |= write_descriptor_set_bits;
-@@ -6740,6 +7540,13 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
+@@ -6740,6 +7547,13 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
      descriptor_sets_remaining &= ~((UINT32_C(1) << descriptor_set_mask_tzcnt) - 1);
    }
    current_graphics_descriptor_sets_bound_up_to_date_ |= descriptor_sets_needed;
@@ -4194,32 +4342,214 @@ index 001f36b..48074f9 100644
    return true;
  }
 diff --git a/src/graphics/vulkan/deferred_command_buffer.cpp b/src/graphics/vulkan/deferred_command_buffer.cpp
-index b49e033..7ec3add 100644
+index b49e033..39920b8 100644
 --- a/src/graphics/vulkan/deferred_command_buffer.cpp
 +++ b/src/graphics/vulkan/deferred_command_buffer.cpp
-@@ -41,6 +41,9 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+@@ -9,9 +9,14 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <algorithm>
++#include <chrono>
++#include <cmath>
+ #include <cstddef>
+ #include <cstdint>
++#include <cstdlib>
+ #include <cstring>
++#include <string_view>
+ 
+ #include <rex/assert.h>
+ #include <rex/dbg.h>
+@@ -22,6 +27,138 @@
+ 
+ namespace rex::graphics::vulkan {
+ 
++namespace {
++
++// MGR port experiment: guest render passes cover the whole host render target
++// (1280x2048 at 1x) while drawing far fewer rows. MoltenVK sizes the Metal
++// render target (tile load/store) from the render area, so shrink it to what
++// the pass draws. MGR_TIGHT_RENDER_AREA: unset/0 off, 1 on, ab alternate every
++// second (A/B within one run; the GPU timer tags frames with the variant).
++int TightRenderAreaMode() {
++  static const int mode = [] {
++    const char* v = std::getenv("MGR_TIGHT_RENDER_AREA");
++    if (!v) return 0;
++    if (std::string_view(v) == "ab") return 2;
++    return v[0] == '1' ? 1 : 0;
++  }();
++  return mode;
++}
++
++uint32_t TightRenderAreaVariant() {
++  const int mode = TightRenderAreaMode();
++  if (mode < 2) return uint32_t(mode);
++  const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(
++      std::chrono::steady_clock::now().time_since_epoch()).count();
++  return uint32_t(seconds & 1);
++}
++
++}  // namespace
++
++bool DeferredCommandBuffer::TightRenderAreaRequested() { return TightRenderAreaMode() != 0; }
++
++void DeferredCommandBuffer::DrawClipState::SetViewport(const VkViewport& viewport) {
++  // Fragments have their centers inside the viewport, so the rounded-up far
++  // edge bounds them; a negative height flips the rectangle.
++  viewport_max_x = std::max(viewport.x, viewport.x + viewport.width);
++  viewport_max_y = std::max(viewport.y, viewport.y + viewport.height);
++  viewport_known = true;
++}
++
++bool DeferredCommandBuffer::GetRenderPassDrawBounds(const uintmax_t* stream,
++                                                    size_t stream_remaining,
++                                                    DrawClipState clip,
++                                                    VkExtent2D& bounds_out) const {
++  uint32_t max_x = 0, max_y = 0;
++  bool any = false;
++  auto add = [&](const VkRect2D& rect) {
++    if (rect.offset.x < 0 || rect.offset.y < 0) return false;
++    max_x = std::max(max_x, uint32_t(rect.offset.x) + rect.extent.width);
++    max_y = std::max(max_y, uint32_t(rect.offset.y) + rect.extent.height);
++    any = true;
++    return true;
++  };
++  auto add_draw = [&]() {
++    if (!clip.scissor_known) return false;
++    VkRect2D rect = clip.scissor;
++    if (clip.viewport_known) {
++      const auto clamp_edge = [](float edge) {
++        return uint32_t(std::clamp(std::ceil(edge), 0.0f, 65536.0f));
++      };
++      const uint32_t right = std::min(uint32_t(std::max(rect.offset.x, 0)) + rect.extent.width,
++                                      clamp_edge(clip.viewport_max_x));
++      const uint32_t bottom = std::min(uint32_t(std::max(rect.offset.y, 0)) + rect.extent.height,
++                                       clamp_edge(clip.viewport_max_y));
++      rect.extent.width = right > uint32_t(std::max(rect.offset.x, 0))
++                              ? right - uint32_t(std::max(rect.offset.x, 0)) : 0;
++      rect.extent.height = bottom > uint32_t(std::max(rect.offset.y, 0))
++                               ? bottom - uint32_t(std::max(rect.offset.y, 0)) : 0;
++    }
++    if (clip.next_draw_bounded) {
++      const uint32_t top = uint32_t(std::max(rect.offset.y, 0));
++      rect.extent.height = std::min(rect.extent.height,
++                                    clip.next_draw_max_y > top ? clip.next_draw_max_y - top : 0);
++      clip.next_draw_bounded = false;
++    }
++    return add(rect);
++  };
++  while (stream_remaining) {
++    const CommandHeader& header = *reinterpret_cast<const CommandHeader*>(stream);
++    stream += kCommandHeaderSizeElements;
++    stream_remaining -= kCommandHeaderSizeElements;
++    switch (header.command) {
++      case Command::kVkEndRenderPass:
++      case Command::kVkEndRendering:
++        if (!any) return false;
++        bounds_out = {max_x, max_y};
++        return true;
++      case Command::kVkSetScissor: {
++        auto& args = *reinterpret_cast<const ArgsVkSetScissor*>(stream);
++        if (args.first_scissor == 0 && args.scissor_count) {
++          clip.SetScissor(*reinterpret_cast<const VkRect2D*>(
++              reinterpret_cast<const uint8_t*>(stream) +
++              rex::align(sizeof(ArgsVkSetScissor), alignof(VkRect2D))));
++        }
++      } break;
++      case Command::kVkSetViewport: {
++        auto& args = *reinterpret_cast<const ArgsVkSetViewport*>(stream);
++        if (args.first_viewport == 0 && args.viewport_count) {
++          clip.SetViewport(*reinterpret_cast<const VkViewport*>(
++              reinterpret_cast<const uint8_t*>(stream) +
++              rex::align(sizeof(ArgsVkSetViewport), alignof(VkViewport))));
++        }
++      } break;
++      case Command::kMgrNextDrawMaxY:
++        clip.next_draw_max_y = reinterpret_cast<const ArgsMgrNextDrawMaxY*>(stream)->max_y;
++        clip.next_draw_bounded = true;
++        break;
++      case Command::kVkDraw:
++      case Command::kVkDrawIndexed:
++        if (!add_draw()) return false;
++        break;
++      case Command::kVkClearAttachments: {
++        auto& args = *reinterpret_cast<const ArgsVkClearAttachments*>(stream);
++        size_t offset_bytes =
++            rex::align(sizeof(ArgsVkClearAttachments), alignof(VkClearAttachment));
++        offset_bytes = rex::align(offset_bytes + sizeof(VkClearAttachment) * args.attachment_count,
++                                  alignof(VkClearRect));
++        const VkClearRect* rects = reinterpret_cast<const VkClearRect*>(
++            reinterpret_cast<const uint8_t*>(stream) + offset_bytes);
++        for (uint32_t i = 0; i < args.rect_count; ++i) {
++          if (!add(rects[i].rect)) return false;
++        }
++      } break;
++      case Command::kVkBeginRenderPass:
++      case Command::kVkBeginRendering:
++        return false;  // malformed: nested pass
++      default:
++        break;
++    }
++    stream += header.arguments_size_elements;
++    stream_remaining -= header.arguments_size_elements;
++  }
++  return false;
++}
++
+ DeferredCommandBuffer::DeferredCommandBuffer(const VulkanCommandProcessor& command_processor,
+                                              size_t initial_size)
+     : command_processor_(command_processor) {
+@@ -41,21 +178,48 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
        command_processor_.GetVulkanDevice()->functions();
    const uintmax_t* stream = command_stream_.data();
    size_t stream_remaining = command_stream_.size();
 +  using mgr_timing::ZoneKind;
 +  mgr_timing::GpuTimer* const timer = gpu_timer_;
 +  uint32_t zone_draws = 0;
++  const uint32_t tight_render_area = TightRenderAreaVariant();
++  if (timer) timer->SetVariant(tight_render_area);
++  DrawClipState clip_state;
    while (stream_remaining) {
      const CommandHeader& header = *reinterpret_cast<const CommandHeader*>(stream);
      stream += kCommandHeaderSizeElements;
-@@ -49,6 +52,11 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+     stream_remaining -= kCommandHeaderSizeElements;
+ 
      switch (header.command) {
++      case Command::kMgrNextDrawMaxY:
++        clip_state.next_draw_max_y = reinterpret_cast<const ArgsMgrNextDrawMaxY*>(stream)->max_y;
++        clip_state.next_draw_bounded = true;
++        break;
++
        case Command::kVkBeginRenderPass: {
          auto& args = *reinterpret_cast<const ArgsVkBeginRenderPass*>(stream);
++        VkRect2D render_area = args.render_area;
++        VkExtent2D bounds;
++        // Clear values mean a loadOp CLEAR may cover the whole area: keep it.
++        if (tight_render_area && !args.clear_value_count && render_area.offset.x == 0 &&
++            render_area.offset.y == 0 &&
++            GetRenderPassDrawBounds(stream + header.arguments_size_elements,
++                                    stream_remaining - header.arguments_size_elements,
++                                    clip_state, bounds)) {
++          render_area.extent.width = std::min(render_area.extent.width, bounds.width);
++          render_area.extent.height = std::min(render_area.extent.height, bounds.height);
++        }
 +        if (timer) {
 +          timer->ZoneBegin(command_buffer, ZoneKind::kRenderPass, args.site,
-+                           args.render_area.extent.width, args.render_area.extent.height);
++                           render_area.extent.width, render_area.extent.height);
 +          zone_draws = 0;
 +        }
          size_t offset_bytes = sizeof(ArgsVkBeginRenderPass);
          VkRenderPassBeginInfo render_pass_begin_info;
          render_pass_begin_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-@@ -140,20 +148,24 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+         render_pass_begin_info.pNext = nullptr;
+         render_pass_begin_info.renderPass = args.render_pass;
+         render_pass_begin_info.framebuffer = args.framebuffer;
+-        render_pass_begin_info.renderArea = args.render_area;
++        render_pass_begin_info.renderArea = render_area;
+         render_pass_begin_info.clearValueCount = args.clear_value_count;
+         if (render_pass_begin_info.clearValueCount) {
+           offset_bytes = rex::align(offset_bytes, alignof(VkClearValue));
+@@ -140,20 +304,24 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
  
        case Command::kVkCopyBuffer: {
          auto& args = *reinterpret_cast<const ArgsVkCopyBuffer*>(stream);
@@ -4244,8 +4574,16 @@ index b49e033..7ec3add 100644
        } break;
  
        case Command::kVkCopyQueryPoolResults: {
-@@ -165,18 +177,23 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+@@ -163,20 +331,33 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+                                       args.stride, args.flags);
+       } break;
  
++      case Command::kVkFillBuffer: {
++        auto& args = *reinterpret_cast<const ArgsVkFillBuffer*>(stream);
++        dfn.vkCmdFillBuffer(command_buffer, args.dst_buffer, args.dst_offset, args.size,
++                            args.data);
++      } break;
++
        case Command::kVkDispatch: {
          auto& args = *reinterpret_cast<const ArgsVkDispatch*>(stream);
 +        if (timer) timer->ZoneBegin(command_buffer, ZoneKind::kDispatch, args.site,
@@ -4258,6 +4596,7 @@ index b49e033..7ec3add 100644
        case Command::kVkDraw: {
          auto& args = *reinterpret_cast<const ArgsVkDraw*>(stream);
 +        ++zone_draws;
++        clip_state.next_draw_bounded = false;
          dfn.vkCmdDraw(command_buffer, args.vertex_count, args.instance_count, args.first_vertex,
                        args.first_instance);
        } break;
@@ -4265,10 +4604,11 @@ index b49e033..7ec3add 100644
        case Command::kVkDrawIndexed: {
          auto& args = *reinterpret_cast<const ArgsVkDrawIndexed*>(stream);
 +        ++zone_draws;
++        clip_state.next_draw_bounded = false;
          dfn.vkCmdDrawIndexed(command_buffer, args.index_count, args.instance_count,
                               args.first_index, args.vertex_offset, args.first_instance);
        } break;
-@@ -188,6 +205,7 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+@@ -188,6 +369,7 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
  
        case Command::kVkEndRenderPass:
          dfn.vkCmdEndRenderPass(command_buffer);
@@ -4276,7 +4616,7 @@ index b49e033..7ec3add 100644
          break;
  
        case Command::kVkBeginRendering: {
-@@ -222,11 +240,17 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+@@ -222,11 +404,17 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
          rendering_info.pColorAttachments = color_attachments;
          rendering_info.pDepthAttachment = depth_attachment;
          rendering_info.pStencilAttachment = stencil_attachment;
@@ -4294,7 +4634,39 @@ index b49e033..7ec3add 100644
          break;
  
        case Command::kVkPipelineBarrier: {
-@@ -330,6 +354,7 @@ void DeferredCommandBuffer::CmdVkPipelineBarrier(
+@@ -285,10 +473,11 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+ 
+       case Command::kVkSetScissor: {
+         auto& args = *reinterpret_cast<const ArgsVkSetScissor*>(stream);
+-        dfn.vkCmdSetScissor(command_buffer, args.first_scissor, args.scissor_count,
+-                            reinterpret_cast<const VkRect2D*>(
+-                                reinterpret_cast<const uint8_t*>(stream) +
+-                                rex::align(sizeof(ArgsVkSetScissor), alignof(VkRect2D))));
++        const VkRect2D* scissors = reinterpret_cast<const VkRect2D*>(
++            reinterpret_cast<const uint8_t*>(stream) +
++            rex::align(sizeof(ArgsVkSetScissor), alignof(VkRect2D)));
++        dfn.vkCmdSetScissor(command_buffer, args.first_scissor, args.scissor_count, scissors);
++        if (args.first_scissor == 0 && args.scissor_count) clip_state.SetScissor(scissors[0]);
+       } break;
+ 
+       case Command::kVkSetStencilCompareMask: {
+@@ -308,10 +497,11 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+ 
+       case Command::kVkSetViewport: {
+         auto& args = *reinterpret_cast<const ArgsVkSetViewport*>(stream);
+-        dfn.vkCmdSetViewport(command_buffer, args.first_viewport, args.viewport_count,
+-                             reinterpret_cast<const VkViewport*>(
+-                                 reinterpret_cast<const uint8_t*>(stream) +
+-                                 rex::align(sizeof(ArgsVkSetViewport), alignof(VkViewport))));
++        const VkViewport* viewports = reinterpret_cast<const VkViewport*>(
++            reinterpret_cast<const uint8_t*>(stream) +
++            rex::align(sizeof(ArgsVkSetViewport), alignof(VkViewport)));
++        dfn.vkCmdSetViewport(command_buffer, args.first_viewport, args.viewport_count, viewports);
++        if (args.first_viewport == 0 && args.viewport_count) clip_state.SetViewport(viewports[0]);
+       } break;
+ 
+       default:
+@@ -330,6 +520,7 @@ void DeferredCommandBuffer::CmdVkPipelineBarrier(
      const VkMemoryBarrier* memory_barriers, uint32_t buffer_memory_barrier_count,
      const VkBufferMemoryBarrier* buffer_memory_barriers, uint32_t image_memory_barrier_count,
      const VkImageMemoryBarrier* image_memory_barriers) {
@@ -4302,7 +4674,7 @@ index b49e033..7ec3add 100644
    size_t arguments_size = sizeof(ArgsVkPipelineBarrier);
    size_t memory_barriers_offset = 0;
    if (memory_barrier_count) {
-@@ -373,6 +398,7 @@ void DeferredCommandBuffer::CmdVkPipelineBarrier(
+@@ -373,6 +564,7 @@ void DeferredCommandBuffer::CmdVkPipelineBarrier(
  }
  
  void DeferredCommandBuffer::CmdVkBeginRendering(const VkRenderingInfo* rendering_info) {
@@ -4310,7 +4682,7 @@ index b49e033..7ec3add 100644
    assert_null(rendering_info->pNext);
  
    size_t arguments_size =
-@@ -391,6 +417,7 @@ void DeferredCommandBuffer::CmdVkBeginRendering(const VkRenderingInfo* rendering
+@@ -391,6 +583,7 @@ void DeferredCommandBuffer::CmdVkBeginRendering(const VkRenderingInfo* rendering
    uint8_t* args_ptr =
        reinterpret_cast<uint8_t*>(WriteCommand(Command::kVkBeginRendering, arguments_size));
    auto& args = *reinterpret_cast<ArgsVkBeginRendering*>(args_ptr);
@@ -4793,28 +5165,51 @@ index 91ac08f..b326f4c 100644
        if (!storage_write_shader_queue_.empty()) {
          shader = storage_write_shader_queue_.front();
 diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
-index 0298f06..d7c5f3b 100644
+index 0298f06..64cc628 100644
 --- a/src/graphics/vulkan/render_target_cache.cpp
 +++ b/src/graphics/vulkan/render_target_cache.cpp
-@@ -1195,6 +1195,11 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+@@ -1195,26 +1195,30 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
        uint64_t copy_dest_range_length = copy_dest_range_unscaled;
        uint64_t copy_dest_use_start = resolve_info.copy_dest_extent_start;
        uint64_t copy_dest_use_length = resolve_info.copy_dest_extent_length;
-+      // Commit before looking up physical offsets: an overlapping resolve may
-+      // relocate the complete mapping while preserving its existing contents.
-+      if (draw_resolution_scaled && !texture_cache.CommitScaledResolveRange(
-+              resolve_info.copy_dest_base, copy_dest_range_unscaled,
-+              copy_shader_info.dest_bpe_log2)) return false;
++      // Make sure there is memory to write to. Without it only the copy is
++      // skipped; the resolve's EDRAM clear below still runs.
++      bool copy_dest_committed;
        if (draw_resolution_scaled) {
-         if (!texture_cache.GetScaledResolveRange(
-                 resolve_info.copy_dest_base, copy_dest_range_unscaled,
-@@ -1213,8 +1218,7 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
-       // Make sure there is memory to write to.
-       bool copy_dest_committed;
-       if (draw_resolution_scaled) {
+-        if (!texture_cache.GetScaledResolveRange(
+-                resolve_info.copy_dest_base, copy_dest_range_unscaled,
+-                copy_shader_info.dest_bpe_log2, copy_dest_base, copy_dest_range_length) ||
+-            !texture_cache.GetScaledResolveRange(
+-                resolve_info.copy_dest_extent_start, resolve_info.copy_dest_extent_length,
+-                copy_shader_info.dest_bpe_log2, copy_dest_use_start, copy_dest_use_length)) {
++        // Commit before looking up physical offsets: an overlapping resolve may
++        // relocate the complete mapping while preserving its existing contents.
++        // A failed commit is logged by the texture cache.
++        copy_dest_committed =
++            texture_cache.CommitScaledResolveRange(resolve_info.copy_dest_base,
++                                                   copy_dest_range_unscaled,
++                                                   copy_shader_info.dest_bpe_log2);
++        if (copy_dest_committed &&
++            (!texture_cache.GetScaledResolveRange(
++                 resolve_info.copy_dest_base, copy_dest_range_unscaled,
++                 copy_shader_info.dest_bpe_log2, copy_dest_base, copy_dest_range_length) ||
++             !texture_cache.GetScaledResolveRange(
++                 resolve_info.copy_dest_extent_start, resolve_info.copy_dest_extent_length,
++                 copy_shader_info.dest_bpe_log2, copy_dest_use_start, copy_dest_use_length))) {
+           REXGPU_ERROR(
+               "VulkanRenderTargetCache: Failed to map scaled resolve "
+               "destination range (base={:08X}, length={:08X})",
+               resolve_info.copy_dest_base, copy_dest_range_unscaled);
+-          return false;
++          copy_dest_committed = false;
+         }
+-      }
+-
+-      // Make sure there is memory to write to.
+-      bool copy_dest_committed;
+-      if (draw_resolution_scaled) {
 -        copy_dest_committed = texture_cache.CommitScaledResolveRange(
 -            resolve_info.copy_dest_base, copy_dest_range_unscaled, copy_shader_info.dest_bpe_log2);
-+        copy_dest_committed = true;
        } else {
          copy_dest_committed = shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
                                                           resolve_info.copy_dest_extent_length);
@@ -5272,7 +5667,7 @@ index 6788214..30fef3a 100644
                       (upload_page_ranges.back().first + upload_page_ranges.back().second -
                        upload_page_ranges.front().first)
 diff --git a/src/graphics/vulkan/texture_cache.cpp b/src/graphics/vulkan/texture_cache.cpp
-index ecbd940..d9348ce 100644
+index ecbd940..901c8ba 100644
 --- a/src/graphics/vulkan/texture_cache.cpp
 +++ b/src/graphics/vulkan/texture_cache.cpp
 @@ -35,6 +35,11 @@
@@ -5333,7 +5728,7 @@ index ecbd940..d9348ce 100644
  VkImageView VulkanTextureCache::GetActiveBindingOrNullImageView(uint32_t fetch_constant_index,
                                                                  xenos::FetchOpDimension dimension,
                                                                  bool is_signed) {
-@@ -1202,15 +1246,56 @@ std::unique_ptr<TextureCache::Texture> VulkanTextureCache::CreateTexture(Texture
+@@ -1202,15 +1246,61 @@ std::unique_ptr<TextureCache::Texture> VulkanTextureCache::CreateTexture(Texture
    return std::unique_ptr<Texture>(new VulkanTexture(*this, key, image, allocation));
  }
  
@@ -5344,8 +5739,7 @@ index ecbd940..d9348ce 100644
 -  if (!GetScaledResolveRange(start_unscaled, length_unscaled, length_scaled_alignment_log2,
 -                             start_scaled, length_scaled)) {
 +bool VulkanTextureCache::EnsureScaledResolveMemoryCommittedImpl(
-+    uint32_t start_unscaled, uint32_t length_unscaled, uint32_t length_scaled_alignment_log2,
-+    bool range_will_be_written) {
++    uint32_t start_unscaled, uint32_t length_unscaled, uint32_t length_scaled_alignment_log2) {
 +  if (length_scaled_alignment_log2 > 12) return false;
 +  const uint64_t area = uint64_t(draw_resolution_scale_x()) * draw_resolution_scale_y();
 +  const uint64_t length = rex::align(uint64_t(length_unscaled) * area,
@@ -5353,9 +5747,10 @@ index ecbd940..d9348ce 100644
 +  if (length > command_processor_.GetVulkanDevice()->properties().maxStorageBufferRange)
 +    return false;
 +  std::vector<ResolveArena::Copy> copies;
++  std::vector<ResolveArena::Fill> fills;
 +  if (!scaled_resolve_arena_.Commit(start_unscaled, (length + area - 1) / area,
 +          command_processor_.GetCurrentSubmission(), command_processor_.GetCompletedSubmission(),
-+          copies, range_will_be_written)) {
++          copies, fills)) {
 +    REXGPU_ERROR("Scaled resolve budget exhausted: {} MiB live / {} MiB capacity, "
 +                 "guest range {:08X}+{:08X}; existing mappings retained",
 +                 scaled_resolve_arena_.live_bytes() >> 20, scaled_resolve_buffer_size_ >> 20,
@@ -5369,9 +5764,10 @@ index ecbd940..d9348ce 100644
 +                "{} MiB capacity)", scaled_resolve_evictions_logged_,
 +                scaled_resolve_arena_.live_bytes() >> 20, scaled_resolve_buffer_size_ >> 20);
 +  }
-+  if (!copies.empty()) {
++  if (!copies.empty() || !fills.empty()) {
 +    // Copies include the entire old mapping, not just the overwritten resolve.
 +    // The arena reserves disjoint destinations and defers reuse of sources.
++    // Fills zero space that may still hold a retired or evicted block's data.
 +    command_processor_.PushBufferMemoryBarrier(scaled_resolve_buffer_, 0, VK_WHOLE_SIZE,
 +        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
 +        VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -5383,6 +5779,10 @@ index ecbd940..d9348ce 100644
 +      VkBufferCopy region{copy.source, copy.destination, copy.length};
 +      command_processor_.deferred_command_buffer().CmdVkCopyBuffer(
 +          scaled_resolve_buffer_, scaled_resolve_buffer_, 1, &region);
++    }
++    for (const auto& fill : fills) {
++      command_processor_.deferred_command_buffer().CmdVkFillBuffer(
++          scaled_resolve_buffer_, fill.offset, fill.length, 0);
 +    }
 +    command_processor_.PushBufferMemoryBarrier(scaled_resolve_buffer_, 0, VK_WHOLE_SIZE,
 +        VK_PIPELINE_STAGE_TRANSFER_BIT,
@@ -5397,7 +5797,7 @@ index ecbd940..d9348ce 100644
  }
  
  bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture, bool load_base,
-@@ -2072,69 +2157,29 @@ VulkanTextureCache::VulkanTextureCache(const RegisterFile& register_file,
+@@ -2072,69 +2162,29 @@ VulkanTextureCache::VulkanTextureCache(const RegisterFile& register_file,
  bool VulkanTextureCache::InitializeScaledResolveBuffer() {
    assert_true(IsDrawResolutionScaled());
  
@@ -5489,7 +5889,7 @@ index ecbd940..d9348ce 100644
  
    scaled_resolve_last_usage_write_ = false;
    scaled_resolve_last_written_range_ = std::make_pair(uint64_t(0), uint64_t(0));
-@@ -2151,11 +2196,9 @@ void VulkanTextureCache::ShutdownScaledResolveBuffer() {
+@@ -2151,11 +2201,9 @@ void VulkanTextureCache::ShutdownScaledResolveBuffer() {
      dfn.vkFreeMemory(device, memory, nullptr);
    }
    scaled_resolve_buffer_memory_.clear();
@@ -5503,7 +5903,7 @@ index ecbd940..d9348ce 100644
    scaled_resolve_last_usage_write_ = false;
    scaled_resolve_last_written_range_ = std::make_pair(uint64_t(0), uint64_t(0));
  }
-@@ -2177,73 +2220,17 @@ bool VulkanTextureCache::GetScaledResolveRange(uint32_t start_unscaled, uint32_t
+@@ -2177,73 +2225,17 @@ bool VulkanTextureCache::GetScaledResolveRange(uint32_t start_unscaled, uint32_t
      return false;
    }
  
