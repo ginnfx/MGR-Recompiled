@@ -2,6 +2,7 @@
 // The ABI boundary carries guest addresses; algorithms use host values and never
 // stage a value through the emulated vector bank or the guest stack.
 #include "mgr_native_math.h"
+#include "mgr_guest_ranges.h"
 #include <rex/ppc/context.h>
 #include <array>
 #include <atomic>
@@ -33,12 +34,7 @@ template<class T> void Store(uint8_t* base, uint32_t address, T word) {
 bool Intersects(uint32_t a, uint64_t size, uint64_t b, uint64_t end) {
   return uint64_t(a) < end && b < uint64_t(a) + size;
 }
-bool SafeRange(uint32_t a, uint64_t size) {
-  // Physical RAM has multiple guest aliases and an extra host-page offset.
-  // Keep those, MMIO and wraparound on the generated memory-access path.
-  return uint64_t(a) + size <= 0xa0000000ull &&
-      !Intersects(a, size, 0x7f000000ull, 0x80000000ull);
-}
+bool SafeRange(uint32_t a, uint64_t size) { return MgrIsOrdinaryGuestRange(a, size); }
 bool SafeArray(const PPCContext& ctx, unsigned out_stride, unsigned in_stride) {
   const uint64_t count = ctx.r5.u32;
   const uint32_t dst = ctx.r3.u32, src = ctx.r4.u32, sp = ctx.r1.u32;

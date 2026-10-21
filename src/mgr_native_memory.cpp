@@ -1,6 +1,7 @@
 // Recover the high-level CRT memcpy contract rather than reimplementing its
 // PowerPC alignment, cache-line prefetch and endian-shuffle state machine.
 #include "mgr_native_memory.h"
+#include "mgr_guest_ranges.h"
 #include <rex/ppc/context.h>
 #include <cstdint>
 #include <cstdlib>
@@ -11,19 +12,13 @@ namespace {
 bool Overlaps(uint64_t a, uint64_t asize, uint64_t b, uint64_t bsize) {
   return a < b + bsize && b < a + asize;
 }
-bool OrdinaryRange(uint32_t address, uint32_t size) {
-  // 0x7f000000..0x80000000 is MMIO (mgr_pch.h). Physical RAM lives at
-  // 0xa0000000 and higher with aliases and an ARM host-page offset at 0xe0000000.
-  return uint64_t(address) + size <= 0xa0000000ull &&
-      !Overlaps(address, size, 0x7f000000, 0x01000000);
-}
 }
 bool MgrRunNativeCopy(PPCContext& ctx, uint8_t* base) {
   const uint32_t dst = ctx.r3.u32, src = ctx.r4.u32, count = ctx.r5.u32;
   const uint32_t sp = ctx.r1.u32;
   if (ctx.r5.u64 != count) return false;
   if (!count) return true;
-  if (!OrdinaryRange(dst, count) || !OrdinaryRange(src, count) || sp < 8 ||
+  if (!MgrIsOrdinaryGuestRange(dst, count) || !MgrIsOrdinaryGuestRange(src, count) || sp < 8 ||
       Overlaps(dst, count, src, count) ||
       Overlaps(dst, count, sp - 8, 8) || Overlaps(src, count, sp - 8, 8)) return false;
   // Host byte copy needs no endian conversion; the original's load/store

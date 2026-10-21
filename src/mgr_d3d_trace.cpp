@@ -13,28 +13,32 @@
 #include <cstdio>
 #include <cstdlib>
 
-REX_EXTERN(__imp__sub_826CC0E0);
-REX_EXTERN(__imp__sub_826AB228);
-REX_EXTERN(__imp__sub_826AA720);
-REX_EXTERN(__imp__sub_826B69D8);
-REX_EXTERN(__imp__sub_826CC068);
-REX_EXTERN(__imp__sub_826B6A18);
-REX_EXTERN(__imp__sub_826CC428);
-REX_EXTERN(__imp__sub_826B6310);
-REX_EXTERN(__imp__sub_8278E640);
-REX_EXTERN(__imp__sub_82791828);
+// Traced guest functions, in report order. 8278E640 is the engine busy-wait
+// until the GPU has consumed all submitted work; 82791828 is the engine
+// function that waits on it and then presents.
+#define MGR_D3D_TRACED(X)                                                      \
+  X(826CC0E0) X(826AB228) X(826AA720) X(826B69D8) X(826CC068) X(826B6A18)    \
+  X(826CC428) X(826B6310) X(8278E640) X(82791828)
+
+#define MGR_D3D_EXTERN(address) REX_EXTERN(__imp__sub_##address);
+MGR_D3D_TRACED(MGR_D3D_EXTERN)
+#undef MGR_D3D_EXTERN
 
 namespace {
 
 using Clock = std::chrono::steady_clock;
-constexpr size_t kEntryCount = 10;
+enum Entry : size_t {
+#define MGR_D3D_ENTRY(address) kEntry##address,
+  MGR_D3D_TRACED(MGR_D3D_ENTRY)
+#undef MGR_D3D_ENTRY
+  kEntryCount
+};
 constexpr uint64_t kReportEveryPresents = 120;
 constexpr const char* kNames[kEntryCount] = {
-    "826CC0E0", "826AB228", "826AA720", "826B69D8",
-    "826CC068", "826B6A18", "826CC428", "826B6310",
-    // Engine busy-wait until the GPU has consumed all submitted work, and the
-    // engine function that waits on it and then presents.
-    "8278E640", "82791828"};
+#define MGR_D3D_NAME(address) #address,
+    MGR_D3D_TRACED(MGR_D3D_NAME)
+#undef MGR_D3D_NAME
+};
 
 struct Totals {
   std::atomic<uint64_t> calls{0};
@@ -64,6 +68,18 @@ void AddTime(size_t entry, Clock::time_point start) {
   }
 }
 
+// Runs `call`, adding its inclusive time to `entry` when tracing is enabled.
+template <class Call>
+void Timed(Entry entry, Call&& call) {
+  if (!TraceEnabled()) {
+    call();
+    return;
+  }
+  const auto start = Clock::now();
+  call();
+  AddTime(entry, start);
+}
+
 uint64_t present_count = 0;  // VdSwap runs on the guest render thread.
 
 }  // namespace
@@ -89,101 +105,22 @@ void MgrD3DTraceOnPresent() {
 }
 
 extern "C" REX_FUNC(sub_826CC0E0) {
-  if (TraceEnabled()) {
-    const auto start = Clock::now();
+  Timed(kEntry826CC0E0, [&] {
     MgrDispatchNativeMath(MgrNativeMathOp::TransformNormal, ctx, base, __imp__sub_826CC0E0);
-    AddTime(0, start);
-  } else {
-    MgrDispatchNativeMath(MgrNativeMathOp::TransformNormal, ctx, base, __imp__sub_826CC0E0);
-  }
+  });
 }
 
-extern "C" REX_FUNC(sub_826AB228) {
-  if (TraceEnabled()) {
-    const auto start = Clock::now();
-    __imp__sub_826AB228(ctx, base);
-    AddTime(1, start);
-  } else {
-    __imp__sub_826AB228(ctx, base);
+#define MGR_D3D_WRAP(address)                                                  \
+  extern "C" REX_FUNC(sub_##address) {                                         \
+    Timed(kEntry##address, [&] { __imp__sub_##address(ctx, base); });          \
   }
-}
-
-extern "C" REX_FUNC(sub_826AA720) {
-  if (TraceEnabled()) {
-    const auto start = Clock::now();
-    __imp__sub_826AA720(ctx, base);
-    AddTime(2, start);
-  } else {
-    __imp__sub_826AA720(ctx, base);
-  }
-}
-
-extern "C" REX_FUNC(sub_826B69D8) {
-  if (TraceEnabled()) {
-    const auto start = Clock::now();
-    __imp__sub_826B69D8(ctx, base);
-    AddTime(3, start);
-  } else {
-    __imp__sub_826B69D8(ctx, base);
-  }
-}
-
-extern "C" REX_FUNC(sub_826CC068) {
-  if (TraceEnabled()) {
-    const auto start = Clock::now();
-    __imp__sub_826CC068(ctx, base);
-    AddTime(4, start);
-  } else {
-    __imp__sub_826CC068(ctx, base);
-  }
-}
-
-extern "C" REX_FUNC(sub_826B6A18) {
-  if (TraceEnabled()) {
-    const auto start = Clock::now();
-    __imp__sub_826B6A18(ctx, base);
-    AddTime(5, start);
-  } else {
-    __imp__sub_826B6A18(ctx, base);
-  }
-}
-
-extern "C" REX_FUNC(sub_826CC428) {
-  if (TraceEnabled()) {
-    const auto start = Clock::now();
-    __imp__sub_826CC428(ctx, base);
-    AddTime(6, start);
-  } else {
-    __imp__sub_826CC428(ctx, base);
-  }
-}
-
-extern "C" REX_FUNC(sub_826B6310) {
-  if (TraceEnabled()) {
-    const auto start = Clock::now();
-    __imp__sub_826B6310(ctx, base);
-    AddTime(7, start);
-  } else {
-    __imp__sub_826B6310(ctx, base);
-  }
-}
-
-extern "C" REX_FUNC(sub_8278E640) {
-  if (TraceEnabled()) {
-    const auto start = Clock::now();
-    __imp__sub_8278E640(ctx, base);
-    AddTime(8, start);
-  } else {
-    __imp__sub_8278E640(ctx, base);
-  }
-}
-
-extern "C" REX_FUNC(sub_82791828) {
-  if (TraceEnabled()) {
-    const auto start = Clock::now();
-    __imp__sub_82791828(ctx, base);
-    AddTime(9, start);
-  } else {
-    __imp__sub_82791828(ctx, base);
-  }
-}
+MGR_D3D_WRAP(826AB228)
+MGR_D3D_WRAP(826AA720)
+MGR_D3D_WRAP(826B69D8)
+MGR_D3D_WRAP(826CC068)
+MGR_D3D_WRAP(826B6A18)
+MGR_D3D_WRAP(826CC428)
+MGR_D3D_WRAP(826B6310)
+MGR_D3D_WRAP(8278E640)
+MGR_D3D_WRAP(82791828)
+#undef MGR_D3D_WRAP

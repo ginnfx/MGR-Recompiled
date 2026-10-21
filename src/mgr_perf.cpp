@@ -61,9 +61,7 @@ struct FrameCapture {
   void OnFrame() {
     if (!file) return;
     const auto now = Clock::now();
-    timespec cpu{};
-    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &cpu);
-    const uint64_t cpu_ns = uint64_t(cpu.tv_sec)*1000000000 + cpu.tv_nsec;
+    const uint64_t cpu_ns = ThreadCpuNs();
     if (frame % 60 == 0) {
       mach_task_basic_info_data_t info{};
       mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
