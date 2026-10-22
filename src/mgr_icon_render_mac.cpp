@@ -17,6 +17,11 @@ constexpr double kTallRatio = 1.3;      // height/width above which labels may w
 constexpr size_t kWrapCodePoints = 2;   // single glyphs stay on one row
 constexpr double kRowSizeRatio = 0.6;   // starting font size of a wrapped row
 constexpr double kRoundTextInset = 0.18;  // ~ (1 - 1/sqrt(2)) / 2 + margin
+// Round caps hold up to two glyphs; longer labels get a capsule inside the same
+// circle (its farthest point is 0.47 of the diameter from the centre).
+constexpr size_t kRoundCodePoints = 2;
+constexpr double kCapsuleWidth = 0.94, kCapsuleHeight = 0.62;  // of the diameter
+constexpr double kCapsuleTextPadX = 0.2, kCapsuleTextPadY = 0.1;  // of its height
 
 template <typename T>
 struct CfRelease {
@@ -55,12 +60,14 @@ CfPtr<CTLineRef> MakeLine(const std::string& label, double size) {
   return CfPtr<CTLineRef>(CTLineCreateWithAttributedString(string.get()));
 }
 
-void AddCap(CGContextRef ctx, CGRect r, bool round) {
-  if (round) {
+enum class Cap { kRounded, kCircle, kCapsule };
+
+void AddCap(CGContextRef ctx, CGRect r, Cap cap) {
+  if (cap == Cap::kCircle) {
     CGContextAddEllipseInRect(ctx, r);
     return;
   }
-  const double radius = std::min(r.size.width, r.size.height) * kCornerRatio;
+  const double radius = std::min(r.size.width, r.size.height) * (cap == Cap::kCapsule ? 0.5 : kCornerRatio);
   CfPtr<CGPathRef> path(CGPathCreateWithRoundedRect(r, radius, radius, nullptr));
   CGContextAddPath(ctx, path.get());
 }
@@ -137,16 +144,25 @@ Image RenderKeyIcon(const IconRect& rect, const std::string& label, bool round) 
 
   const Layout layout = StyleLayout(rect.style);
   CGRect shape = CGRectInset(CGRectMake(0, 0, rect.w, rect.h), layout.inset, layout.inset);
+  const Cap cap = !round ? Cap::kRounded
+                  : CodePoints(label).size() <= kRoundCodePoints ? Cap::kCircle
+                                                                 : Cap::kCapsule;
   if (round) shape = CenteredSquare(shape);
+  if (cap == Cap::kCapsule)
+    shape = CGRectInset(shape, shape.size.width * (1 - kCapsuleWidth) / 2,
+                        shape.size.height * (1 - kCapsuleHeight) / 2);
   // A circle's inscribed square holds the glyph.
-  const CGRect text_box = round ? CGRectInset(shape, shape.size.width * kRoundTextInset,
-                                              shape.size.height * kRoundTextInset)
-                                : CGRectInset(shape, layout.text_pad, layout.text_pad * 0.6);
+  const CGRect text_box =
+      cap == Cap::kCircle ? CGRectInset(shape, shape.size.width * kRoundTextInset,
+                                        shape.size.height * kRoundTextInset)
+      : cap == Cap::kCapsule ? CGRectInset(shape, shape.size.height * kCapsuleTextPadX,
+                                           shape.size.height * kCapsuleTextPadY)
+                             : CGRectInset(shape, layout.text_pad, layout.text_pad * 0.6);
   const double size = shape.size.height * layout.text_ratio;
 
   if (rect.style == IconStyle::kOutline) {
     CGContextSetLineWidth(c, 2);
-    AddCap(c, CGRectInset(shape, 1, 1), round);
+    AddCap(c, CGRectInset(shape, 1, 1), cap);
     CGContextStrokePath(c);
     DrawLabel(c, label, text_box, size);
   } else {
@@ -155,7 +171,7 @@ Image RenderKeyIcon(const IconRect& rect, const std::string& label, bool round) 
       CfPtr<CGColorRef> glow(CGColorCreateSRGB(1, 1, 1, 0.8));
       CGContextSetShadowWithColor(c, CGSizeZero, 3, glow.get());
     }
-    AddCap(c, shape, round);
+    AddCap(c, shape, cap);
     CGContextFillPath(c);
     CGContextSetShadowWithColor(c, CGSizeZero, 0, nullptr);
     CGContextSetBlendMode(c, kCGBlendModeClear);  // knocked-out text

@@ -20,7 +20,6 @@ fi
   --game_data_root="$ROOT/private/game" \
   --user_data_root="${MGR_USER_DATA_ROOT:-$ROOT/private/user}" \
   --cache_root="$ROOT/private/cache" \
-  --mnk_mode=true \
   --vulkan_nonblocking_guest_present=true \
   --log_file="$LOG" \
   "$@"

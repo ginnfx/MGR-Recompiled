@@ -11,15 +11,15 @@ constexpr size_t kMaxLabelBytes = 6;
 constexpr std::pair<std::string_view, std::string_view> kNames[] = {
     {"Up", "↑"},          {"Down", "↓"},        {"Left", "←"},       {"Right", "→"},
     {"Shift", "⇧"},       {"Control", "⌃"},     {"Alt", "⌥"},        {"Return", "ENTER"},
-    {"Space", "SPACE"},   {"Backspace", "BKSP"}, {"Escape", "ESC"},  {"Tab", "TAB"},
+    {"Space", "SPACE"},   {"Backspace", "⌫"}, {"Escape", "ESC"},  {"Tab", "TAB"},
     {"Semicolon", ";"},   {"Quote", "'"},       {"Comma", ","},      {"Period", "."},
     {"Slash", "/"},       {"Backslash", "\\"},  {"Minus", "-"},      {"Plus", "="},
-    {"Backtick", "`"},    {"LBracket", "["},    {"RBracket", "]"},   {"Delete", "DEL"},
-    {"Insert", "INS"},    {"Home", "HOME"},     {"End", "END"},      {"PageUp", "PGUP"},
-    {"PageDown", "PGDN"}, {"NumpadEnter", "NENT"}, {"NumpadPlus", "N+"},
-    {"NumpadMinus", "N-"}, {"NumpadStar", "N*"}, {"NumpadSlash", "N/"},
-    {"CapsLock", "CAPS"}, {"PrintScreen", "PRSC"}, {"ScrollLock", "SCRL"},
-    {"NumLock", "NUML"},  {"Pause", "PAUSE"},
+    {"Backtick", "`"},    {"LBracket", "["},    {"RBracket", "]"},   {"Delete", "⌦"},
+    {"Insert", "INS"},    {"Home", "HOME"},     {"End", "END"},      {"PageUp", "PG UP"},
+    {"PageDown", "PG DN"}, {"NumpadEnter", "ENTER"}, {"NumpadPlus", "NUM+"},
+    {"NumpadMinus", "NUM-"}, {"NumpadStar", "NUM*"}, {"NumpadSlash", "NUM/"},
+    {"CapsLock", "CAPS"}, {"PrintScreen", "PRINT"}, {"ScrollLock", "SCROLL"},
+    {"NumLock", "NUM LK"},  {"Pause", "PAUSE"},
 };
 
 std::string_view Trim(std::string_view s) {
@@ -38,7 +38,7 @@ std::string KeyName(std::string_view key) {
   for (const auto& [name, label] : kNames) {
     if (key == name) return std::string(label);
   }
-  if (key.starts_with("Numpad") && key.size() == 7) return "N" + std::string(key.substr(6));
+  if (key.starts_with("Numpad") && key.size() == 7) return "NUM" + std::string(key.substr(6));
   std::string upper = Upper(key);
   // Bound the label for unknown names; the renderer still scales to fit.
   return upper.size() <= kMaxLabelBytes ? upper : upper.substr(0, kMaxLabelBytes);

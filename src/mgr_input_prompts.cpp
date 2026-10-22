@@ -28,7 +28,10 @@ namespace {
 constexpr uint32_t kGuestPageSize = 4096;  // texture base addresses are 4 KB aligned
 constexpr uint32_t kPhysicalSize = 0x20000000;
 constexpr uint32_t kPollFrames = 30;
-constexpr uint32_t kRescanPolls = 20;  // ~10 s at 60 FPS
+// Physical memory is searched incrementally: a full 512 MiB sweep in one poll
+// cost 40-66 ms on the guest render thread (s2-sample frame CSV), which showed
+// up as the worst frames. 32 MiB per poll sweeps everything in ~8 s at 60 FPS.
+constexpr uint32_t kScanBytesPerPoll = 32 << 20;
 // Physical memory views the GPU watches; E0000000 is offset by one page.
 constexpr uint32_t kViewA0 = 0xA0000000, kViewC0 = 0xC0000000, kViewE0 = 0xE0000000;
 
@@ -44,8 +47,8 @@ class AtlasPatcher {
     const PromptFamily family = MgrPromptFamily();
     const bool original_art = family == PromptFamily::kXbox;
     Validate(memory);
-    // Rescan periodically too: the game may load another copy elsewhere.
-    if (!original_art && (copies_.empty() || ++polls_ % kRescanPolls == 0)) Scan(memory);
+    // Keep sweeping: the game may load another copy elsewhere.
+    if (!original_art) ScanSome(memory, kScanBytesPerPoll);
     if (copies_.empty()) return;
     const std::vector<uint8_t>& target = original_art ? original_ : Patched(family);
     for (AtlasCopy& copy : copies_) {
@@ -74,15 +77,27 @@ class AtlasPatcher {
     });
   }
 
-  // Walks committed physical pages only; untouched shared-memory pages are
-  // never read, so the scan does not commit host memory.
-  void Scan(rex::memory::Memory& memory) {
+  // Walks committed physical pages only, from where the previous call stopped;
+  // untouched shared-memory pages are never read, so the scan does not commit
+  // host memory. `budget` counts readable bytes examined.
+  void ScanSome(rex::memory::Memory& memory, uint32_t budget) {
     auto* heap = memory.GetPhysicalHeap();
-    for (uint32_t address = 0; address < kPhysicalSize;) {
+    while (budget) {
       rex::memory::HeapAllocationInfo info{};
-      if (!heap->QueryRegionInfo(address, &info) || !info.region_size) break;
-      if (IsReadable(info)) ScanRegion(memory, address, info.region_size);
-      address += info.region_size;
+      if (scan_cursor_ >= kPhysicalSize || !heap->QueryRegionInfo(scan_cursor_, &info) ||
+          !info.region_size) {
+        scan_cursor_ = 0;  // wrapped: one full sweep done
+        return;
+      }
+      const uint32_t region_end = info.base_address + info.region_size;
+      if (!IsReadable(info)) {
+        scan_cursor_ = region_end;
+        continue;
+      }
+      const uint32_t end = region_end - scan_cursor_ > budget ? scan_cursor_ + budget : region_end;
+      ScanRegion(memory, scan_cursor_, end, region_end);
+      budget -= end - scan_cursor_;
+      scan_cursor_ = end;
     }
   }
 
@@ -97,8 +112,11 @@ class AtlasPatcher {
            physical + kAtlasBytes <= info.base_address + info.region_size;
   }
 
-  void ScanRegion(rex::memory::Memory& memory, uint32_t start, uint32_t size) {
-    for (uint32_t page = start; page + kAtlasBytes <= start + size; page += kGuestPageSize) {
+  // Candidate pages in [start, end); an atlas may extend to region_end.
+  void ScanRegion(rex::memory::Memory& memory, uint32_t start, uint32_t end,
+                  uint32_t region_end) {
+    for (uint32_t page = start; page < end && page + kAtlasBytes <= region_end;
+         page += kGuestPageSize) {
       if (std::any_of(copies_.begin(), copies_.end(),
                       [page](const AtlasCopy& copy) { return copy.physical == page; })) {
         continue;
@@ -125,8 +143,7 @@ class AtlasPatcher {
     Rendered& cache = rendered_[size_t(family)];
     if (cache.atlas.empty() || labels != cache.labels) {
       cache.labels = std::move(labels);
-      cache.atlas = PatchAtlas(original_, cache.labels, RenderKeyIcon,
-                               playstation ? kPlayStationRoundButtons : 0);
+      cache.atlas = PatchAtlas(original_, cache.labels, RenderKeyIcon, kRoundButtons);
     }
     return cache.atlas;
   }
@@ -156,7 +173,7 @@ class AtlasPatcher {
   };
   std::array<Rendered, kPromptFamilyCount> rendered_;
   uint32_t frame_ = 0;
-  uint32_t polls_ = 0;
+  uint32_t scan_cursor_ = 0;
 };
 
 AtlasPatcher patcher;  // VdSwap runs only on the guest render thread

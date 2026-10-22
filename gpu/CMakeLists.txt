@@ -30,7 +30,9 @@ set(XENOS_SOURCES
 )
 list(TRANSFORM XENOS_SOURCES PREPEND ${XENOS_SRC}/)
 list(APPEND XENOS_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/mgr_cmd_stats.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/mgr_native_ps.cpp)
+    ${CMAKE_CURRENT_SOURCE_DIR}/mgr_native_ps.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mgr_gpu_timing.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mgr_gpu_effects.cpp)
 
 add_library(rexgpu-xenos SHARED ${XENOS_SOURCES})
 set_target_properties(rexgpu-xenos PROPERTIES

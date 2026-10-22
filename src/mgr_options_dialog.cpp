@@ -61,8 +61,10 @@ int MenuRow(const char* id, const char* label, const char* value, const char* he
   draw->AddTriangleFilled(ImVec2(ax + 12*s, ay), ImVec2(ax + 5*s, ay - 5*s),
                           ImVec2(ax + 5*s, ay + 5*s), color);
   int direction = pressed ? 1 : 0;
-  if (pressed && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-      ImGui::GetIO().MousePos.x > ax - 22 * s && ImGui::GetIO().MousePos.x < ax) direction = -1;
+  // Selectable reports a mouse press on release, so test where the click began.
+  const float click_x = ImGui::GetIO().MouseClickedPos[ImGuiMouseButton_Left].x;
+  if (pressed && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && click_x > ax - 22 * s &&
+      click_x < ax) direction = -1;
   if (active && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) direction = -1;
   if (ImGui::IsItemFocused()) {
     if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow) || ImGui::IsKeyPressed(ImGuiKey_GamepadDpadLeft)) direction = -1;
@@ -89,7 +91,8 @@ constexpr Choice kFrameRate[] = {{"60 FPS (original)", "60"},
                                  {"120 FPS (experimental)", "120"},
                                  {"Unlocked (240 Hz ceiling)", "unlocked"}};
 constexpr Choice kResolution[] = {
-    {"1280x720 (original)", "1"}, {"2560x1440", "2"}, {"3840x2160", "3"}};
+    {"1280x720 (original)", "1"}, {"1920x1080", "1.5"}, {"2560x1440", "2"},
+    {"3840x2160", "3"}};
 constexpr Choice kFiltering[] = {{"Game default", "game"}, {"Off", "off"},
                                  {"2x", "2x"}, {"4x", "4x"}, {"8x", "8x"}, {"16x", "16x"}};
 constexpr Choice kPrecision[] = {{"High (accurate)", "high"}, {"Fast (less bandwidth)", "fast"}};
@@ -112,8 +115,8 @@ constexpr Option kDisplay[] = {
 constexpr Option kGraphics[] = {
     {"mgr_resolution_scale", "Internal rendering scale",
      "Requests a Vulkan resource rebuild; check the active scale and failure status. "
-     "Supported internal targets are 720p, 1440p and 2160p; exact internal 1080p is not "
-     "supported yet. Output image size is separate and can match the display or use 1080p.",
+     "Internal targets: 720p (original), 1080p (1.5x), 1440p and 2160p. Output image "
+     "size is separate and can match the display.",
      kResolution, false},
     {"mgr_texture_filtering", "Texture filtering",
      "Anisotropic filtering. Game default preserves the game's own requests.", kFiltering,
@@ -123,6 +126,9 @@ constexpr Option kGraphics[] = {
      kPrecision, true},
     {"mgr_film_grain", "Film grain", "The noise layer of the final post-process filter.", kOnOff,
      false},
+    {"mgr_bloom", "Bloom glow",
+     "The glare blur around lights and effects. Off skips about 19 small passes and 12 "
+     "resolves per frame for a flatter image.", kOnOff, false},
 };
 constexpr Option kGame[] = {
     {"mgr_skip_intro_logos", "Skip intro logos",
@@ -138,18 +144,15 @@ constexpr Option kControls[] = {
      kOnOff, false},
 };
 
-const char* ScaleLabel(int scale) {
-  switch (scale) {
-    case 0: return "UNAVAILABLE";
-    case 2: return "2560X1440";
-    case 3: return "3840X2160";
-    default: return "1280X720";
-  }
+const char* ScaleLabel(const std::string& scale) {
+  if (scale == "0") return "UNAVAILABLE";
+  if (scale == "1.5") return "1920X1080";
+  if (scale == "2") return "2560X1440";
+  if (scale == "3") return "3840X2160";
+  return "1280X720";
 }
 
 bool IsPendingRestart(const char* cvar, const std::string& requested) {
-  if (std::string_view(cvar) == "mgr_resolution_scale")
-    return std::atoi(requested.c_str()) != MgrActiveResolutionScale();
   if (std::string_view(cvar) == "mgr_render_target_precision")
     return requested != MgrActiveRenderTargetPrecision();
   return false;
@@ -166,8 +169,7 @@ bool DrawOption(const Option& option) {
     std::string shown = selected->label;
     if (std::string_view(option.cvar) == "mgr_resolution_scale") {
       const auto status = MgrGetResolutionStatus();
-      const int requested = std::atoi(current.c_str());
-      const std::string state = requested == status.requested ? status.state : "requested";
+      const std::string state = current == status.requested ? status.state : "requested";
       shown += " - " + Uppercase(state) + " - ACTIVE: " + ScaleLabel(status.active);
       if (state == "failed" && !status.reason.empty()) shown += " - " + status.reason;
     } else if (std::string_view(option.cvar) == "mgr_render_target_precision") {
@@ -203,8 +205,7 @@ bool DrawOption(const Option& option) {
   }
   if (std::string_view(option.cvar) == "mgr_resolution_scale") {
     const auto status = MgrGetResolutionStatus();
-    const std::string state = std::atoi(current.c_str()) == status.requested
-                                  ? status.state : "requested";
+    const std::string state = current == status.requested ? status.state : "requested";
     ImGui::TextWrapped("%s - Active: %s", state.c_str(), ScaleLabel(status.active));
     if (state == "failed" && !status.reason.empty())
       ImGui::TextWrapped("%s", status.reason.c_str());
@@ -351,8 +352,8 @@ MgrOptionsDialog::~MgrOptionsDialog() {
       window_->RemoveListener(this);
     }
     ReleaseController(GetIO());
-    SavePending();
   }
+  SavePending();
   SetInputBlocked(false);
 }
 
@@ -375,18 +376,18 @@ void MgrOptionsDialog::OnDraw(ImGuiIO& io) {
   changed |= DrawSection("Graphics", kGraphics);
   changed |= DrawSection("Game", kGame);
   changed |= DrawSection("Controls", kControls);
-  if (changed) saved_ = false;
+  if (changed) { dirty_ = true; saved_ = false; }
   ImGui::TextWrapped("Free Blade Mode uses Blade Mode + right-stick direction. "
                      "Keyboard defaults: hold Q and use the arrow keys, or enable mouse input.");
-  ImGui::TextDisabled("Rebind keys: Settings (F4) > Input > Keybinds.");
+  ImGui::TextDisabled("Rebind keys: OPTIONS > KEYBOARD / MOUSE.");
 
   ImGui::Separator();
   if (ImGui::Button("Save")) {
-    rex::cvar::SaveConfig(config_path_);
-    saved_ = true;
+    dirty_ = true;
+    SavePending();
   }
   ImGui::SameLine();
-  ImGui::TextDisabled(saved_ ? "Saved to %s" : "Writes %s",
+  ImGui::TextDisabled(saved_ ? "Saved to %s" : "Saved to %s when closed",
                       config_path_.filename().string().c_str());
   ImGui::End();
 }
@@ -501,7 +502,7 @@ void MgrOptionsDialog::SetInputBlocked(bool blocked) {
 
 void MgrOptionsDialog::SavePending() {
   if (!dirty_) return;
-  rex::cvar::SaveConfig(config_path_);
+  MgrSaveConfig(config_path_);
   dirty_ = false;
   saved_ = true;
 }
@@ -895,6 +896,7 @@ void MgrOptionsDialog::DrawIntegrated(ImGuiIO& io) {
       changed = DrawSection("DISPLAY", kDisplay);
       changed |= DrawOutputResolution();
       changed |= DrawSection("GRAPHICS", kGraphics);
+      changed |= DrawSection("GAME", kGame);
     } else changed = DrawKeyboard();
     if (changed) { dirty_ = true; saved_ = false; }
     ImGui::EndChild();

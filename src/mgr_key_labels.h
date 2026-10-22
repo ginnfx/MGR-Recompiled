@@ -25,5 +25,7 @@ ButtonLabels BuildButtonLabels(const CvarLookup& lookup);
 // and stick-direction art is shared with Xbox and stays empty (original art).
 // PS3 pads name the menu buttons START/SELECT rather than OPTIONS/SHARE.
 ButtonLabels PlayStationLabels(bool ps3);
-// Buttons drawn on round caps for PlayStation: face buttons and both sticks.
-inline constexpr uint32_t kPlayStationRoundButtons = 0xFu | 0xFu << 15;
+// Buttons whose original art is round (face buttons and both sticks). Every
+// prompt family draws them on a cap that fits that circle: a square keycap's
+// corners leave the game's ring and pulse outside the HUD bounds.
+inline constexpr uint32_t kRoundButtons = 0xFu | 0xFu << 15;

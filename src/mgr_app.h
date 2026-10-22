@@ -14,7 +14,9 @@
 #include "mgr_options_dialog.h"
 #include "mgr_settings.h"
 #include "mgr_game_options.h"
+#include "mgr_native_options.h"
 #include "mgr_menu_fonts.h"
+#include "mgr_test_script.h"
 
 #include <chrono>
 #include <cstdio>
@@ -45,20 +47,28 @@ class MgrApp : public rex::ReXApp {
     (void)config;
     // Menu repaint ownership is session state, never a boot-time preference.
     rex::cvar::SetFlagByName("imgui_guest_paced", "false");
+    if (rex::cvar::GetFlagSource("mnk_mode") == rex::cvar::Source::kDefault)
+      rex::cvar::SetFlagByName("mnk_mode", "true");
     MgrApplySettings();
   }
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    // Diagnostic: MGR_CONFIG_PATH=<file> replaces <exe dir>/mgr.toml, so test
+    // runs never read or save the user's configuration.
+    if (const char* config = std::getenv("MGR_CONFIG_PATH"); config && *config)
+      paths.config_path = config;
     config_path_ = paths.config_path;
+    MgrTestScriptSetSaveHandler([path = config_path_] { MgrSaveConfig(path); });
     game_root_ = paths.game_data_root;
   }
 
   void OnConfigureFonts(ImFontAtlas* atlas) override {
-    MgrConfigureMenuFonts(atlas, game_root_);
+    if (std::getenv("MGR_DEVELOPER_UI")) MgrConfigureMenuFonts(atlas, game_root_);
   }
 
-  // F2 toggles the MGR options window (bindable in Settings > Keybinds).
+  // Native guest Options owns settings access; F2 is a developer fallback.
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    MgrTestScriptAttachWindow();  // the window has just opened
     // Cvar callbacks may originate off the UI thread. The weak token prevents
     // queued resize work from accessing this app after shutdown.
     const std::weak_ptr<uint8_t> alive = settings_callbacks_alive_;
@@ -71,11 +81,22 @@ class MgrApp : public rex::ReXApp {
           });
         });
     MgrApplyOutputResolution(window());
+    // mgr_settings maps mgr_vsync to the allowed present mode; only a new
+    // swapchain picks it up, and a reconnect recreates it at the same size.
+    rex::cvar::RegisterChangeCallback(
+        "mgr_vsync", [this, alive, ui_context](std::string_view, std::string_view) {
+          if (alive.expired()) return;
+          ui_context->CallInUIThread([this, alive] {
+            if (alive.expired()) return;
+            auto* gs = runtime() ? runtime()->graphics_system() : nullptr;
+            if (auto* presenter = gs ? gs->presenter() : nullptr) presenter->OnSurfaceResizeFromUIThread();
+          });
+        });
     MgrGameOptionsInstall();
-    auto* native_input = runtime() ? static_cast<rex::input::InputSystem*>(runtime()->input_system())
-                                   : nullptr;
-    game_options_dialog_ = std::make_unique<MgrOptionsDialog>(
-        drawer, native_input, config_path_, window(), true);
+    MgrNativeOptionsConfigure(config_path_);
+    // The retail Options lifecycle owns normal settings access. The legacy
+    // host dialog is available only when explicitly enabling developer tools.
+    if (!std::getenv("MGR_DEVELOPER_UI")) return;
     rex::ui::RegisterBind("bind_mgr_options", "F2", "Toggle MGR options", [this, drawer] {
       if (options_dialog_) {
         options_dialog_.reset();
@@ -150,8 +171,10 @@ class MgrApp : public rex::ReXApp {
 
   static constexpr auto CAPTURE_INTERVAL = std::chrono::seconds(10);
   static constexpr auto CAPTURE_POLL = std::chrono::milliseconds(200);
+  static constexpr auto SCRIPTED_CAPTURE_POLL = std::chrono::milliseconds(5);
 
   void CaptureLoop(std::stop_token stop, const std::string& out_dir) {
+    if (MgrTestScriptActive()) return ScriptedCaptureLoop(stop, out_dir);
     int index = 0;
     auto next = std::chrono::steady_clock::now() + CAPTURE_INTERVAL;
     while (!stop.stop_requested()) {
@@ -166,6 +189,26 @@ class MgrApp : public rex::ReXApp {
         continue;
       }
       WritePpm(out_dir + "/frame_" + std::to_string(index++) + ".ppm", image);
+    }
+  }
+
+  // MGR_TEST_SCRIPT "capture" events write <out_dir>/<name>-<frame>.ppm.
+  void ScriptedCaptureLoop(std::stop_token stop, const std::string& out_dir) {
+    std::string name;
+    while (!stop.stop_requested()) {
+      if (!MgrTestScriptTakeCapture(name)) {
+        std::this_thread::sleep_for(SCRIPTED_CAPTURE_POLL);
+        continue;
+      }
+      auto* gs = runtime() ? runtime()->graphics_system() : nullptr;
+      auto* presenter = gs ? gs->presenter() : nullptr;
+      rex::ui::RawImage image;
+      if (presenter && presenter->CaptureGuestOutput(image)) {
+        WritePpm(out_dir + "/" + name + ".ppm", image);
+      } else {
+        std::fprintf(stderr, "[mgr-capture] %s: no guest output yet\n", name.c_str());
+      }
+      MgrTestScriptCaptureDone();
     }
   }
 

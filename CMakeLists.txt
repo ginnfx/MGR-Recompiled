@@ -24,9 +24,15 @@ set(MGR_SOURCES
     src/mgr_prompt_device.cpp
     src/mgr_settings.cpp
     src/mgr_qol.cpp
+    src/mgr_postfx.cpp
+    src/mgr_d3d_trace.cpp
     src/mgr_options_dialog.cpp
     src/mgr_game_options.cpp
+    src/mgr_native_options.cpp
+    src/mgr_options_trace.cpp
     src/mgr_menu_fonts.cpp
+    src/mgr_test_script.cpp
+    src/mgr_test_window_mac.cpp
     src/thirdparty/mgrr_perf/perf_logger.cpp
 )
 
@@ -147,3 +153,94 @@ add_executable(mgr_prompt_checks EXCLUDE_FROM_ALL
 target_include_directories(mgr_prompt_checks PRIVATE src)
 target_link_libraries(mgr_prompt_checks PRIVATE rex::runtime "-framework CoreText"
                       "-framework CoreGraphics" "-framework CoreFoundation")
+
+# Native XDK math reconstruction (MGR_NATIVE_MATH=0 restores the guest bodies).
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+target_sources(mgr PRIVATE src/mgr_native_math.cpp)
+set_source_files_properties(src/mgr_native_math.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/native-math-oracle.cpp"
+    COMMAND Python3::Interpreter "${CMAKE_SOURCE_DIR}/tools/codegen/extract_oracle.py"
+        --generated "${CMAKE_SOURCE_DIR}/generated/default"
+        --output "${CMAKE_BINARY_DIR}/native-math-oracle.cpp"
+    DEPENDS mgr_codegen ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
+        tools/codegen/extract_oracle.py
+    VERBATIM)
+add_executable(mgr_native_math_checks EXCLUDE_FROM_ALL tests/mgr_native_math_checks.cpp
+    src/mgr_native_math.cpp "${CMAKE_BINARY_DIR}/native-math-oracle.cpp")
+target_include_directories(mgr_native_math_checks PRIVATE src generated/default)
+target_link_libraries(mgr_native_math_checks PRIVATE rex::runtime)
+mgr_apply_compiler_options(mgr_native_math_checks)
+
+# Native guest memcpy (MGR_NATIVE_MEMORY=0 restores the guest body).
+target_sources(mgr PRIVATE src/mgr_native_memory.cpp)
+add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/native-memory-oracle.cpp"
+    COMMAND Python3::Interpreter "${CMAKE_SOURCE_DIR}/tools/codegen/extract_oracle.py"
+        --memory-only --generated "${CMAKE_SOURCE_DIR}/generated/default"
+        --output "${CMAKE_BINARY_DIR}/native-memory-oracle.cpp"
+    DEPENDS mgr_codegen ${REXGLUE_ENTRYPOINT_GENERATED_SOURCES}
+        tools/codegen/extract_oracle.py VERBATIM)
+add_executable(mgr_native_memory_checks EXCLUDE_FROM_ALL tests/mgr_native_memory_checks.cpp
+    src/mgr_native_memory.cpp "${CMAKE_BINARY_DIR}/native-memory-oracle.cpp")
+target_include_directories(mgr_native_memory_checks PRIVATE src generated/default)
+target_link_libraries(mgr_native_memory_checks PRIVATE rex::runtime)
+mgr_apply_compiler_options(mgr_native_memory_checks)
+
+# Resolve arena unit test; header-only SDK code from the patched vendor tree.
+add_executable(mgr_resolve_arena_checks EXCLUDE_FROM_ALL tests/resolve_arena_test.cpp)
+target_include_directories(mgr_resolve_arena_checks PRIVATE
+    "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
+target_compile_options(mgr_resolve_arena_checks PRIVATE -UNDEBUG)
+add_executable(mgr_scale_ratio_checks EXCLUDE_FROM_ALL tests/scale_ratio_test.cpp)
+target_include_directories(mgr_scale_ratio_checks PRIVATE
+    "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
+target_compile_options(mgr_scale_ratio_checks PRIVATE -UNDEBUG)
+add_executable(mgr_scaled_texture_address_checks EXCLUDE_FROM_ALL
+    tests/scaled_texture_address_test.cpp)
+target_include_directories(mgr_scaled_texture_address_checks PRIVATE
+    "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
+target_compile_options(mgr_scaled_texture_address_checks PRIVATE -UNDEBUG)
+add_executable(mgr_scaled_viewport_checks EXCLUDE_FROM_ALL tests/scaled_viewport_test.cpp)
+target_include_directories(mgr_scaled_viewport_checks PRIVATE
+    "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
+target_link_libraries(mgr_scaled_viewport_checks PRIVATE rex::runtime)
+target_compile_options(mgr_scaled_viewport_checks PRIVATE -UNDEBUG)
+add_executable(mgr_ot_key_checks EXCLUDE_FROM_ALL tests/ot_key_test.cpp)
+target_include_directories(mgr_ot_key_checks PRIVATE src)
+target_compile_options(mgr_ot_key_checks PRIVATE -UNDEBUG)
+
+# GPU check of the resolution-scaled resolve and texture load SPIR-V on MoltenVK
+# (Homebrew vulkan-headers and molten-vk); ctest reports it skipped without a
+# Vulkan device.
+find_path(MGR_VULKAN_INCLUDE_DIR vulkan/vulkan.h PATHS /opt/homebrew/include)
+if(MGR_VULKAN_INCLUDE_DIR)
+  add_executable(mgr_rational_shader_gpu_checks EXCLUDE_FROM_ALL tests/rational_shader_gpu_test.cpp)
+  target_include_directories(mgr_rational_shader_gpu_checks PRIVATE
+      "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include" "${MGR_VULKAN_INCLUDE_DIR}")
+  target_link_libraries(mgr_rational_shader_gpu_checks PRIVATE rex::runtime)
+  target_compile_options(mgr_rational_shader_gpu_checks PRIVATE -UNDEBUG)
+endif()
+
+# `ninja -C build mgr_tests && ctest --test-dir build` runs every host-only check.
+enable_testing()
+set(MGR_TEST_TARGETS mgr_resolve_arena_checks mgr_scale_ratio_checks mgr_scaled_viewport_checks
+    mgr_scaled_texture_address_checks
+    mgr_ot_key_checks mgr_timing_checks
+    mgr_native_math_checks mgr_native_memory_checks)
+if(TARGET mgr_rational_shader_gpu_checks)
+  list(APPEND MGR_TEST_TARGETS mgr_rational_shader_gpu_checks)
+endif()
+add_custom_target(mgr_tests DEPENDS ${MGR_TEST_TARGETS})
+add_test(NAME resolve_arena COMMAND mgr_resolve_arena_checks)
+add_test(NAME scale_ratio COMMAND mgr_scale_ratio_checks)
+add_test(NAME scaled_viewport COMMAND mgr_scaled_viewport_checks)
+add_test(NAME scaled_texture_address COMMAND mgr_scaled_texture_address_checks)
+if(TARGET mgr_rational_shader_gpu_checks)
+  add_test(NAME rational_shader_gpu COMMAND mgr_rational_shader_gpu_checks)
+  set_tests_properties(rational_shader_gpu PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+add_test(NAME ot_key COMMAND mgr_ot_key_checks)
+foreach(_mode enabled disabled forced)
+    add_test(NAME timing_${_mode} COMMAND mgr_timing_checks ${_mode})
+endforeach()
+add_test(NAME native_math COMMAND mgr_native_math_checks)
+add_test(NAME native_memory COMMAND mgr_native_memory_checks)
