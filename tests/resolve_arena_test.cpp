@@ -7,7 +7,7 @@ using rex::graphics::vulkan::ResolveArena;
 int main() {
   ResolveArena arena;
   constexpr uint64_t page = 4096;
-  arena.Reset(16 * page, 4, 256);
+  arena.Reset(16 * page, 4, 1, 256);
   std::vector<ResolveArena::Copy> copies;
   std::vector<ResolveArena::Fill> fills;
   // A high guest address consumes only its resident range, not its prefix.
@@ -31,7 +31,7 @@ int main() {
   assert(!arena.Commit(ResolveArena::kGuestSize - 1, 2, 4, 3, copies, fills));
   assert(!arena.Commit(UINT64_MAX, 2, 4, 3, copies, fills));
   // Exercise merging two disjoint allocations against a byte-content model.
-  arena.Reset(64 * page, 9, 256);
+  arena.Reset(64 * page, 9, 1, 256);
   std::vector<uint8_t> memory(64 * page, 0);
   assert(arena.Commit(page, page, 1, 0, copies, fills));
   uint64_t a, b;
@@ -54,7 +54,7 @@ int main() {
   // A resolve over a longer range never assumes a block inside it is
   // overwritten (it may write only a rectangle): the block is copied, and only
   // the gaps around it are zeroed.
-  arena.Reset(64 * page, 1, 256);
+  arena.Reset(64 * page, 1, 1, 256);
   assert(arena.Commit(2 * page, page, 1, 0, copies, fills));
   assert(arena.Commit(0, 5 * page, 2, 0, copies, fills));
   assert(copies.size() == 1 && copies[0].length == page);
@@ -64,9 +64,22 @@ int main() {
   assert(fills[1].offset == a + 3 * page && fills[1].length == 2 * page);
   // A lookup hit publishes nothing.
   assert(arena.Commit(page, page, 3, 0, copies, fills) && copies.empty() && fills.empty());
+  // 3/2 scale: 9/4 host bytes per guest byte. A page maps to 9216 bytes and
+  // group-aligned (64-byte) offsets inside a block stay whole.
+  arena.Reset(64 * page, 9, 4, 256);
+  assert(arena.Commit(page, 2 * page, 1, 0, copies, fills));
+  assert(arena.Lookup(page, 2 * page, a) && a == 0 && arena.live_bytes() == 2 * 9216);
+  assert(arena.Lookup(page + 64, 64, b) && b == 144);
+  assert(arena.Lookup(2 * page, page, b) && b == 9216);
+  assert(fills.size() == 1 && fills[0].length == 2 * 9216);
+  // Growing over it copies the old 9/4-scaled bytes to the right place.
+  assert(arena.Commit(0, 4 * page, 2, 0, copies, fills));
+  assert(copies.size() == 1 && copies[0].length == 2 * 9216);
+  assert(arena.Lookup(0, 4 * page, a) && copies[0].destination == a + 9216);
+  assert(fills.size() == 2 && fills[0].length == 9216 && fills[1].length == 9216);
   // Out of space: only an idle, GPU-completed block is evicted, oldest first.
   constexpr uint64_t idle = ResolveArena::kEvictIdleSubmissions;
-  arena.Reset(4 * page, 1, 256);
+  arena.Reset(4 * page, 1, 1, 256);
   assert(arena.Commit(0, 2 * page, 1, 0, copies, fills));          // A, last used at 1
   assert(arena.Commit(8 * page, 2 * page, 2, 0, copies, fills));   // B, last used at 2
   assert(arena.Lookup(0, page, a, 3));                       // A bound again at 3

@@ -91,7 +91,8 @@ constexpr Choice kFrameRate[] = {{"60 FPS (original)", "60"},
                                  {"120 FPS (experimental)", "120"},
                                  {"Unlocked (240 Hz ceiling)", "unlocked"}};
 constexpr Choice kResolution[] = {
-    {"1280x720 (original)", "1"}, {"2560x1440", "2"}, {"3840x2160", "3"}};
+    {"1280x720 (original)", "1"}, {"1920x1080", "1.5"}, {"2560x1440", "2"},
+    {"3840x2160", "3"}};
 constexpr Choice kFiltering[] = {{"Game default", "game"}, {"Off", "off"},
                                  {"2x", "2x"}, {"4x", "4x"}, {"8x", "8x"}, {"16x", "16x"}};
 constexpr Choice kPrecision[] = {{"High (accurate)", "high"}, {"Fast (less bandwidth)", "fast"}};
@@ -114,8 +115,8 @@ constexpr Option kDisplay[] = {
 constexpr Option kGraphics[] = {
     {"mgr_resolution_scale", "Internal rendering scale",
      "Requests a Vulkan resource rebuild; check the active scale and failure status. "
-     "Supported internal targets are 720p, 1440p and 2160p; exact internal 1080p is not "
-     "supported yet. Output image size is separate and can match the display or use 1080p.",
+     "Internal targets: 720p (original), 1080p (1.5x), 1440p and 2160p. Output image "
+     "size is separate and can match the display.",
      kResolution, false},
     {"mgr_texture_filtering", "Texture filtering",
      "Anisotropic filtering. Game default preserves the game's own requests.", kFiltering,
@@ -140,13 +141,12 @@ constexpr Option kControls[] = {
      kOnOff, false},
 };
 
-const char* ScaleLabel(int scale) {
-  switch (scale) {
-    case 0: return "UNAVAILABLE";
-    case 2: return "2560X1440";
-    case 3: return "3840X2160";
-    default: return "1280X720";
-  }
+const char* ScaleLabel(const std::string& scale) {
+  if (scale == "0") return "UNAVAILABLE";
+  if (scale == "1.5") return "1920X1080";
+  if (scale == "2") return "2560X1440";
+  if (scale == "3") return "3840X2160";
+  return "1280X720";
 }
 
 bool IsPendingRestart(const char* cvar, const std::string& requested) {
@@ -166,8 +166,7 @@ bool DrawOption(const Option& option) {
     std::string shown = selected->label;
     if (std::string_view(option.cvar) == "mgr_resolution_scale") {
       const auto status = MgrGetResolutionStatus();
-      const int requested = std::atoi(current.c_str());
-      const std::string state = requested == status.requested ? status.state : "requested";
+      const std::string state = current == status.requested ? status.state : "requested";
       shown += " - " + Uppercase(state) + " - ACTIVE: " + ScaleLabel(status.active);
       if (state == "failed" && !status.reason.empty()) shown += " - " + status.reason;
     } else if (std::string_view(option.cvar) == "mgr_render_target_precision") {
@@ -203,8 +202,7 @@ bool DrawOption(const Option& option) {
   }
   if (std::string_view(option.cvar) == "mgr_resolution_scale") {
     const auto status = MgrGetResolutionStatus();
-    const std::string state = std::atoi(current.c_str()) == status.requested
-                                  ? status.state : "requested";
+    const std::string state = current == status.requested ? status.state : "requested";
     ImGui::TextWrapped("%s - Active: %s", state.c_str(), ScaleLabel(status.active));
     if (state == "failed" && !status.reason.empty())
       ImGui::TextWrapped("%s", status.reason.c_str());

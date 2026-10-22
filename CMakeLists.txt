@@ -191,21 +191,47 @@ add_executable(mgr_scale_ratio_checks EXCLUDE_FROM_ALL tests/scale_ratio_test.cp
 target_include_directories(mgr_scale_ratio_checks PRIVATE
     "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
 target_compile_options(mgr_scale_ratio_checks PRIVATE -UNDEBUG)
+add_executable(mgr_scaled_texture_address_checks EXCLUDE_FROM_ALL
+    tests/scaled_texture_address_test.cpp)
+target_include_directories(mgr_scaled_texture_address_checks PRIVATE
+    "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
+target_compile_options(mgr_scaled_texture_address_checks PRIVATE -UNDEBUG)
 add_executable(mgr_scaled_viewport_checks EXCLUDE_FROM_ALL tests/scaled_viewport_test.cpp)
 target_include_directories(mgr_scaled_viewport_checks PRIVATE
     "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
 target_link_libraries(mgr_scaled_viewport_checks PRIVATE rex::runtime)
 target_compile_options(mgr_scaled_viewport_checks PRIVATE -UNDEBUG)
 
+# GPU check of the resolution-scaled resolve and texture load SPIR-V on MoltenVK
+# (Homebrew vulkan-headers and molten-vk); ctest reports it skipped without a
+# Vulkan device.
+find_path(MGR_VULKAN_INCLUDE_DIR vulkan/vulkan.h PATHS /opt/homebrew/include)
+if(MGR_VULKAN_INCLUDE_DIR)
+  add_executable(mgr_rational_shader_gpu_checks EXCLUDE_FROM_ALL tests/rational_shader_gpu_test.cpp)
+  target_include_directories(mgr_rational_shader_gpu_checks PRIVATE
+      "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include" "${MGR_VULKAN_INCLUDE_DIR}")
+  target_link_libraries(mgr_rational_shader_gpu_checks PRIVATE rex::runtime)
+  target_compile_options(mgr_rational_shader_gpu_checks PRIVATE -UNDEBUG)
+endif()
+
 # `ninja -C build mgr_tests && ctest --test-dir build` runs every host-only check.
 enable_testing()
 set(MGR_TEST_TARGETS mgr_resolve_arena_checks mgr_scale_ratio_checks mgr_scaled_viewport_checks
+    mgr_scaled_texture_address_checks
     mgr_timing_checks
     mgr_native_math_checks mgr_native_memory_checks)
+if(TARGET mgr_rational_shader_gpu_checks)
+  list(APPEND MGR_TEST_TARGETS mgr_rational_shader_gpu_checks)
+endif()
 add_custom_target(mgr_tests DEPENDS ${MGR_TEST_TARGETS})
 add_test(NAME resolve_arena COMMAND mgr_resolve_arena_checks)
 add_test(NAME scale_ratio COMMAND mgr_scale_ratio_checks)
 add_test(NAME scaled_viewport COMMAND mgr_scaled_viewport_checks)
+add_test(NAME scaled_texture_address COMMAND mgr_scaled_texture_address_checks)
+if(TARGET mgr_rational_shader_gpu_checks)
+  add_test(NAME rational_shader_gpu COMMAND mgr_rational_shader_gpu_checks)
+  set_tests_properties(rational_shader_gpu PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 foreach(_mode enabled disabled forced)
     add_test(NAME timing_${_mode} COMMAND mgr_timing_checks ${_mode})
 endforeach()

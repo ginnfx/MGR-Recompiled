@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <string>
 
 using rex::graphics::ScaleRange;
 using rex::graphics::ScaleRatio;
@@ -74,5 +75,67 @@ int main() {
   const auto full = ScaleRect(half3, half3, full_offset, full_extent);
   assert(full.offset[0] == 0 && full.extent[0] == 1920 && full.extent[1] == 1080);
 
-  std::cout << "scale ratio: integer equivalence, 3/2 mapping and range tiling tests passed\n";
+  // ScaleExact / ScaleArea: integer scales equal the old multiplications.
+  using rex::graphics::ScaleArea;
+  for (uint32_t s = 1; s <= 3; ++s) {
+    const ScaleRatio r = ScaleRatio::Integer(s);
+    for (uint32_t v = 0; v <= 16384; ++v) assert(r.ScaleExact(v) == v * s);
+    for (uint32_t t = 1; t <= 3; ++t)
+      assert(ScaleArea(r, ScaleRatio::Integer(t), 10u << 20) == uint64_t(10u << 20) * s * t);
+  }
+  // EDRAM / render-target geometry at 3/2 (step 5): every tile and pitch
+  // quantity the render-target cache scales is whole, for 32/64bpp and all
+  // MSAA modes, so the asserting ScaleExact never fires on these inputs.
+  for (uint32_t bpp64 = 0; bpp64 <= 1; ++bpp64) {
+    for (uint32_t msaa_x_log2 = 0; msaa_x_log2 <= 1; ++msaa_x_log2) {
+      const uint32_t tile_width = (80u >> bpp64) >> msaa_x_log2;  // 80/40/40/20
+      assert(half3.MapsExactly(tile_width));
+      for (uint32_t pitch_tiles = 1; pitch_tiles <= 16; ++pitch_tiles)
+        assert(half3.MapsExactly(pitch_tiles * tile_width));
+    }
+  }
+  for (uint32_t msaa_y_log2 = 0; msaa_y_log2 <= 1; ++msaa_y_log2) {
+    const uint32_t tile_height = 16u >> msaa_y_log2;
+    assert(half3.MapsExactly(tile_height));
+    for (uint32_t rows = 1; rows <= 160; ++rows) assert(half3.MapsExactly(rows * tile_height));
+  }
+  assert(half3.ScaleExact(80) == 120 && half3.ScaleExact(16) == 24);
+  assert(half3.ScaleExact(40) == 60 && half3.ScaleExact(20) == 30 && half3.ScaleExact(8) == 12);
+  assert(half3.ScaleExact(8192) == 12288);
+  // EDRAM buffer: 10 MiB x 9/4, one 120x24 tile = 2880 host samples.
+  assert(ScaleArea(half3, half3, 10u << 20) == 23592960);
+  assert(ScaleArea(half3, half3, 80 * 16) == 2880);
+  // Resolve and clear rectangles are 8-pixel aligned: exact at 3/2.
+  for (uint32_t v = 0; v <= 8192; v += 8) assert(half3.ScaleExact(v) == v / 2 * 3);
+
+  // Settings and status text: the mgr_resolution_scale values, TOML floats and
+  // the old integer values round-trip; anything unsupported is rejected.
+  {
+    using rex::graphics::FormatScaleRatio;
+    using rex::graphics::ParseScaleRatio;
+    struct Text {
+      const char* text;
+      ScaleRatio ratio;
+    };
+    const Text valid[] = {{"1", ScaleRatio::Integer(1)}, {"1.5", half3},
+                          {"2", ScaleRatio::Integer(2)}, {"3", ScaleRatio::Integer(3)},
+                          {"3/2", half3},                {"1.500000", half3},
+                          {"2.000000", ScaleRatio::Integer(2)}};
+    for (const Text& t : valid) {
+      ScaleRatio parsed{};
+      assert(ParseScaleRatio(t.text, parsed));
+      assert(parsed.num == t.ratio.num && parsed.den == t.ratio.den);
+    }
+    for (const char* bad : {"", "0", "4", "1.25", "2x", "abc", "-1", "1.5 "}) {
+      ScaleRatio parsed = ScaleRatio::Integer(2);
+      assert(!ParseScaleRatio(bad, parsed));
+    }
+    assert(FormatScaleRatio(half3) == "1.5");
+    for (uint32_t s = 1; s <= 3; ++s)
+      assert(FormatScaleRatio(ScaleRatio::Integer(s)) == std::to_string(s));
+    assert(ScaleRatio::Integer(3).RequireInteger("test") == 3);
+  }
+
+  std::cout << "scale ratio: integer equivalence, 3/2 mapping, range tiling, EDRAM geometry and "
+               "settings text tests passed\n";
 }

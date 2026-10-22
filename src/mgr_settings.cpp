@@ -35,13 +35,32 @@ REXCVAR_DEFINE_STRING(mgr_output_resolution, "source", "MGR/Display",
              (rex::graphics::video_mode_util::TryParseResolutionPreset(value, width, height) &&
               width >= 64 && height >= 64 && width <= 8192 && height <= 8192);
     });
-REXCVAR_DEFINE_INT32(mgr_resolution_scale, 1, "MGR/Graphics",
-                     "Internal resolution: 1 = 1280x720 (original), 2 = 2560x1440, "
-                     "3 = 3840x2160. Higher costs GPU time")
-    .range(1, 3);
-REXCVAR_DEFINE_INT32(mgr_resolution_active_scale, 0, "MGR/Graphics",
-                     "Active internal render scale managed by the Vulkan backend (0 = unavailable)")
-    .range(0, 3);
+namespace {
+// mgr_resolution_scale in its saved form ("1", "1.5", "2", "3"), also accepting
+// float spellings such as "1.500000" (an unquoted TOML float). Empty if
+// unsupported. Mirrors ParseScaleRatio in the patched SDK's scale_ratio.h,
+// which the installed SDK headers used here do not ship.
+std::string CanonicalResolutionScale(std::string_view value) {
+  const std::string text(value);
+  char* end = nullptr;
+  const double scale = std::strtod(text.c_str(), &end);
+  if (end == text.c_str() || *end != '\0') return {};
+  if (scale == 1.0) return "1";
+  if (scale == 1.5) return "1.5";
+  if (scale == 2.0) return "2";
+  if (scale == 3.0) return "3";
+  return {};
+}
+}  // namespace
+
+// A string so that 1.5 fits. Integer values saved by older builds load as is;
+// an unquoted TOML float arrives as "1.500000" and is normalized at startup.
+REXCVAR_DEFINE_STRING(mgr_resolution_scale, "1", "MGR/Graphics",
+                      "Internal resolution: 1 = 1280x720 (original), 1.5 = 1920x1080, "
+                      "2 = 2560x1440, 3 = 3840x2160. Higher costs GPU time")
+    .validator([](std::string_view value) { return !CanonicalResolutionScale(value).empty(); });
+REXCVAR_DEFINE_STRING(mgr_resolution_active_scale, "0", "MGR/Graphics",
+                      "Active internal render scale managed by the Vulkan backend (0 = unavailable)");
 REXCVAR_DEFINE_STRING(mgr_resolution_status, "0|requested|0|Waiting for Vulkan initialization",
                       "MGR/Graphics",
                       "Backend status snapshot: request|state|active scale|reason");
@@ -130,12 +149,18 @@ void ApplyFrameRate(std::string_view value) {
 
 void ApplyStartupOptions() {
   // A request is not evidence that Vulkan has created resources at this scale.
-  const std::string scale = std::to_string(REXCVAR_GET(mgr_resolution_scale));
+  std::string scale = CanonicalResolutionScale(REXCVAR_GET(mgr_resolution_scale));
+  if (scale.empty()) scale = "1";
+  if (scale != REXCVAR_GET(mgr_resolution_scale))
+    rex::cvar::SetFlagByName("mgr_resolution_scale", scale);
   rex::cvar::SetFlagByName("mgr_resolution_active_scale", "0");
   rex::cvar::SetFlagByName("mgr_resolution_status",
                          scale + "|requested|0|Waiting for Vulkan initialization");
-  SetCvar("draw_resolution_scale_x", scale);
-  SetCvar("draw_resolution_scale_y", scale);
+  // 1.5 is scale 3 over denominator 2 in the GPU cvars.
+  const bool three_halves = scale == "1.5";
+  SetCvar("draw_resolution_scale_x", three_halves ? "3" : scale);
+  SetCvar("draw_resolution_scale_y", three_halves ? "3" : scale);
+  SetCvar("draw_resolution_scale_denominator", three_halves ? "2" : "1");
 }
 }  // namespace
 
@@ -188,14 +213,12 @@ MgrResolutionStatus MgrGetResolutionStatus() {
   const auto second = first == std::string::npos ? first : snapshot.find('|', first + 1);
   const auto third = second == std::string::npos ? second : snapshot.find('|', second + 1);
   if (third == std::string::npos) return result;
-  result.requested = std::atoi(snapshot.substr(0, first).c_str());
+  result.requested = snapshot.substr(0, first);
   result.state = snapshot.substr(first + 1, second - first - 1);
-  result.active = std::atoi(snapshot.substr(second + 1, third - second - 1).c_str());
+  result.active = snapshot.substr(second + 1, third - second - 1);
   result.reason = snapshot.substr(third + 1);
   return result;
 }
-
-int MgrActiveResolutionScale() { return MgrGetResolutionStatus().active; }
 
 std::string MgrActiveRenderTargetPrecision() { return active_render_target_precision; }
 
@@ -211,7 +234,7 @@ void MgrSaveConfig(const std::filesystem::path& path) {
       "imgui_guest_paced", "mgr_resolution_status", "mgr_resolution_active_scale",
       // Derived from mgr_* settings by MgrApplySettings on every launch.
       "video_mode_refresh_rate", "anisotropic_override", "gamma_render_target_as_unorm16",
-      "draw_resolution_scale_x", "draw_resolution_scale_y"};
+      "draw_resolution_scale_x", "draw_resolution_scale_y", "draw_resolution_scale_denominator"};
   // Often passed on the command line (scripts/run.sh): the file keeps the line
   // the user wrote, if any, instead of this launch's value.
   static constexpr std::string_view kPerLaunch[] = {"log_file"};
