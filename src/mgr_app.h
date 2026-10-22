@@ -81,6 +81,17 @@ class MgrApp : public rex::ReXApp {
           });
         });
     MgrApplyOutputResolution(window());
+    // mgr_settings maps mgr_vsync to the allowed present mode; only a new
+    // swapchain picks it up, and a reconnect recreates it at the same size.
+    rex::cvar::RegisterChangeCallback(
+        "mgr_vsync", [this, alive, ui_context](std::string_view, std::string_view) {
+          if (alive.expired()) return;
+          ui_context->CallInUIThread([this, alive] {
+            if (alive.expired()) return;
+            auto* gs = runtime() ? runtime()->graphics_system() : nullptr;
+            if (auto* presenter = gs ? gs->presenter() : nullptr) presenter->OnSurfaceResizeFromUIThread();
+          });
+        });
     MgrGameOptionsInstall();
     MgrNativeOptionsConfigure(config_path_);
     // The retail Options lifecycle owns normal settings access. The legacy

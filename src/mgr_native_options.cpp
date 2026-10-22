@@ -36,8 +36,13 @@ constexpr uint32_t kTextVtable = 0x821CBF50;
 // at +860 animates toward the float target at +956 while +964 is set. Targets
 // are row * 44, plus 6 past each group header (rows 6 and 9).
 constexpr uint32_t kCursorNode = 860, kCursorTarget = 956, kCursorMoving = 964;
+// Group containers (one per OptionGroup) and the node Y that 8293F530 writes
+// (node+672+196, a rounded float).
+constexpr uint32_t kGroupContainers = 848, kNodeY = 868;
 constexpr float kCursorRowStep = 44.0f, kCursorGroupGap = 6.0f;
 constexpr int kDisplayFirstRow = 6, kSoundFirstRow = 9;
+// OptionGroup node ids for the two System slider bars (built by 82C44810).
+constexpr uint32_t kSliderSegmentIds = 136, kSliderSegments = 20;
 enum class Page { Categories, Retail, Graphics, MoreGraphics, Recompilation };
 
 uint8_t* Guest(uint8_t* base, uint32_t a) { return REX_RAW_ADDR(a); }
@@ -74,7 +79,7 @@ constexpr Choice kPrecision[] = {{"HIGH (ACCURATE)", "high"}, {"FAST (RESTART RE
 constexpr Choice kOutput[] = {{"MATCH GAME", "source"}, {"MATCH DISPLAY", "display"}, {"1920X1080 OUTPUT", "1920x1080"}, {"2560X1440 OUTPUT", "2560x1440"}};
 const Option kOptions[] = {
   {"mgr_resolution_scale", "INTERNAL RESOLUTION", "Changes internal rendering detail. Applies after the GPU rebuilds its resources.", kScale},
-  {"vsync", "VSYNC", "Synchronizes the guest retrace clock. High frame rate modes require this enabled.", kBool},
+  {"mgr_vsync", "VSYNC", "Syncs frames to the display refresh, preventing tearing. Frame rates above the refresh rate need it off.", kBool},
   {"mgr_frame_rate", "FRAME RATE", "60 FPS is the original timing. Higher rates are experimental.", kRate},
   {"vulkan_nonblocking_guest_present", "FRAME PACING", "Low latency avoids blocking the game while waiting for a display image.", kPacing},
   {"mgr_texture_filtering", "TEXTURE FILTERING", "Anisotropic filtering improves textures viewed at an angle.", kFilter},
@@ -107,6 +112,14 @@ struct Menu {
   int row = 0, category = 0;
   bool ready = false, dirty = false;
   uint32_t scratch = 0;
+  // Internal resolution chosen while Options is open, applied when it closes:
+  // the rebuild drops the paused game's GPU-only backdrop and takes seconds.
+  std::string pending_scale;
+  // Retail category view: the selected group's container is lifted into the
+  // first slot (raw float bits of its original Y saved), and the cursor targets
+  // are offset by the same amount.
+  uint32_t lifted_node = 0, lifted_y = 0;
+  float cursor_bias = 0;
   std::unordered_map<uint32_t, uint32_t> visibility;
   std::unordered_map<uint32_t, NativeText> text;
   std::filesystem::path config;
@@ -125,6 +138,8 @@ void Visible(uint8_t* base, uint32_t owner, uint32_t id, bool visible) {
 }
 void Restore(uint8_t* base) {
   for (const auto& [node, value] : menu.visibility) W32(base, node + 944, value);
+  if (menu.lifted_node) W32(base, menu.lifted_node + kNodeY, menu.lifted_y);
+  menu.lifted_node = 0; menu.cursor_bias = 0;
   for (auto& [_, t] : menu.text) {
     if (U32(base, t.widget + 20) != t.allocation) continue;
     W32(base, t.widget + 20, t.original_context);
@@ -260,7 +275,7 @@ float CursorY(int absolute_row) {
 // The retail page update reads these each frame (82C71DE4); custom pages skip
 // that update, so PlaceCursor repeats its positioning call.
 void MoveCursor(uint8_t* base, int absolute_row) {
-  W32(base, menu.object + kCursorTarget, std::bit_cast<uint32_t>(CursorY(absolute_row)));
+  W32(base, menu.object + kCursorTarget, std::bit_cast<uint32_t>(CursorY(absolute_row) - menu.cursor_bias));
   W32(base, menu.object + kCursorMoving, 1);
 }
 void PlaceCursor(PPCContext& ctx, uint8_t* base) {
@@ -277,13 +292,20 @@ std::span<const Option> Options() {
   if (menu.page == Page::Recompilation) return kRecompilation;
   return menu.page == Page::Graphics ? std::span(kOptions).first(5) : std::span(kOptions).subspan(5);
 }
-// mgr_settings keeps VSync on at 120 FPS and unlocked (guest vblank must stay
-// a real retrace), so the row is fixed there.
-bool VsyncFixedByFrameRate() { return rex::cvar::GetFlagByName("mgr_frame_rate") != "60"; }
+bool IsDeferred(const Option& option) { return std::string_view(option.key) == "mgr_resolution_scale"; }
+std::string RequestedScale() {
+  return menu.pending_scale.empty() ? rex::cvar::GetFlagByName("mgr_resolution_scale") : menu.pending_scale;
+}
+void ApplyPendingScale() {
+  if (menu.pending_scale.empty()) return;
+  if (rex::cvar::SetFlagByName("mgr_resolution_scale", menu.pending_scale)) {
+    menu.dirty = true;
+    std::fprintf(stderr, "[mgr-native-options] set mgr_resolution_scale=%s\n", menu.pending_scale.c_str());
+  }
+  menu.pending_scale.clear();
+}
 std::string Value(const Option& option) {
-  if (std::string_view(option.key) == "vsync" && VsyncFixedByFrameRate())
-    return "ON (SET BY FRAME RATE)";
-  const auto value = rex::cvar::GetFlagByName(option.key);
+  const auto value = IsDeferred(option) ? RequestedScale() : rex::cvar::GetFlagByName(option.key);
   for (const Choice& c : option.choices) if (value == c.value) return c.label;
   return value;
 }
@@ -305,7 +327,12 @@ void Labels(uint8_t* base) {
     Visible(base, group, U32(base, group + 88 + i * 4), !value.empty());
     if (!value.empty()) SetText(base, group, U32(base, group + 88 + i * 4), value);
     Visible(base, group, U32(base, group + 112 + i * 4), menu.page != Page::Categories && i < int(Options().size()));
-
+  }
+  // Retail System rows 4 and 5 are 0-10 sliders (82C4DE90 / 82C4DB40) with ten
+  // bar segments each at group+136..+212; custom rows are choices only.
+  for (uint32_t k = 0; k < kSliderSegments; ++k) {
+    const uint32_t id = U32(base, group + kSliderSegmentIds + k * 4);
+    if (id) Visible(base, group, id, false);
   }
   SetText(base, group, 5, menu.page == Page::Categories ? "OPTIONS" : menu.page == Page::Recompilation ? "RECOMPILATION" : "GRAPHICS", 8);
   SetText(base, group, 6, menu.page == Page::Categories ? "OPTIONS" : menu.page == Page::Recompilation ? "RECOMPILATION" : "GRAPHICS", 8);
@@ -319,12 +346,12 @@ void Labels(uint8_t* base) {
         if (scale == c.value) return c.label;
       return "UNAVAILABLE";
     };
-    wrapped = "Requested: " + Value(kOptions[0]) + ". Active: " + resolution(status.active) + ". " + status.state + ".";
+    if (!menu.pending_scale.empty())
+      wrapped = Value(kOptions[0]) + " applies when you close Options. Active: " + resolution(status.active) + ".";
+    else
+      wrapped = "Requested: " + Value(kOptions[0]) + ". Active: " + resolution(status.active) + ". " + status.state + ".";
     if (status.state == "failed") wrapped += " " + status.reason.substr(0, 55);
   }
-  if (menu.row < int(Options().size()) && menu.page != Page::Categories &&
-      std::string_view(Options()[menu.row].key) == "vsync" && VsyncFixedByFrameRate())
-    wrapped = "VSync stays on at 120 FPS and Unlocked. Set Frame Rate to 60 FPS to change it.";
   if (menu.page == Page::MoreGraphics && menu.row == 0 &&
       rex::cvar::GetFlagByName("mgr_render_target_precision") != MgrActiveRenderTargetPrecision())
     wrapped = "Restart the game to apply this rendering quality.";
@@ -365,9 +392,50 @@ void RetailPage(PPCContext& ctx, uint8_t* base, int category) {
     const int group = i < 6 ? 0 : i < 9 ? 1 : 2;
     Call(ctx, base, sub_82C40DD8, menu.object + kGroupOffsets[group], i, i == row);
   }
+  // Show only this category: hide the other groups and lift this one into the
+  // first group's slot. Restore() puts both back.
+  for (int k = 0; k < 3; ++k)
+    Visible(base, menu.object, U32(base, menu.object + kGroupContainers + k * 4), k == category);
+  const uint32_t container = Node(base, menu.object, U32(base, menu.object + kGroupContainers + category * 4));
+  if (category > 0 && container) {
+    menu.lifted_node = container; menu.lifted_y = U32(base, container + kNodeY);
+    menu.cursor_bias = CursorY(row);
+    W32(base, container + kNodeY,
+        std::bit_cast<uint32_t>(std::bit_cast<float>(menu.lifted_y) - menu.cursor_bias));
+  }
   Call(ctx, base, sub_82C4C6A0, menu.object, row);
   MoveCursor(base, row);
-  std::fprintf(stderr, "[mgr-native-options] retail category=%d row=%d\n", category, row);
+  PlaceCursor(ctx, base);
+  std::fprintf(stderr, "[mgr-native-options] retail category=%d row=%d lift=%.1f\n", category, row,
+               menu.cursor_bias);
+}
+// Retail up/down crosses into the neighbouring group at its first/last row;
+// wrap inside the shown category instead. In-group moves stay retail.
+bool RetailWrap(PPCContext& ctx, uint8_t* base, bool up, bool down) {
+  if (!up && !down) return false;
+  constexpr int kFirst[] = {0, kDisplayFirstRow, kSoundFirstRow}, kLast[] = {kDisplayFirstRow - 1, kSoundFirstRow - 1, 11};
+  const int row = int8_t(base[menu.object + 921]);
+  const int first = kFirst[menu.category], last = kLast[menu.category];
+  if (!((down && row == last) || (up && row == first))) return false;
+  const int next = down ? first : last;
+  const uint32_t group = menu.object + kGroupOffsets[menu.category];
+  Call(ctx, base, sub_82C40DD8, group, uint32_t(row), 0);
+  Call(ctx, base, sub_82C40DD8, group, uint32_t(next), 1);
+  base[menu.object + 921] = uint8_t(next); base[menu.object + 922] = 1;
+  MoveCursor(base, next);
+  PlaceCursor(ctx, base);
+  Call(ctx, base, sub_82C4C6A0, menu.object, uint32_t(next));
+  Call(ctx, base, sub_82C46620, U32(base, menu.object + 840));
+  Sound(ctx, base, 0x8218A538);
+  std::fprintf(stderr, "[mgr-native-options] retail wrap row=%d\n", next);
+  return true;
+}
+void FreeSession() {
+  auto* memory = REX_KERNEL_STATE()->memory();
+  for (auto& [_, t] : menu.text) if (t.allocation) memory->SystemHeapFree(t.allocation);
+  if (menu.scratch) memory->SystemHeapFree(menu.scratch);
+  menu.text.clear(); menu.visibility.clear(); menu.scratch = 0; menu.object = 0; menu.ready = false;
+  menu.lifted_node = 0; menu.cursor_bias = 0;
 }
 void Save() {
   if (menu.dirty) { MgrSaveConfig(menu.config); menu.dirty = false; }
@@ -386,21 +454,42 @@ void MgrNativeOptionsConfigure(const std::filesystem::path& config_path) { menu.
 
 void MgrNativeOptionsBegin(PPCContext&, uint8_t*, uint32_t object) {
   if (!Enabled()) return;
+  // A session that ended without the destructor hook leaves addresses that may
+  // now belong to other objects: release them without writing guest memory.
+  if (menu.object && menu.object != object) {
+    std::fprintf(stderr, "[mgr-native-options] dropping stale session %08X\n", menu.object);
+    FreeSession();
+  }
   menu.object = object; menu.ready = false; menu.dirty = false; menu.page = Page::Categories; menu.row = menu.category = 0;
+  menu.pending_scale.clear();
 }
 
 bool MgrNativeOptionsUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
-  if (!Enabled() || object != menu.object || base[object + 920] != 1) return false;
-  if (!menu.ready) { menu.ready = true; CustomPage(ctx, base, Page::Categories); return true; }
-  if (menu.page == Page::Retail) return false;
+  if (!Enabled() || object != menu.object) return false;
+  // Phase 0 is the retail fade-in. It only ramps alpha (never node+944 or the
+  // text contexts), so the custom page is installed before it is first drawn.
+  const uint8_t phase = base[object + 920];
+  if (!menu.ready) {
+    // The UI resource may still be loading on the first frames.
+    if (phase > 1 || !Node(base, object, U32(base, object + 848))) return false;
+    menu.ready = true;
+    CustomPage(ctx, base, Page::Categories);
+    PlaceCursor(ctx, base);
+    return phase == 1;
+  }
+  if (phase == 0) { Labels(base); return false; }  // retries text that was not ready yet
+  if (phase != 1) return false;
   const uint32_t tapped = U32(base, kInput + 4), repeat = U32(base, kInput + 12);
   if ((tapped || repeat) && std::getenv("MGR_OPTIONS_TRACE"))
     std::fprintf(stderr, "[mgr-native-input] tap=%08X repeat=%08X\n", tapped, repeat);
   const bool up = repeat & (0x8 | 0x40000), down = repeat & (0x4 | 0x80000);
+  if (menu.page == Page::Retail) return RetailWrap(ctx, base, up, down);
   const bool left = repeat & (0x1 | 0x10000), right = repeat & (0x2 | 0x20000);
   const bool confirm = tapped & 0x10, cancel = tapped & 0x20;
   if (cancel) {
-    if (menu.page == Page::Categories) { Restore(base); return false; }
+    // Retail B (82C40728(obj, 0), phase 4 -> 5) then fades out over this page;
+    // End() restores the retail text before the destructor runs.
+    if (menu.page == Page::Categories) return false;
     Save(); CustomPage(ctx, base, Page::Categories, menu.category); Sound(ctx, base, 0x8218A524); return true;
   }
   if (up || down) {
@@ -422,14 +511,17 @@ bool MgrNativeOptionsUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
     Sound(ctx, base, 0x8218A660);
   } else if (menu.page != Page::Categories && menu.row < int(Options().size()) && (left || right)) {
     const auto& option = Options()[menu.row];
-    const std::string current = rex::cvar::GetFlagByName(option.key);
-    if (std::string_view(option.key) == "vsync" && VsyncFixedByFrameRate()) {
-      Sound(ctx, base, 0x8218A524); return true;
-    }
+    const bool deferred = IsDeferred(option);
+    const std::string current = deferred ? RequestedScale() : rex::cvar::GetFlagByName(option.key);
     size_t i = 0;
     for (size_t n = 0; n < option.choices.size(); ++n) if (current == option.choices[n].value) i = n;
     const size_t next = (i + (right ? 1 : option.choices.size() - 1)) % option.choices.size();
-    if (rex::cvar::SetFlagByName(option.key, option.choices[next].value)) {
+    if (deferred) {
+      const std::string_view value = option.choices[next].value;
+      menu.pending_scale = value == rex::cvar::GetFlagByName(option.key) ? "" : std::string(value);
+      Sound(ctx, base, 0x8218A538);
+      std::fprintf(stderr, "[mgr-native-options] pending %s=%s\n", option.key, option.choices[next].value);
+    } else if (rex::cvar::SetFlagByName(option.key, option.choices[next].value)) {
       menu.dirty = true; Sound(ctx, base, 0x8218A538);
       std::fprintf(stderr, "[mgr-native-options] set %s=%s\n", option.key, option.choices[next].value);
     }
@@ -450,9 +542,6 @@ void MgrNativeOptionsAfterUpdate(PPCContext& ctx, uint8_t* base, uint32_t object
 
 void MgrNativeOptionsEnd(uint8_t* base, uint32_t object) {
   if (!Enabled() || object != menu.object) return;
-  Save(); Restore(base);
-  auto* memory = REX_KERNEL_STATE()->memory();
-  for (auto& [_, t] : menu.text) if (t.allocation) memory->SystemHeapFree(t.allocation);
-  if (menu.scratch) memory->SystemHeapFree(menu.scratch);
-  menu.text.clear(); menu.visibility.clear(); menu.scratch = 0; menu.object = 0; menu.ready = false;
+  ApplyPendingScale(); Save(); Restore(base);
+  FreeSession();
 }

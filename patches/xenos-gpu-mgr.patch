@@ -301,7 +301,7 @@ index d26cd4f..b6570ee 100644
    static const LoadShaderInfo load_shader_info_[kLoadShaderCount];
  
 diff --git a/include/rex/graphics/shared_memory.h b/include/rex/graphics/shared_memory.h
-index 4d85a2b..b2a03ec 100644
+index 4d85a2b..802aab5 100644
 --- a/include/rex/graphics/shared_memory.h
 +++ b/include/rex/graphics/shared_memory.h
 @@ -12,6 +12,7 @@
@@ -324,6 +324,29 @@ index 4d85a2b..b2a03ec 100644
    virtual bool UploadRanges(
        const std::vector<std::pair<uint32_t, uint32_t>>& upload_page_ranges) = 0;
  
+@@ -196,6 +202,9 @@ class SharedMemory {
+         WatchNode* node_first;
+         uint32_t page_first;
+         uint32_t page_last;
++        // Exact watched bytes, for GPU writes that know their exact range.
++        uint32_t byte_first;
++        uint32_t byte_last;
+       };
+       WatchRange* next_free;
+     };
+@@ -232,7 +241,11 @@ class SharedMemory {
+   WatchNode* watch_node_first_free_ = nullptr;
+   // Triggers the watches (global and per-range), removing triggered range
+   // watches.
+-  void FireWatches(uint32_t page_first, uint32_t page_last, bool invalidated_by_gpu);
++  // byte_first/byte_last, when narrower than the pages, limit per-range
++  // watches to those that overlap the written bytes (GPU writes only; CPU
++  // writes are only known at host page granularity).
++  void FireWatches(uint32_t page_first, uint32_t page_last, bool invalidated_by_gpu,
++                   uint32_t byte_first = 0, uint32_t byte_last = UINT32_MAX);
+   // Unlinks and frees the range and its nodes. Call this in the global critical
+   // region.
+   void UnlinkWatchRange(WatchRange* range);
 diff --git a/include/rex/graphics/util/draw.h b/include/rex/graphics/util/draw.h
 index 3da182d..8e23535 100644
 --- a/include/rex/graphics/util/draw.h
@@ -28177,10 +28200,73 @@ index 0000000..deec8f0
 +
 +#endif  // XENIA_UI_SHADERS_XESL_XESLI_
 diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
-index ec0df7c..6c1a567 100644
+index ec0df7c..51f6330 100644
 --- a/src/graphics/shared_memory.cpp
 +++ b/src/graphics/shared_memory.cpp
-@@ -343,45 +343,60 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+@@ -14,12 +14,17 @@
+ #include <utility>
+ 
+ #include <rex/assert.h>
++#include <rex/cvar.h>
+ #include <rex/bit.h>
+ #include <rex/dbg.h>
+ #include <rex/graphics/shared_memory.h>
+ #include <rex/math.h>
+ #include <rex/memory.h>
+ 
++REXCVAR_DEFINE_BOOL(mgr_exact_gpu_watch, true, "GPU",
++                    "Invalidate only textures overlapping the exact bytes a GPU write (resolve, "
++                    "memexport) touched, instead of whole host pages");
++
+ namespace rex::graphics {
+ 
+ SharedMemory::SharedMemory(memory::Memory& memory) : memory_(memory) {
+@@ -185,6 +190,8 @@ SharedMemory::WatchHandle SharedMemory::WatchMemoryRange(uint32_t start, uint32_
+   range->callback_argument = callback_argument;
+   range->page_first = watch_page_first;
+   range->page_last = watch_page_last;
++  range->byte_first = start;
++  range->byte_last = start + length - 1;
+ 
+   // Allocate and link the nodes.
+   WatchNode* node_previous = nullptr;
+@@ -223,7 +230,8 @@ void SharedMemory::UnwatchMemoryRange(WatchHandle handle) {
+   UnlinkWatchRange(reinterpret_cast<WatchRange*>(handle));
+ }
+ 
+-void SharedMemory::FireWatches(uint32_t page_first, uint32_t page_last, bool invalidated_by_gpu) {
++void SharedMemory::FireWatches(uint32_t page_first, uint32_t page_last, bool invalidated_by_gpu,
++                               uint32_t byte_first, uint32_t byte_last) {
+   uint32_t address_first = page_first << page_size_log2_;
+   uint32_t address_last = (page_last << page_size_log2_) + ((1 << page_size_log2_) - 1);
+   uint32_t bucket_first = address_first >> kWatchBucketSizeLog2;
+@@ -245,7 +253,8 @@ void SharedMemory::FireWatches(uint32_t page_first, uint32_t page_last, bool inv
+       // Store the next node now since when the callback is triggered, the links
+       // will be broken.
+       node = node->bucket_node_next;
+-      if (page_first <= range->page_last && page_last >= range->page_first) {
++      if (page_first <= range->page_last && page_last >= range->page_first &&
++          byte_first <= range->byte_last && byte_last >= range->byte_first) {
+         range->callback(global_lock, range->callback_context, range->callback_data,
+                         range->callback_argument, invalidated_by_gpu);
+         UnlinkWatchRange(range);
+@@ -264,8 +273,13 @@ void SharedMemory::RangeWrittenByGpu(uint32_t start, uint32_t length) {
+   uint32_t page_last = end >> page_size_log2_;
+ 
+   // Trigger modification callbacks so, for instance, resolved data is loaded to
+-  // the texture.
+-  FireWatches(page_first, page_last, true);
++  // the texture. With 16 KB host pages (Apple silicon) a page holds up to four
++  // 4 KB-aligned guest surfaces, so exact bytes avoid reloading neighbours.
++  if (REXCVAR_GET(mgr_exact_gpu_watch)) {
++    FireWatches(page_first, page_last, true, start, end);
++  } else {
++    FireWatches(page_first, page_last, true);
++  }
+ 
+   // Mark the range as valid (so pages are not reuploaded until modified by the
+   // CPU) and watch it so the CPU can reuse it and this will be caught.
+@@ -343,45 +357,60 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
    }
  
    // Some texture or buffer is empty, for example - safe to draw in this case.
@@ -28237,14 +28323,12 @@ index ec0df7c..6c1a567 100644
 +      uint32_t length = ranges[i].second;
 +      if (!length) {
 +        continue;
-       }
--    } else {
--      merged_ranges[++merged_write] = range_current;
++      }
 +      if (start > kBufferSize || (kBufferSize - start) < length) {
 +        return false;
 +      }
 +      merged_range_storage.emplace_back(start, length);
-     }
++    }
 +    if (merged_range_storage.empty()) {
 +      return true;
 +    }
@@ -28263,8 +28347,10 @@ index ec0df7c..6c1a567 100644
 +        }
 +      } else {
 +        merged_range_storage[++merged_write] = range_current;
-+      }
-+    }
+       }
+-    } else {
+-      merged_ranges[++merged_write] = range_current;
+     }
 +    merged_range_storage.resize(merged_write + 1);
 +    merged_ranges = merged_range_storage;
    }
@@ -28274,7 +28360,7 @@ index ec0df7c..6c1a567 100644
  
    for (const std::pair<uint32_t, uint32_t>& range : merged_ranges) {
      if (!EnsureHostGpuMemoryAllocated(range.first, range.second)) {
-@@ -456,16 +471,13 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
+@@ -456,16 +485,13 @@ bool SharedMemory::RequestRanges(const std::pair<uint32_t, uint32_t>* ranges, si
    }
  
    COUNT_profile_set("gpu/shared_memory/request_ranges_count", uint32_t(count));
@@ -32740,7 +32826,7 @@ index ecbd940..1f161db 100644
  
    for (size_t i = 0; i < kLoadShaderCount; ++i) {
 diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
-index 3d2c378..26a2c01 100644
+index 3d2c378..8c5495d 100644
 --- a/src/input/mnk/mnk_input_driver.cpp
 +++ b/src/input/mnk/mnk_input_driver.cpp
 @@ -18,6 +18,10 @@
@@ -32754,7 +32840,17 @@ index 3d2c378..26a2c01 100644
  #include <cmath>
  #include <cstdlib>
  #include <cstring>
-@@ -77,9 +81,8 @@ constexpr size_t kMaxQueuedKeystrokes = 256;
+@@ -58,6 +62,9 @@ REXCVAR_DEFINE_STRING(keybind_back, "Z,Tab", "Input/Keybinds/Controller", "Back
+ REXCVAR_DEFINE_STRING(keybind_start, "X,Return", "Input/Keybinds/Controller", "Start button");
+ REXCVAR_DEFINE_STRING(keybind_guide, "", "Input/Keybinds/Controller", "Guide button");
+ 
++REXCVAR_DEFINE_BOOL(mnk_menu_navigation, false, "Input",
++                    "Session state set by the title while a menu owns input: arrow keys act "
++                    "as the D-pad instead of the right stick");
+ REXCVAR_DEFINE_BOOL(mnk_passthrough, false, "Input",
+                     "Surface raw keystrokes to the title instead of emulating a pad, for "
+                     "titles that read a USB keyboard. Enables the device on its own");
+@@ -77,9 +84,8 @@ constexpr size_t kMaxQueuedKeystrokes = 256;
  // Bind values are a comma-separated list of alternatives, each optionally
  // carrying modifier prefixes: "Q,I" or "Shift+W". Modifier matching is exact,
  // so "Up" stays silent while Shift is held and "Shift+Up" stays silent without
@@ -32766,7 +32862,7 @@ index 3d2c378..26a2c01 100644
  constexpr uint8_t kModShift = 1u << 0;
  constexpr uint8_t kModCtrl = 1u << 1;
  constexpr uint8_t kModAlt = 1u << 2;
-@@ -131,19 +134,6 @@ std::string_view TrimSpaces(std::string_view s) {
+@@ -131,19 +137,6 @@ std::string_view TrimSpaces(std::string_view s) {
    return s;
  }
  
@@ -32786,7 +32882,7 @@ index 3d2c378..26a2c01 100644
  std::atomic<bool> mouse_look_active{true};
  
  // ui::VirtualKey follows Windows VK_ numbering; the guest wants USB HID usage
-@@ -262,39 +252,104 @@ uint8_t VirtualKeyToHIDUsage(rex::ui::VirtualKey vk_enum) {
+@@ -262,39 +255,104 @@ uint8_t VirtualKeyToHIDUsage(rex::ui::VirtualKey vk_enum) {
  
  // Sticks and triggers are included: XInput reports those as directional pad
  // keys, which is what menu navigation reads.
@@ -32847,7 +32943,35 @@ index 3d2c378..26a2c01 100644
 +  bool mode = false, passthrough = false, mouse = false;
 +  double sensitivity = 1;
 +};
-+
+ 
+-// Rebuilt per call because the cvars are live-editable.
+-std::array<PadBind, 24> PadBinds() {
+-  return {{
+-      {REXCVAR_GET(keybind_a), VirtualKey::kXInputPadA},
+-      {REXCVAR_GET(keybind_b), VirtualKey::kXInputPadB},
+-      {REXCVAR_GET(keybind_x), VirtualKey::kXInputPadX},
+-      {REXCVAR_GET(keybind_y), VirtualKey::kXInputPadY},
+-      {REXCVAR_GET(keybind_left_shoulder), VirtualKey::kXInputPadLShoulder},
+-      {REXCVAR_GET(keybind_right_shoulder), VirtualKey::kXInputPadRShoulder},
+-      {REXCVAR_GET(keybind_left_trigger), VirtualKey::kXInputPadLTrigger},
+-      {REXCVAR_GET(keybind_right_trigger), VirtualKey::kXInputPadRTrigger},
+-      {REXCVAR_GET(keybind_lstick_press), VirtualKey::kXInputPadLThumbPress},
+-      {REXCVAR_GET(keybind_rstick_press), VirtualKey::kXInputPadRThumbPress},
+-      {REXCVAR_GET(keybind_back), VirtualKey::kXInputPadBack},
+-      {REXCVAR_GET(keybind_start), VirtualKey::kXInputPadStart},
+-      {REXCVAR_GET(keybind_dpad_up), VirtualKey::kXInputPadDpadUp},
+-      {REXCVAR_GET(keybind_dpad_down), VirtualKey::kXInputPadDpadDown},
+-      {REXCVAR_GET(keybind_dpad_left), VirtualKey::kXInputPadDpadLeft},
+-      {REXCVAR_GET(keybind_dpad_right), VirtualKey::kXInputPadDpadRight},
+-      {REXCVAR_GET(keybind_lstick_up), VirtualKey::kXInputPadLThumbUp},
+-      {REXCVAR_GET(keybind_lstick_down), VirtualKey::kXInputPadLThumbDown},
+-      {REXCVAR_GET(keybind_lstick_left), VirtualKey::kXInputPadLThumbLeft},
+-      {REXCVAR_GET(keybind_lstick_right), VirtualKey::kXInputPadLThumbRight},
+-      {REXCVAR_GET(keybind_rstick_up), VirtualKey::kXInputPadRThumbUp},
+-      {REXCVAR_GET(keybind_rstick_down), VirtualKey::kXInputPadRThumbDown},
+-      {REXCVAR_GET(keybind_rstick_left), VirtualKey::kXInputPadRThumbLeft},
+-      {REXCVAR_GET(keybind_rstick_right), VirtualKey::kXInputPadRThumbRight},
+-  }};
 +const InputBindings& CurrentBindings() {
 +  // Input polling and UI events may run on different threads. Each reader owns
 +  // a parsed snapshot; cvar strings are copied under the registry lock only
@@ -32884,35 +33008,7 @@ index 3d2c378..26a2c01 100644
 +  cache.generation = generation;
 +  return cache;
 +}
- 
--// Rebuilt per call because the cvars are live-editable.
--std::array<PadBind, 24> PadBinds() {
--  return {{
--      {REXCVAR_GET(keybind_a), VirtualKey::kXInputPadA},
--      {REXCVAR_GET(keybind_b), VirtualKey::kXInputPadB},
--      {REXCVAR_GET(keybind_x), VirtualKey::kXInputPadX},
--      {REXCVAR_GET(keybind_y), VirtualKey::kXInputPadY},
--      {REXCVAR_GET(keybind_left_shoulder), VirtualKey::kXInputPadLShoulder},
--      {REXCVAR_GET(keybind_right_shoulder), VirtualKey::kXInputPadRShoulder},
--      {REXCVAR_GET(keybind_left_trigger), VirtualKey::kXInputPadLTrigger},
--      {REXCVAR_GET(keybind_right_trigger), VirtualKey::kXInputPadRTrigger},
--      {REXCVAR_GET(keybind_lstick_press), VirtualKey::kXInputPadLThumbPress},
--      {REXCVAR_GET(keybind_rstick_press), VirtualKey::kXInputPadRThumbPress},
--      {REXCVAR_GET(keybind_back), VirtualKey::kXInputPadBack},
--      {REXCVAR_GET(keybind_start), VirtualKey::kXInputPadStart},
--      {REXCVAR_GET(keybind_dpad_up), VirtualKey::kXInputPadDpadUp},
--      {REXCVAR_GET(keybind_dpad_down), VirtualKey::kXInputPadDpadDown},
--      {REXCVAR_GET(keybind_dpad_left), VirtualKey::kXInputPadDpadLeft},
--      {REXCVAR_GET(keybind_dpad_right), VirtualKey::kXInputPadDpadRight},
--      {REXCVAR_GET(keybind_lstick_up), VirtualKey::kXInputPadLThumbUp},
--      {REXCVAR_GET(keybind_lstick_down), VirtualKey::kXInputPadLThumbDown},
--      {REXCVAR_GET(keybind_lstick_left), VirtualKey::kXInputPadLThumbLeft},
--      {REXCVAR_GET(keybind_lstick_right), VirtualKey::kXInputPadLThumbRight},
--      {REXCVAR_GET(keybind_rstick_up), VirtualKey::kXInputPadRThumbUp},
--      {REXCVAR_GET(keybind_rstick_down), VirtualKey::kXInputPadRThumbDown},
--      {REXCVAR_GET(keybind_rstick_left), VirtualKey::kXInputPadRThumbLeft},
--      {REXCVAR_GET(keybind_rstick_right), VirtualKey::kXInputPadRThumbRight},
--  }};
++
 +bool IsBindPressed(const bool (&key_down)[256], const PadBind& bind, uint8_t modifiers) {
 +  for (const auto& chord : bind.keys)
 +    if (chord.modifiers == modifiers && key_down[chord.key]) return true;
@@ -32920,7 +33016,7 @@ index 3d2c378..26a2c01 100644
  }
  
  }  // namespace
-@@ -308,7 +363,7 @@ bool IsMouseLookActive() {
+@@ -308,7 +366,7 @@ bool IsMouseLookActive() {
  }
  
  MnkInputDriver::MnkInputDriver(rex::ui::Window* window, size_t window_z_order)
@@ -32929,7 +33025,7 @@ index 3d2c378..26a2c01 100644
  
  MnkInputDriver::~MnkInputDriver() {
    // Detach handled by OnClosing; if window outlives the driver, clean up here.
-@@ -355,32 +410,11 @@ void MnkInputDriver::DetachFromWindow() {
+@@ -355,32 +413,11 @@ void MnkInputDriver::DetachFromWindow() {
  }
  
  bool MnkInputDriver::IsEnabled() const {
@@ -32965,7 +33061,7 @@ index 3d2c378..26a2c01 100644
  
  void MnkInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
    // Disabled means no device at all, so it never occupies a guest user slot.
-@@ -435,9 +469,10 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+@@ -435,9 +472,10 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
      return X_ERROR_DEVICE_NOT_CONNECTED;
    }
  
@@ -32977,7 +33073,7 @@ index 3d2c378..26a2c01 100644
                            has_focus_ && is_active());
  
    if (!is_active() || !has_focus_) {
-@@ -450,65 +485,66 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+@@ -450,65 +488,76 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
  
    std::lock_guard lock(state_mutex_);
  
@@ -33028,6 +33124,16 @@ index 3d2c378..26a2c01 100644
 -  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_right)))
 +  if (IsBindPressed(key_down_, bindings.binds[15], modifiers))
      buttons |= X_INPUT_GAMEPAD_DPAD_RIGHT;
++  // In menus the arrows navigate; gameplay keeps their right-stick binding.
++  const bool menu_navigation = REXCVAR_GET(mnk_menu_navigation);
++  if (menu_navigation && !modifiers) {
++    using rex::ui::VirtualKey;
++    if (key_down_[static_cast<uint16_t>(VirtualKey::kUp)]) buttons |= X_INPUT_GAMEPAD_DPAD_UP;
++    if (key_down_[static_cast<uint16_t>(VirtualKey::kDown)]) buttons |= X_INPUT_GAMEPAD_DPAD_DOWN;
++    if (key_down_[static_cast<uint16_t>(VirtualKey::kLeft)]) buttons |= X_INPUT_GAMEPAD_DPAD_LEFT;
++    if (key_down_[static_cast<uint16_t>(VirtualKey::kRight)])
++      buttons |= X_INPUT_GAMEPAD_DPAD_RIGHT;
++  }
  
 -  uint8_t lt = IsBindPressed(key_down_, REXCVAR_GET(keybind_left_trigger)) ? 0xFF : 0;
 -  uint8_t rt = IsBindPressed(key_down_, REXCVAR_GET(keybind_right_trigger)) ? 0xFF : 0;
@@ -33052,16 +33158,16 @@ index 3d2c378..26a2c01 100644
    int32_t rx = 0;
    int32_t ry = 0;
 -  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_left)))
-+  if (IsBindPressed(key_down_, bindings.binds[22], modifiers))
++  if (!menu_navigation && IsBindPressed(key_down_, bindings.binds[22], modifiers))
      rx -= INT16_MAX;
 -  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_right)))
-+  if (IsBindPressed(key_down_, bindings.binds[23], modifiers))
++  if (!menu_navigation && IsBindPressed(key_down_, bindings.binds[23], modifiers))
      rx += INT16_MAX;
 -  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_up)))
-+  if (IsBindPressed(key_down_, bindings.binds[20], modifiers))
++  if (!menu_navigation && IsBindPressed(key_down_, bindings.binds[20], modifiers))
      ry += INT16_MAX;
 -  if (IsBindPressed(key_down_, REXCVAR_GET(keybind_rstick_down)))
-+  if (IsBindPressed(key_down_, bindings.binds[21], modifiers))
++  if (!menu_navigation && IsBindPressed(key_down_, bindings.binds[21], modifiers))
      ry -= INT16_MAX;
  
 -  if (REXCVAR_GET(mnk_mouse) && IsMouseLookActive()) {
@@ -33071,7 +33177,7 @@ index 3d2c378..26a2c01 100644
      constexpr double kBaseScale = 200.0;
      rx += static_cast<int32_t>(double(mouse_dx_) * sensitivity * kBaseScale);
      ry += static_cast<int32_t>(double(-mouse_dy_) * sensitivity * kBaseScale);
-@@ -605,10 +641,11 @@ void MnkInputDriver::EnqueueRawKeystroke(const rex::ui::KeyEvent& e, bool down)
+@@ -605,10 +654,11 @@ void MnkInputDriver::EnqueueRawKeystroke(const rex::ui::KeyEvent& e, bool down)
  }
  
  void MnkInputDriver::RefreshBoundKeystrokesLocked() {
@@ -33085,7 +33191,7 @@ index 3d2c378..26a2c01 100644
        pressed |= uint32_t(1) << i;
      }
    }
-@@ -622,7 +659,7 @@ void MnkInputDriver::RefreshBoundKeystrokesLocked() {
+@@ -622,7 +672,7 @@ void MnkInputDriver::RefreshBoundKeystrokesLocked() {
    }
    for (size_t i = 0; i < binds.size(); i++) {
      const uint32_t bit = uint32_t(1) << i;
@@ -33094,7 +33200,7 @@ index 3d2c378..26a2c01 100644
        EnqueueKeystroke(static_cast<uint16_t>(binds[i].pad_key), (pressed & bit) != 0);
      }
    }
-@@ -770,6 +807,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
+@@ -770,6 +820,12 @@ void MnkInputDriver::OnMouseDown(rex::ui::MouseEvent& e) {
      case rex::ui::MouseEvent::Button::kMiddle:
        SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), true);
        break;
@@ -33107,7 +33213,7 @@ index 3d2c378..26a2c01 100644
      default:
        break;
    }
-@@ -790,6 +833,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
+@@ -790,6 +846,12 @@ void MnkInputDriver::OnMouseUp(rex::ui::MouseEvent& e) {
      case rex::ui::MouseEvent::Button::kMiddle:
        SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), false);
        break;

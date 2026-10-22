@@ -26,6 +26,12 @@ REXCVAR_DEFINE_STRING(mgr_frame_rate, "60", "MGR/Display",
                       "Frame rate: 60 (original), 120 or unlocked (fractional gameplay "
                       "timing on a 120/240 Hz guest refresh). Applies immediately")
     .allowed({"60", "120", "unlocked"});
+// The SDK's `vsync` cvar is the guest retrace clock, not display sync: the
+// presenter picks IMMEDIATE (tearing) whenever it is allowed. This is the real
+// display option; it maps to the swapchain present mode (FIFO when on).
+REXCVAR_DEFINE_BOOL(mgr_vsync, true, "MGR/Display",
+                    "Display VSync: present in step with the display refresh (no tearing). "
+                    "Off allows tearing for lower latency. Applies immediately");
 REXCVAR_DEFINE_STRING(mgr_output_resolution, "source", "MGR/Display",
                       "Live output image size: source, display (match window/display pixels), "
                       "or WIDTHxHEIGHT. Internal rendering scale is separate")
@@ -114,30 +120,29 @@ void ApplyPrecision(std::string_view value) {
   SetCvar("gamma_render_target_as_unorm16", value == "fast" ? "false" : "true");
 }
 
+// MoltenVK offers only FIFO and IMMEDIATE; the presenter reads this cvar when it
+// creates a swapchain (MgrApp recreates it on change).
+void ApplyDisplaySync(bool on) {
+  SetCvar("vulkan_allow_present_mode_immediate", on ? "false" : "true");
+}
+
 // The guest vblank worker and the timing hooks both read their inputs live.
 void ApplyFrameRate(std::string_view value) {
   static bool overrides_active = false;
   static std::string saved_vsync;
-  static std::string saved_immediate;
   const bool unlocked = value == "unlocked";
   const uint32_t hz = unlocked ? kUnlockedRefreshHz : value == "120" ? 120 : 60;
   SetCvar("video_mode_refresh_rate", std::to_string(hz));
   if (hz != 60) {
     if (!overrides_active) {
       saved_vsync = rex::cvar::GetFlagByName("vsync");
-      saved_immediate = rex::cvar::GetFlagByName("vulkan_allow_present_mode_immediate");
       overrides_active = true;
     }
     SetCvar("vsync", "true");  // guest vblank stays a real retrace signal
-    SetCvar("vulkan_allow_present_mode_immediate", "true");
   } else if (overrides_active) {
     // Do not overwrite a setting the user changed independently in F4.
     if (!saved_vsync.empty() && rex::cvar::GetFlagByName("vsync") == "true") {
       SetCvar("vsync", saved_vsync);
-    }
-    if (!saved_immediate.empty() &&
-        rex::cvar::GetFlagByName("vulkan_allow_present_mode_immediate") == "true") {
-      SetCvar("vulkan_allow_present_mode_immediate", saved_immediate);
     }
     overrides_active = false;
   }
@@ -192,12 +197,15 @@ void MgrApplySettings() {
   active_render_target_precision = REXCVAR_GET(mgr_render_target_precision);
   MgrApplyOutputResolution(nullptr);
   ApplyFrameRate(REXCVAR_GET(mgr_frame_rate));
+  ApplyDisplaySync(REXCVAR_GET(mgr_vsync));
   ApplyFiltering(REXCVAR_GET(mgr_texture_filtering));
   ApplyPrecision(REXCVAR_GET(mgr_render_target_precision));
   // Startup mirroring is not a user change awaiting a restart.
   rex::cvar::ClearPendingRestartFlags();
   rex::cvar::RegisterChangeCallback(
       "mgr_frame_rate", [](std::string_view, std::string_view value) { ApplyFrameRate(value); });
+  rex::cvar::RegisterChangeCallback(
+      "mgr_vsync", [](std::string_view, std::string_view value) { ApplyDisplaySync(value == "true"); });
   rex::cvar::RegisterChangeCallback(
       "mgr_texture_filtering", [](std::string_view, std::string_view value) { ApplyFiltering(value); });
   rex::cvar::RegisterChangeCallback(
@@ -234,7 +242,7 @@ void MgrSaveConfig(const std::filesystem::path& path) {
       "imgui_guest_paced", "mnk_menu_navigation", "mgr_resolution_status",
       "mgr_resolution_active_scale",
       // Derived from mgr_* settings by MgrApplySettings on every launch.
-      "video_mode_refresh_rate", "anisotropic_override", "gamma_render_target_as_unorm16",
+      "video_mode_refresh_rate", "vulkan_allow_present_mode_immediate", "anisotropic_override", "gamma_render_target_as_unorm16",
       "draw_resolution_scale_x", "draw_resolution_scale_y", "draw_resolution_scale_denominator"};
   // Often passed on the command line (scripts/run.sh): the file keeps the line
   // the user wrote, if any, instead of this launch's value.
