@@ -2,6 +2,8 @@
 
 Sources: (a) any aligned data word pointing into a gap, (b) lis rX,hi + addi/ori rY,rX,lo
 pairs in code that build a gap address. A gap target must start at a non-zero word.
+A lis/addi address that feeds lwzx + bctr is a switch jump table (data inside its
+function), never an entry point, so it is skipped.
 
 usage: find_gap_targets.py image.bin extents.txt
 """
@@ -12,6 +14,8 @@ from bisect import bisect_right
 IMAGE_BASE = 0x82000000
 CODE_START, CODE_END = 0x82270000, 0x831FD75C
 LIS_WINDOW = 8  # instructions after lis to look for the low half
+TABLE_WINDOW = 12  # instructions after the low half to look for lwzx ... bctr
+BCTR = 0x4E800420
 
 
 def load_extents(path):
@@ -24,6 +28,15 @@ def in_gap(starts, ext, p):
     return i < 0 or not (ext[i][0] <= p < ext[i][1])
 
 
+def is_lwzx_from(w, reg):
+    return w >> 26 == 31 and (w >> 1) & 0x3FF == 23 and reg in ((w >> 16) & 0x1F, (w >> 11) & 0x1F)
+
+
+def feeds_jump_table(words, reg):
+    loads = [i for i, w in enumerate(words) if is_lwzx_from(w, reg)]
+    return bool(loads) and BCTR in words[loads[0] + 1 :]
+
+
 def code_built_addresses(img):
     n = (CODE_END - CODE_START) // 4
     words = struct.unpack_from(f">{n}I", img, CODE_START - IMAGE_BASE)
@@ -31,10 +44,13 @@ def code_built_addresses(img):
         if w >> 26 != 15 or (w >> 16) & 0x1F != 0:  # addis rD,0,imm == lis
             continue
         rd, hi = (w >> 21) & 0x1F, w & 0xFFFF
-        for w2 in words[i + 1 : i + 1 + LIS_WINDOW]:
+        for j in range(i + 1, min(i + 1 + LIS_WINDOW, n)):
+            w2 = words[j]
             op, ra = w2 >> 26, (w2 >> 16) & 0x1F
             if ra != rd or op not in (14, 24):  # addi / ori
                 continue
+            if op == 14 and feeds_jump_table(words[j + 1 : j + 1 + TABLE_WINDOW], (w2 >> 21) & 0x1F):
+                break
             lo = w2 & 0xFFFF
             if op == 14 and lo & 0x8000:
                 lo -= 0x10000
