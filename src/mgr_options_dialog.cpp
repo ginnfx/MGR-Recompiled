@@ -126,6 +126,9 @@ constexpr Option kGraphics[] = {
      kPrecision, true},
     {"mgr_film_grain", "Film grain", "The noise layer of the final post-process filter.", kOnOff,
      false},
+    {"mgr_bloom", "Bloom glow",
+     "The glare blur around lights and effects. Off skips about 19 small passes and 12 "
+     "resolves per frame for a flatter image.", kOnOff, false},
 };
 constexpr Option kGame[] = {
     {"mgr_skip_intro_logos", "Skip intro logos",

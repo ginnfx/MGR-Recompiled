@@ -238,6 +238,8 @@ void MgrSaveConfig(const std::filesystem::path& path) {
   // Often passed on the command line (scripts/run.sh): the file keeps the line
   // the user wrote, if any, instead of this launch's value.
   static constexpr std::string_view kPerLaunch[] = {"log_file"};
+  // Experiments (mgr_exp_*) are opt-in per launch and never persisted.
+  static constexpr std::string_view kExperimentPrefix = "mgr_exp_";
   const auto listed = [](const auto& keys, std::string_view key) {
     return std::find(std::begin(keys), std::end(keys), key) != std::end(keys);
   };
@@ -252,7 +254,7 @@ void MgrSaveConfig(const std::filesystem::path& path) {
   std::ostringstream kept;
   for (std::string line; std::getline(in, line);) {
     const std::string_view key = ConfigKey(line);
-    if (listed(kNeverSaved, key)) continue;
+    if (listed(kNeverSaved, key) || key.starts_with(kExperimentPrefix)) continue;
     if (listed(kPerLaunch, key)) {
       const auto user = std::find_if(user_lines.begin(), user_lines.end(),
                                      [&](const std::string& u) { return ConfigKey(u) == key; });

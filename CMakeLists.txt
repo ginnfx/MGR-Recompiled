@@ -24,6 +24,7 @@ set(MGR_SOURCES
     src/mgr_prompt_device.cpp
     src/mgr_settings.cpp
     src/mgr_qol.cpp
+    src/mgr_postfx.cpp
     src/mgr_d3d_trace.cpp
     src/mgr_options_dialog.cpp
     src/mgr_game_options.cpp
@@ -201,6 +202,9 @@ target_include_directories(mgr_scaled_viewport_checks PRIVATE
     "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
 target_link_libraries(mgr_scaled_viewport_checks PRIVATE rex::runtime)
 target_compile_options(mgr_scaled_viewport_checks PRIVATE -UNDEBUG)
+add_executable(mgr_ot_key_checks EXCLUDE_FROM_ALL tests/ot_key_test.cpp)
+target_include_directories(mgr_ot_key_checks PRIVATE src)
+target_compile_options(mgr_ot_key_checks PRIVATE -UNDEBUG)
 
 # GPU check of the resolution-scaled resolve and texture load SPIR-V on MoltenVK
 # (Homebrew vulkan-headers and molten-vk); ctest reports it skipped without a
@@ -218,7 +222,7 @@ endif()
 enable_testing()
 set(MGR_TEST_TARGETS mgr_resolve_arena_checks mgr_scale_ratio_checks mgr_scaled_viewport_checks
     mgr_scaled_texture_address_checks
-    mgr_timing_checks
+    mgr_ot_key_checks mgr_timing_checks
     mgr_native_math_checks mgr_native_memory_checks)
 if(TARGET mgr_rational_shader_gpu_checks)
   list(APPEND MGR_TEST_TARGETS mgr_rational_shader_gpu_checks)
@@ -232,6 +236,7 @@ if(TARGET mgr_rational_shader_gpu_checks)
   add_test(NAME rational_shader_gpu COMMAND mgr_rational_shader_gpu_checks)
   set_tests_properties(rational_shader_gpu PROPERTIES SKIP_RETURN_CODE 77)
 endif()
+add_test(NAME ot_key COMMAND mgr_ot_key_checks)
 foreach(_mode enabled disabled forced)
     add_test(NAME timing_${_mode} COMMAND mgr_timing_checks ${_mode})
 endforeach()

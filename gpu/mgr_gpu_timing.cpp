@@ -112,6 +112,7 @@ uint64_t GpuTimer::TicksToNs(uint64_t ticks) const {
 void GpuTimer::BeginCommandBuffer(VkCommandBuffer command_buffer, uint64_t submission) {
   recording_slot_ = UINT32_MAX;
   recording_submission_ = submission;
+  effect_tag_ = 0;  // work before the first tagged draw is reported untagged
   // Zones of a command buffer that was never ended (failed submission).
   zone_queries_in_use_ -= uint32_t(recording_zones_.size() * 2);
   recording_zones_.clear();
@@ -151,7 +152,8 @@ void GpuTimer::ZoneBegin(VkCommandBuffer command_buffer, ZoneKind kind, const vo
   zone_queries_in_use_ += 2;
   cmd_reset_query_pool_(command_buffer, zone_pool_, query, 2);
   cmd_write_timestamp_(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, zone_pool_, query);
-  recording_zones_.push_back({kind, site, a, b, 0, query});
+  recording_zones_.push_back({kind, site, a, b, 0, query, effect_tag_});
+  zone_tag_count_ = 0;
   zone_open_ = true;
 }
 
@@ -160,6 +162,10 @@ void GpuTimer::ZoneEnd(VkCommandBuffer command_buffer, uint32_t draws) {
   zone_open_ = false;
   Zone& zone = recording_zones_.back();
   zone.draws = draws;
+  const auto dominant = std::max_element(
+      zone_tags_.begin(), zone_tags_.begin() + zone_tag_count_,
+      [](const ZoneTagDraws& x, const ZoneTagDraws& y) { return x.draws < y.draws; });
+  if (dominant != zone_tags_.begin() + zone_tag_count_) zone.tag = dominant->tag;
   cmd_write_timestamp_(command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, zone_pool_,
                        zone.query + 1);
 }
@@ -194,6 +200,10 @@ bool GpuTimer::ReadZones(const ZoneSubmission& submission) {
     totals.ns += double(end - begin);
     ++totals.count;
     totals.draws += zone.draws;
+    ZoneTotals& effect = window_effects_[{zone.tag, int(zone.kind), zone.site}];
+    effect.ns += double(end - begin);
+    ++effect.count;
+    effect.draws += zone.draws;
     frame_zone_ns_ += double(end - begin);
   }
   zone_queries_in_use_ -= uint32_t(submission.zones.size() * 2);
@@ -337,8 +347,11 @@ void GpuTimer::Report() {
                    mgr_stats::Symbolize(site).c_str());
     }
   }
+  if (zones_enabled()) ReportEffects(frames);
   window_.clear();
   window_zones_.clear();
+  window_effects_.clear();
+  window_cpu_.clear();
   window_zone_ns_ = 0;
   untimed_submissions_ = 0;
   zones_skipped_ = 0;
