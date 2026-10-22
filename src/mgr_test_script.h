@@ -17,6 +17,10 @@ bool MgrTestScriptActive();
 // "save" events call this (the options dialog's save) on the guest thread.
 void MgrTestScriptSetSaveHandler(std::function<void()> handler);
 
+// UI thread, once the window has opened: MgrTestHideWindowIfRequested, then
+// remember the window that scripted key events are addressed to.
+void MgrTestScriptAttachWindow();
+
 // MGR_TEST_HIDDEN=1: hide the game window and opt out of App Nap, so a test run
 // does not appear on the active desktop. Call on the UI thread after the window
 // opens. Launch with SDL_MAC_BACKGROUND_APP=1 so the app never activates.

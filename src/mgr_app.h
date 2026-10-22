@@ -14,6 +14,7 @@
 #include "mgr_options_dialog.h"
 #include "mgr_settings.h"
 #include "mgr_game_options.h"
+#include "mgr_native_options.h"
 #include "mgr_menu_fonts.h"
 #include "mgr_test_script.h"
 
@@ -46,6 +47,8 @@ class MgrApp : public rex::ReXApp {
     (void)config;
     // Menu repaint ownership is session state, never a boot-time preference.
     rex::cvar::SetFlagByName("imgui_guest_paced", "false");
+    if (rex::cvar::GetFlagSource("mnk_mode") == rex::cvar::Source::kDefault)
+      rex::cvar::SetFlagByName("mnk_mode", "true");
     MgrApplySettings();
   }
 
@@ -60,12 +63,12 @@ class MgrApp : public rex::ReXApp {
   }
 
   void OnConfigureFonts(ImFontAtlas* atlas) override {
-    MgrConfigureMenuFonts(atlas, game_root_);
+    if (std::getenv("MGR_DEVELOPER_UI")) MgrConfigureMenuFonts(atlas, game_root_);
   }
 
-  // F2 toggles the MGR options window (bindable in Settings > Keybinds).
+  // Native guest Options owns settings access; F2 is a developer fallback.
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
-    MgrTestHideWindowIfRequested();  // the window has just opened
+    MgrTestScriptAttachWindow();  // the window has just opened
     // Cvar callbacks may originate off the UI thread. The weak token prevents
     // queued resize work from accessing this app after shutdown.
     const std::weak_ptr<uint8_t> alive = settings_callbacks_alive_;
@@ -79,10 +82,10 @@ class MgrApp : public rex::ReXApp {
         });
     MgrApplyOutputResolution(window());
     MgrGameOptionsInstall();
-    auto* native_input = runtime() ? static_cast<rex::input::InputSystem*>(runtime()->input_system())
-                                   : nullptr;
-    game_options_dialog_ = std::make_unique<MgrOptionsDialog>(
-        drawer, native_input, config_path_, window(), true);
+    MgrNativeOptionsConfigure(config_path_);
+    // The retail Options lifecycle owns normal settings access. The legacy
+    // host dialog is available only when explicitly enabling developer tools.
+    if (!std::getenv("MGR_DEVELOPER_UI")) return;
     rex::ui::RegisterBind("bind_mgr_options", "F2", "Toggle MGR options", [this, drawer] {
       if (options_dialog_) {
         options_dialog_.reset();

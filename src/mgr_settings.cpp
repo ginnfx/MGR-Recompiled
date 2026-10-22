@@ -231,7 +231,8 @@ std::string_view ConfigKey(std::string_view line) { return line.substr(0, line.f
 void MgrSaveConfig(const std::filesystem::path& path) {
   static constexpr std::string_view kNeverSaved[] = {
       // Backend-owned status.
-      "imgui_guest_paced", "mgr_resolution_status", "mgr_resolution_active_scale",
+      "imgui_guest_paced", "mnk_menu_navigation", "mgr_resolution_status",
+      "mgr_resolution_active_scale",
       // Derived from mgr_* settings by MgrApplySettings on every launch.
       "video_mode_refresh_rate", "anisotropic_override", "gamma_render_target_as_unorm16",
       "draw_resolution_scale_x", "draw_resolution_scale_y", "draw_resolution_scale_denominator"};

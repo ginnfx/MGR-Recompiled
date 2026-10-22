@@ -3,6 +3,7 @@
 //
 //   <frame> press <BUTTON[+BUTTON...]> [hold_frames=4]
 //   <frame> stick <lx> <ly> [hold_frames=4]       left stick, -32768..32767
+//   <frame> key <SDL scancode name> [hold_frames=4] keyboard, e.g. Return, Down
 //   <frame> capture <name>                         <name>-<frame>.ppm in MGR_CAPTURE_DIR
 //                                                  (the image presented before <frame>)
 //   <frame> mark <text>                            "[mgr-test] frame N mark text"
@@ -13,13 +14,19 @@
 // <frame> may be "start+every*count" to repeat an event. '#' starts a comment.
 // Buttons: A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT.
 // Scripted input is merged into player 1's XamInputGetState result, which is
-// reported as connected while the script runs.
+// reported as connected while the script runs. Keys go through SDL to the
+// keyboard driver.
+//
+// Live commands: every kCommandPollFrames the first line of <script>.commands
+// is read as "<id> <action...>" (any action above, without a frame) and runs
+// once per new, larger id, for driving menus step by step.
 
 #include "mgr_test_script.h"
 
 #include <rex/cvar.h>
 #include <rex/ppc/context.h>
 #include <rex/ppc/func.h>
+#include <SDL3/SDL.h>
 
 #include <dlfcn.h>
 #include <unistd.h>
@@ -40,7 +47,7 @@
 
 namespace {
 
-enum class Action { kPress, kStick, kCapture, kMark, kSet, kSave, kQuit };
+enum class Action { kPress, kStick, kKey, kCapture, kMark, kSet, kSave, kQuit };
 
 struct Event {
   uint64_t frame;
@@ -49,10 +56,12 @@ struct Event {
   int16_t lx = 0, ly = 0;
   uint32_t hold = 4;
   std::string text;
+  SDL_Scancode scancode = SDL_SCANCODE_UNKNOWN;
 };
 
 constexpr uint32_t kDefaultHold = 4;
 constexpr auto kQuitCaptureTimeout = std::chrono::seconds(10);
+constexpr uint64_t kCommandPollFrames = 15;
 
 struct ButtonName {
   const char* name;
@@ -92,6 +101,14 @@ bool ParseAction(std::istringstream& in, Event& e) {
     if (!ParseButtons(buttons, e.buttons)) return false;
     if (!(in >> e.hold)) e.hold = kDefaultHold;
     return true;
+  }
+  if (verb == "key") {
+    std::string name;
+    in >> name;
+    e.action = Action::kKey;
+    e.scancode = SDL_GetScancodeFromName(name.c_str());
+    if (!(in >> e.hold)) e.hold = kDefaultHold;
+    return e.scancode != SDL_SCANCODE_UNKNOWN;
   }
   if (verb == "stick") {
     int lx, ly;
@@ -181,10 +198,21 @@ struct Script {
   std::atomic<uint32_t> captures_in_flight{0};
   std::mutex save_mutex;
   std::function<void()> save_handler;
+  std::atomic<SDL_WindowID> window{0};
+  // Live commands. The guest present thread owns these, except that the input
+  // thread reads the press override through the atomics.
+  std::string commands_path;
+  uint64_t command_id = 0;
+  std::vector<Event> live_keys;
+  std::atomic<uint16_t> live_buttons{0};
+  std::atomic<uint64_t> live_buttons_until{0};
+  bool focus_sent = false;
 
   Script() {
     const char* path = std::getenv("MGR_TEST_SCRIPT");
-    if (path && *path) events = LoadScript(path);
+    if (!path || !*path) return;
+    events = LoadScript(path);
+    commands_path = std::string(path) + ".commands";
   }
   bool active() const { return !events.empty(); }
 };
@@ -221,6 +249,7 @@ struct GamepadOverride {
 
 GamepadOverride ScriptedGamepad(const Script& s, uint64_t frame) {
   GamepadOverride out;
+  if (frame < s.live_buttons_until.load()) out.buttons = s.live_buttons.load();
   for (const Event& e : s.events) {
     if (frame < e.frame || frame >= e.frame + e.hold) continue;
     if (e.action == Action::kPress) out.buttons |= e.buttons;
@@ -256,34 +285,106 @@ constexpr uint32_t kStateSize = 16;
 
 bool MgrTestScriptActive() { return GetScript().active(); }
 
+namespace {
+
+// Key down at e.frame, key up hold frames later. The hidden window never gets
+// real focus, so the keyboard driver is told it has it before the first key.
+void PushKeyEdges(Script& s, const Event& e, uint64_t frame) {
+  if (frame != e.frame && frame != e.frame + e.hold) return;
+  if (!s.focus_sent) {
+    SDL_Event focus{};
+    focus.type = SDL_EVENT_WINDOW_FOCUS_GAINED;
+    focus.window.windowID = s.window.load();
+    const bool pushed = SDL_PushEvent(&focus);
+    s.focus_sent = true;
+    std::fprintf(stderr, "[mgr-test] frame %llu keyboard focus to window %u: %s\n",
+                 (unsigned long long)frame, unsigned(focus.window.windowID),
+                 pushed ? "pushed" : SDL_GetError());
+  }
+  const bool down = frame == e.frame;
+  SDL_Event key{};
+  key.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+  key.key.windowID = s.window.load();
+  key.key.scancode = e.scancode;
+  key.key.key = SDL_GetKeyFromScancode(e.scancode, SDL_KMOD_NONE, false);
+  key.key.down = down;
+  SDL_PushEvent(&key);
+}
+
+// Mark, capture, set, save and quit at this frame. Input actions are handled
+// by the callers.
+void RunEvent(Script& s, const Event& e, uint64_t frame, bool& quit) {
+  if (e.action == Action::kMark) {
+    std::fprintf(stderr, "[mgr-test] frame %llu mark %s\n", (unsigned long long)frame,
+                 e.text.c_str());
+  } else if (e.action == Action::kCapture) {
+    std::lock_guard lock(s.capture_mutex);
+    s.captures.push_back(e.text + "-" + std::to_string(frame));
+    s.captures_in_flight.fetch_add(1);
+  } else if (e.action == Action::kSet) {
+    const size_t space = e.text.find(' ');
+    const std::string name = e.text.substr(0, space), value = e.text.substr(space + 1);
+    const bool applied = rex::cvar::SetFlagByName(name, value);
+    std::fprintf(stderr, "[mgr-test] frame %llu set %s = %s%s\n", (unsigned long long)frame,
+                 name.c_str(), value.c_str(), applied ? "" : " (rejected)");
+  } else if (e.action == Action::kSave) {
+    std::lock_guard lock(s.save_mutex);
+    std::fprintf(stderr, "[mgr-test] frame %llu save%s\n", (unsigned long long)frame,
+                 s.save_handler ? "" : " (no handler)");
+    if (s.save_handler) s.save_handler();
+  } else if (e.action == Action::kQuit) {
+    quit = true;
+  }
+}
+
+void PollCommand(Script& s, uint64_t frame, bool& quit) {
+  std::ifstream file(s.commands_path);
+  std::string line;
+  if (!std::getline(file, line)) return;
+  std::istringstream in(line);
+  uint64_t id = 0;
+  Event e{};
+  if (!(in >> id) || id <= s.command_id) return;
+  s.command_id = id;
+  if (!ParseAction(in, e)) {
+    std::fprintf(stderr, "[mgr-test] command %llu: cannot parse '%s'\n", (unsigned long long)id,
+                 line.c_str());
+    return;
+  }
+  std::fprintf(stderr, "[mgr-test] frame %llu command %llu\n", (unsigned long long)frame,
+               (unsigned long long)id);
+  e.frame = frame;
+  if (e.action == Action::kPress) {
+    s.live_buttons.store(e.buttons);
+    s.live_buttons_until.store(frame + e.hold);
+  } else if (e.action == Action::kKey) {
+    s.live_keys.push_back(std::move(e));
+  } else {
+    RunEvent(s, e, frame, quit);
+  }
+}
+
+}  // namespace
+
+void MgrTestScriptAttachWindow() {
+  MgrTestHideWindowIfRequested();
+  int count = 0;
+  SDL_Window** windows = SDL_GetWindows(&count);
+  if (count > 0) GetScript().window.store(SDL_GetWindowID(windows[0]));
+  SDL_free(windows);
+}
+
 void MgrTestScriptOnPresent() {
   Script& s = GetScript();
   if (!s.active()) return;
   const uint64_t frame = s.frame.fetch_add(1) + 1;
   bool quit = false;
+  if (frame % kCommandPollFrames == 0) PollCommand(s, frame, quit);
+  for (const Event& e : s.live_keys) PushKeyEdges(s, e, frame);
+  std::erase_if(s.live_keys, [frame](const Event& e) { return e.frame + e.hold <= frame; });
   for (const Event& e : s.events) {
-    if (e.frame != frame) continue;
-    if (e.action == Action::kMark) {
-      std::fprintf(stderr, "[mgr-test] frame %llu mark %s\n", (unsigned long long)frame,
-                   e.text.c_str());
-    } else if (e.action == Action::kCapture) {
-      std::lock_guard lock(s.capture_mutex);
-      s.captures.push_back(e.text + "-" + std::to_string(frame));
-      s.captures_in_flight.fetch_add(1);
-    } else if (e.action == Action::kSet) {
-      const size_t space = e.text.find(' ');
-      const std::string name = e.text.substr(0, space), value = e.text.substr(space + 1);
-      const bool applied = rex::cvar::SetFlagByName(name, value);
-      std::fprintf(stderr, "[mgr-test] frame %llu set %s = %s%s\n", (unsigned long long)frame,
-                   name.c_str(), value.c_str(), applied ? "" : " (rejected)");
-    } else if (e.action == Action::kSave) {
-      std::lock_guard lock(s.save_mutex);
-      std::fprintf(stderr, "[mgr-test] frame %llu save%s\n", (unsigned long long)frame,
-                   s.save_handler ? "" : " (no handler)");
-      if (s.save_handler) s.save_handler();
-    } else if (e.action == Action::kQuit) {
-      quit = true;
-    }
+    if (e.action == Action::kKey) PushKeyEdges(s, e, frame);
+    if (e.frame == frame) RunEvent(s, e, frame, quit);
   }
   if (quit) WaitForCapturesThenExit(s);
 }
