@@ -15,6 +15,7 @@
 #include "mgr_settings.h"
 #include "mgr_game_options.h"
 #include "mgr_menu_fonts.h"
+#include "mgr_test_script.h"
 
 #include <chrono>
 #include <cstdio>
@@ -49,7 +50,12 @@ class MgrApp : public rex::ReXApp {
   }
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    // Diagnostic: MGR_CONFIG_PATH=<file> replaces <exe dir>/mgr.toml, so test
+    // runs never read or save the user's configuration.
+    if (const char* config = std::getenv("MGR_CONFIG_PATH"); config && *config)
+      paths.config_path = config;
     config_path_ = paths.config_path;
+    MgrTestScriptSetSaveHandler([path = config_path_] { MgrSaveConfig(path); });
     game_root_ = paths.game_data_root;
   }
 
@@ -59,6 +65,7 @@ class MgrApp : public rex::ReXApp {
 
   // F2 toggles the MGR options window (bindable in Settings > Keybinds).
   void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+    MgrTestHideWindowIfRequested();  // the window has just opened
     // Cvar callbacks may originate off the UI thread. The weak token prevents
     // queued resize work from accessing this app after shutdown.
     const std::weak_ptr<uint8_t> alive = settings_callbacks_alive_;
@@ -150,8 +157,10 @@ class MgrApp : public rex::ReXApp {
 
   static constexpr auto CAPTURE_INTERVAL = std::chrono::seconds(10);
   static constexpr auto CAPTURE_POLL = std::chrono::milliseconds(200);
+  static constexpr auto SCRIPTED_CAPTURE_POLL = std::chrono::milliseconds(5);
 
   void CaptureLoop(std::stop_token stop, const std::string& out_dir) {
+    if (MgrTestScriptActive()) return ScriptedCaptureLoop(stop, out_dir);
     int index = 0;
     auto next = std::chrono::steady_clock::now() + CAPTURE_INTERVAL;
     while (!stop.stop_requested()) {
@@ -166,6 +175,26 @@ class MgrApp : public rex::ReXApp {
         continue;
       }
       WritePpm(out_dir + "/frame_" + std::to_string(index++) + ".ppm", image);
+    }
+  }
+
+  // MGR_TEST_SCRIPT "capture" events write <out_dir>/<name>-<frame>.ppm.
+  void ScriptedCaptureLoop(std::stop_token stop, const std::string& out_dir) {
+    std::string name;
+    while (!stop.stop_requested()) {
+      if (!MgrTestScriptTakeCapture(name)) {
+        std::this_thread::sleep_for(SCRIPTED_CAPTURE_POLL);
+        continue;
+      }
+      auto* gs = runtime() ? runtime()->graphics_system() : nullptr;
+      auto* presenter = gs ? gs->presenter() : nullptr;
+      rex::ui::RawImage image;
+      if (presenter && presenter->CaptureGuestOutput(image)) {
+        WritePpm(out_dir + "/" + name + ".ppm", image);
+      } else {
+        std::fprintf(stderr, "[mgr-capture] %s: no guest output yet\n", name.c_str());
+      }
+      MgrTestScriptCaptureDone();
     }
   }
 

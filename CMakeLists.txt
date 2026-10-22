@@ -28,6 +28,8 @@ set(MGR_SOURCES
     src/mgr_options_dialog.cpp
     src/mgr_game_options.cpp
     src/mgr_menu_fonts.cpp
+    src/mgr_test_script.cpp
+    src/mgr_test_window_mac.cpp
     src/thirdparty/mgrr_perf/perf_logger.cpp
 )
 

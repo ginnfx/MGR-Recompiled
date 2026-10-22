@@ -12,6 +12,7 @@
 
 #include "perf_logger.h"
 #include "mgr_input_prompts.h"
+#include "mgr_test_script.h"
 #include "mgr_timing.h"
 
 #include <dlfcn.h>
@@ -142,6 +143,7 @@ extern "C" REX_FUNC(__imp__VdSwap) {
   MgrD3DTraceOnPresent();
   MgrTimingOnPresent(base);
   MgrPromptsOnPresent();
+  MgrTestScriptOnPresent();
   mgrr_perf::Profiler::Get().EndFrame();  // no-op unless MgrStartSessionLog ran
   capture.HooksDone();
   sdk_vdswap(ctx, base);
