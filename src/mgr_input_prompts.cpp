@@ -143,8 +143,7 @@ class AtlasPatcher {
     Rendered& cache = rendered_[size_t(family)];
     if (cache.atlas.empty() || labels != cache.labels) {
       cache.labels = std::move(labels);
-      cache.atlas = PatchAtlas(original_, cache.labels, RenderKeyIcon,
-                               playstation ? kPlayStationRoundButtons : 0);
+      cache.atlas = PatchAtlas(original_, cache.labels, RenderKeyIcon, kRoundButtons);
     }
     return cache.atlas;
   }

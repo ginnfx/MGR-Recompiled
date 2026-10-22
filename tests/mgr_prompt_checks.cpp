@@ -62,14 +62,16 @@ void CheckLabels() {
   CheckLabel(" Space ", "SPACE");
   CheckLabel("Return", "ENTER");
   CheckLabel("Shift+Up", "⇧↑");
-  CheckLabel("Control+Alt+Delete", "⌃⌥DEL");
-  CheckLabel("Numpad7", "N7");
+  CheckLabel("Control+Alt+Delete", "⌃⌥⌦");
+  CheckLabel("Backspace", "⌫");
+  CheckLabel("PageUp", "PG UP");
+  CheckLabel("Numpad7", "NUM7");
   CheckLabel("SomethingVeryLong", "SOMETH");
   CheckLabel("", "");
 
   auto binds = DefaultBinds();
   ButtonLabels labels = LabelsFor(binds);
-  Check(labels[0] == "BKSP", "B prefers a readable alternative");
+  Check(labels[0] == "⌫", "B prefers a readable alternative");
   Check(labels[1] == "SPACE", "A prefers a readable alternative");
   Check(labels[7] == "Q", "LT is Blade Mode's Q");
   Check(labels[5] == "E", "RT is Ninja Run's E");
@@ -100,6 +102,22 @@ void CheckLabels() {
   Check(LabelsFor(binds)[3].empty(), "unbound buttons keep the controller icon");
 }
 
+uint8_t Alpha(const Image& image, uint32_t x, uint32_t y) {
+  return image.rgba[(size_t(y) * image.width + x) * 4 + 3];
+}
+
+// HUD face-button cells (49x55) are round in the original art; keyboard caps
+// must stay inside that circle, including long labels drawn as a capsule.
+void CheckRoundCaps() {
+  const IconRect cell{0, IconStyle::kAction, 0, 0, 49, 55};
+  for (const char* label : {"⌫", "SPACE"}) {
+    const Image icon = RenderKeyIcon(cell, label, true);
+    Check(icon.width == 49 && icon.height == 55, "round cap size");
+    Check(Alpha(icon, 2, 2) == 0 && Alpha(icon, 46, 52) == 0, "round cap leaves the cell corners empty");
+    Check(Alpha(icon, 9, 27) > 200, "round cap fills beside its label");
+  }
+}
+
 void CheckAtlas(const std::vector<uint8_t>& original, const char* dump_path) {
   Check(original.size() == kAtlasBytes, "atlas size");
   Check(Fnv1a64(original) == kAtlasHash, "atlas hash matches kAtlasHash");
@@ -123,7 +141,7 @@ void CheckAtlas(const std::vector<uint8_t>& original, const char* dump_path) {
   Check(alpha_error <= 18 && color_error <= 32, "decode/encode round trip stays close");
 
   const ButtonLabels labels = LabelsFor(DefaultBinds());
-  const std::vector<uint8_t> patched = PatchAtlas(original, labels, RenderKeyIcon);
+  const std::vector<uint8_t> patched = PatchAtlas(original, labels, RenderKeyIcon, kRoundButtons);
   Check(patched.size() == kAtlasBytes && patched != original, "atlas is patched");
   // act_btn_sign_02 ('+') at (0,772) 34x31 is not an icon and must be preserved.
   const Image after = DecodeAtlas(patched);
@@ -136,7 +154,7 @@ void CheckAtlas(const std::vector<uint8_t>& original, const char* dump_path) {
     }
   }
   const std::vector<uint8_t> playstation =
-      PatchAtlas(original, PlayStationLabels(false), RenderKeyIcon, kPlayStationRoundButtons);
+      PatchAtlas(original, PlayStationLabels(false), RenderKeyIcon, kRoundButtons);
   Check(playstation != original && playstation != patched, "PlayStation atlas differs");
   const ButtonLabels none{};
   Check(PatchAtlas(original, none, RenderKeyIcon) == original, "no labels leaves atlas intact");
@@ -159,6 +177,7 @@ void CheckAtlas(const std::vector<uint8_t>& original, const char* dump_path) {
 
 int main(int argc, char** argv) {
   CheckLabels();
+  CheckRoundCaps();
   if (argc > 1) {
     std::ifstream in(argv[1], std::ios::binary);
     std::vector<uint8_t> wtb((std::istreambuf_iterator<char>(in)), {});
