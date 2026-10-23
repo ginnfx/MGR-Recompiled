@@ -1,5 +1,5 @@
 diff --git a/XenosRecomp/main.cpp b/XenosRecomp/main.cpp
-index 754198c..806900b 100644
+index 754198c..24a33b5 100644
 --- a/XenosRecomp/main.cpp
 +++ b/XenosRecomp/main.cpp
 @@ -29,6 +29,8 @@ struct RecompiledShader
@@ -11,18 +11,61 @@ index 754198c..806900b 100644
      uint32_t specConstantsMask = 0;
      std::string sourceName;
  };
-@@ -200,6 +202,10 @@ int main(int argc, char** argv)
+@@ -43,6 +45,36 @@ struct ShaderFailure
+ static std::mutex g_failureMutex;
+ static std::vector<ShaderFailure> g_failures;
+ 
++// DXC lowers `precise` to NoContraction but never decorates the position
++// builtin Invariant. MoltenVK only compiles with preserveInvariance (MSL
++// [[invariant]]) when it is, and MGR's equal-depth colour passes need the
++// pre-pass and colour vertex shaders to produce identical depth.
++static std::vector<uint32_t> MarkPositionInvariant(const std::vector<uint32_t>& words)
++{
++    constexpr uint32_t OP_DECORATE = 71;
++    constexpr uint32_t DECORATION_INVARIANT = 0;
++    constexpr uint32_t DECORATION_BUILTIN = 11;
++    constexpr uint32_t BUILTIN_POSITION = 0;
++    constexpr size_t HEADER_WORDS = 5;
++
++    std::vector<uint32_t> out(words.begin(), words.begin() + std::min(words.size(), HEADER_WORDS));
++    for (size_t i = HEADER_WORDS; i < words.size();)
++    {
++        const uint32_t wordCount = words[i] >> 16;
++        if (wordCount == 0 || i + wordCount > words.size())
++            return words;
++
++        out.insert(out.end(), words.begin() + i, words.begin() + i + wordCount);
++        if ((words[i] & 0xFFFF) == OP_DECORATE && wordCount == 4 &&
++            words[i + 2] == DECORATION_BUILTIN && words[i + 3] == BUILTIN_POSITION)
++        {
++            out.insert(out.end(), { (3u << 16) | OP_DECORATE, words[i + 1], DECORATION_INVARIANT });
++        }
++        i += wordCount;
++    }
++    return out;
++}
++
+ int main(int argc, char** argv)
+ {
+ #ifndef XENOS_RECOMP_INPUT
+@@ -200,7 +232,15 @@ int main(int argc, char** argv)
                      return;
                  }
  
+-                if (!smolv::Encode(spirv->GetBufferPointer(), spirv->GetBufferSize(), shader.spirv, smolv::kEncodeFlagStripDebugInfo))
 +                shader.isPixelShader = recompiler.isPixelShader;
-+                shader.rawSpirv.assign(reinterpret_cast<const uint8_t*>(spirv->GetBufferPointer()),
-+                    reinterpret_cast<const uint8_t*>(spirv->GetBufferPointer()) + spirv->GetBufferSize());
++                std::vector<uint32_t> spirvWords(spirv->GetBufferSize() / sizeof(uint32_t));
++                memcpy(spirvWords.data(), spirv->GetBufferPointer(), spirvWords.size() * sizeof(uint32_t));
++                if (!recompiler.isPixelShader)
++                    spirvWords = MarkPositionInvariant(spirvWords);
++                shader.rawSpirv.assign(reinterpret_cast<const uint8_t*>(spirvWords.data()),
++                    reinterpret_cast<const uint8_t*>(spirvWords.data()) + spirvWords.size() * sizeof(uint32_t));
 +
-                 if (!smolv::Encode(spirv->GetBufferPointer(), spirv->GetBufferSize(), shader.spirv, smolv::kEncodeFlagStripDebugInfo))
++                if (!smolv::Encode(spirvWords.data(), spirvWords.size() * sizeof(uint32_t), shader.spirv, smolv::kEncodeFlagStripDebugInfo))
                  {
                      spirv->Release();
-@@ -222,6 +228,35 @@ int main(int argc, char** argv)
+                     recordFailure("smolv-encode-failed");
+@@ -222,6 +262,35 @@ int main(int argc, char** argv)
              return 2;
          }
  
@@ -235,7 +278,7 @@ index 63c37c9..60a44d2 100644
  
  #ifdef REBLUE_RECOMP
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index feaa90b..f3a7fef 100644
+index feaa90b..cd4161a 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -133,6 +133,19 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
@@ -390,8 +433,13 @@ index feaa90b..f3a7fef 100644
          }
  
          out += "#ifdef __spirv__\n";
-@@ -1600,7 +1644,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
-         out += "\tout float4 oPos : SV_Position";
+@@ -1597,10 +1641,18 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         }
+     #endif
+ 
+-        out += "\tout float4 oPos : SV_Position";
++        // precise: depth pre-passes need position math bit-identical across shaders.
++        out += "\tout precise float4 oPos : SV_Position";
  
          for (auto& [usage, usageIndex] : INTERPOLATORS)
 +        {
@@ -405,7 +453,7 @@ index feaa90b..f3a7fef 100644
      }
  
      out += ")\n";
-@@ -1740,6 +1791,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1740,6 +1792,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
  
          for (auto& [usage, usageIndex] : INTERPOLATORS)
              println("\to{}{} = 0.0;", USAGE_VARIABLES[uint32_t(usage)], usageIndex);

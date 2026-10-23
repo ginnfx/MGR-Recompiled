@@ -10,9 +10,12 @@
  */
 #include "gpu/frame.h"
 
+#include <cmath>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <string_view>
 
 #include <plume_render_interface.h>
 
@@ -24,6 +27,7 @@
 #include "gpu/format.h"
 #include "gpu/pipeline/pipeline_cache.h"
 #include "gpu/pipeline/pso_recorder.h"
+#include "gpu/vertex_declaration.h"
 
 namespace mgrn::gpu {
 namespace {
@@ -39,6 +43,8 @@ constexpr u32 kRegDepthControl = 0x2200;     // RB_DEPTHCONTROL
 constexpr u32 kRegBlendControl0 = 0x2201;    // RB_BLENDCONTROL0
 constexpr u32 kRegColorControl = 0x2202;     // RB_COLORCONTROL
 constexpr u32 kRegModeControl = 0x2205;      // PA_SU_SC_MODE_CNTL
+constexpr u32 kRegDepthInfo = 0x2002;        // RB_DEPTH_INFO
+constexpr u32 kRegPolyOffsetFrontScale = 0x2380;  // then FRONT_OFFSET, BACK_SCALE, BACK_OFFSET
 // RB_BLENDCONTROL with src = ONE, dest = ZERO, ADD for color and alpha.
 constexpr u32 kBlendControlNoBlend = 0x00010001u;
 // Xenos CompareFunction::kAlways.
@@ -56,6 +62,58 @@ plume::RenderCullMode ReadCullMode(u32 mode_control) {
   return culled_cw ? plume::RenderCullMode::FRONT : plume::RenderCullMode::BACK;
 }
 
+// Host depth bias from the Xenos polygon offset, as Xenia's host render target
+// path does it: the front offset unless front faces are culled, else the back
+// one; non-triangle primitives use the front pair behind poly_offset_para.
+struct DepthBias {
+  i32 constant = 0;
+  float slope = 0.0f;
+};
+
+constexpr u32 kModeCullFront = 0x1u;
+constexpr u32 kModeCullBack = 0x2u;
+constexpr u32 kModePolyOffsetFront = 1u << 11;
+constexpr u32 kModePolyOffsetBack = 1u << 12;
+constexpr u32 kModePolyOffsetPara = 1u << 13;
+constexpr u32 kDepthInfoFloat24 = 1u << 16;  // RB_DEPTH_INFO.depth_format: D24FS8
+// Xenos slope scale is in 1/16 subpixel units.
+constexpr float kPolyOffsetSlopeUnit = 1.0f / 16.0f;
+// Depth units per 1.0 of offset (Xenia's D3D10 polygon offset factors).
+constexpr float kPolyOffsetUnitsUnorm24 = float((1u << 24) - 1);
+constexpr float kPolyOffsetUnitsFloat24 = float(1u << 24);
+
+float RegisterFloat(const D3DDevice &dev, u32 reg) {
+  const u32 bits = ReadDeviceRegister(dev, reg);
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+DepthBias ReadDepthBias(const D3DDevice &dev, u32 mode, bool polygonal) {
+  u32 pair = ~0u;  // register offset of the scale/offset pair in use
+  if (polygonal) {
+    if ((mode & kModePolyOffsetFront) && !(mode & kModeCullFront))
+      pair = 0;
+    else if ((mode & kModePolyOffsetBack) && !(mode & kModeCullBack))
+      pair = 2;
+  } else if (mode & kModePolyOffsetPara) {
+    pair = 0;
+  }
+  if (pair == ~0u)
+    return {};
+  const float scale = RegisterFloat(dev, kRegPolyOffsetFrontScale + pair);
+  const float offset = RegisterFloat(dev, kRegPolyOffsetFrontScale + pair + 1);
+  const bool float_depth = ReadDeviceRegister(dev, kRegDepthInfo) & kDepthInfoFloat24;
+  const float units = float_depth ? kPolyOffsetUnitsFloat24 : kPolyOffsetUnitsUnorm24;
+  return {i32(std::lround(offset * units)), scale * kPolyOffsetSlopeUnit};
+}
+
+bool IsPolygonal(plume::RenderPrimitiveTopology topology) {
+  using T = plume::RenderPrimitiveTopology;
+  return topology == T::TRIANGLE_LIST || topology == T::TRIANGLE_STRIP ||
+         topology == T::TRIANGLE_FAN;
+}
+
 plume::RenderFillMode ReadFillMode(u32 mode_control) {
   const u32 poly_mode = (mode_control >> 3) & 0x3u;
   const u32 front_type = (mode_control >> 5) & 0x7u;  // 0 points, 1 lines, 2 triangles
@@ -63,14 +121,72 @@ plume::RenderFillMode ReadFillMode(u32 mode_control) {
                                              : plume::RenderFillMode::SOLID;
 }
 
+// Dev bisection: MGR_NATIVE_DIAG_STATE=nocull,nodepth,nostencil,noalphatest,noblend
+// (or "all") forces that state off for every draw; adding "skinned" limits it to
+// draws whose decl has blend indices. Needs MGR_NATIVE_DEV=1.
+struct DiagStateOverrides {
+  bool no_cull = false;
+  bool no_depth = false;
+  bool no_stencil = false;
+  bool no_alpha_test = false;
+  bool no_blend = false;
+  bool skinned_only = false;
+};
+
+const DiagStateOverrides &DiagState() {
+  static const DiagStateOverrides overrides = [] {
+    DiagStateOverrides o;
+    const char *value = std::getenv("MGR_NATIVE_DIAG_STATE");
+    if (!DevMode() || !value)
+      return o;
+    const std::string_view v(value);
+    const bool all = v.find("all") != std::string_view::npos;
+    o.no_cull = all || v.find("nocull") != std::string_view::npos;
+    o.no_depth = all || v.find("nodepth") != std::string_view::npos;
+    o.no_stencil = all || v.find("nostencil") != std::string_view::npos;
+    o.no_alpha_test = all || v.find("noalphatest") != std::string_view::npos;
+    o.no_blend = all || v.find("noblend") != std::string_view::npos;
+    o.skinned_only = v.find("skinned") != std::string_view::npos;
+    MGRN_WARN("[draw-diag] state overrides: cull={} depth={} stencil={} alphatest={} blend={}"
+              " skinned_only={}",
+              !o.no_cull, !o.no_depth, !o.no_stencil, !o.no_alpha_test, !o.no_blend,
+              o.skinned_only);
+    return o;
+  }();
+  return overrides;
+}
+
+// Forced-off state is folded into the register words before they are decoded,
+// so each field is written once per draw and clean draws stay clean.
+constexpr u32 kDepthControlStencilEnable = 0x1u;
+constexpr u32 kDepthControlZEnable = 0x2u;
+constexpr u32 kModeControlCullBits = 0x3u;
+constexpr u32 kColorControlAlphaTestEnable = 0x8u;
+
 void ReadDeviceRenderState(VideoState &s, u32 device_guest) {
   const auto *dev = mgrn::mem::at<const D3DDevice>(device_guest);
   if (!dev)
     return;
-  const u32 blend = ReadDeviceRegister(*dev, kRegBlendControl0, kBlendControlNoBlend);
-  const u32 depth = ReadDeviceRegister(*dev, kRegDepthControl);
-  const u32 color_control = ReadDeviceRegister(*dev, kRegColorControl);
-  const u32 mode = ReadDeviceRegister(*dev, kRegModeControl);
+  static const DiagStateOverrides kNone;
+  const DiagStateOverrides &diag = DiagState();
+  const DiagStateOverrides &o =
+      (!diag.skinned_only || IsSkinnedDeclaration(s.pipelineState.vertexDeclaration))
+          ? diag
+          : kNone;
+  u32 blend = ReadDeviceRegister(*dev, kRegBlendControl0, kBlendControlNoBlend);
+  u32 depth = ReadDeviceRegister(*dev, kRegDepthControl);
+  u32 color_control = ReadDeviceRegister(*dev, kRegColorControl);
+  u32 mode = ReadDeviceRegister(*dev, kRegModeControl);
+  if (o.no_blend)
+    blend = kBlendControlNoBlend;
+  if (o.no_depth)
+    depth &= ~kDepthControlZEnable;
+  if (o.no_stencil)
+    depth &= ~kDepthControlStencilEnable;
+  if (o.no_cull)
+    mode &= ~kModeControlCullBits;
+  if (o.no_alpha_test)
+    color_control &= ~kColorControlAlphaTestEnable;
   const u32 ref_mask = ReadDeviceRegister(*dev, kRegStencilRefMask, 0x00FFFF00u);
   const u32 ref_mask_bf = ReadDeviceRegister(*dev, kRegStencilRefMaskBf, ref_mask);
 
@@ -104,6 +220,9 @@ void ReadDeviceRenderState(VideoState &s, u32 device_guest) {
   (void)ref_mask_bf;  // plume takes one ref/mask pair for both faces
 
   Video::SetDirtyValue(dirty, ps.cullMode, ReadCullMode(mode));
+  const DepthBias bias = ReadDepthBias(*dev, mode, IsPolygonal(ps.primitiveTopology));
+  Video::SetDirtyValue(dirty, ps.depthBias, bias.constant);
+  Video::SetDirtyValue(dirty, ps.slopeScaledDepthBias, bias.slope);
   Video::SetDirtyValue(dirty, ps.fillMode, ReadFillMode(mode));
   Video::SetDirtyValue(dirty, ps.colorWriteEnable,
                        ReadDeviceRegister(*dev, kRegColorMask, 0xFu) & 0xFu);

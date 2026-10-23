@@ -25,4 +25,7 @@ GuestVertexDeclaration *CreateVertexDeclaration(GuestVertexElement *elements);
 // (== GuestVertexDeclaration::hash). nullptr if not yet created.
 GuestVertexDeclaration *FindVertexDeclarationByHash(u64 hash);
 
+// True when the decl carries blend indices (MGR's skinned character meshes).
+bool IsSkinnedDeclaration(const GuestVertexDeclaration *decl);
+
 } // namespace mgrn::gpu

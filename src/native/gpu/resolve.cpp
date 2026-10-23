@@ -81,6 +81,18 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
   if (!s.command_list_open)
     return false;
 
+  if (IsDepthFormat(dst->format)) {
+    static std::atomic<u32> s_depth_copies{0};
+    const u32 n = s_depth_copies.fetch_add(1, std::memory_order_relaxed);
+    if (n < 64) {
+      MGRN_DEV_WARN("[depth-copy] #{} {}: src={} {}x{} fmt={} -> dst={} {}x{} fmt={} "
+                    "bound_ds={}",
+                    n, reason, static_cast<const void *>(src), src->width, src->height,
+                    u32(src->format), static_cast<const void *>(dst), dst->width, dst->height,
+                    u32(dst->format), static_cast<const void *>(s.depth_stencil));
+    }
+  }
+
   s.draw_framebuffer_bound = false;
 
   const bool dims_match =

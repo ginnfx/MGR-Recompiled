@@ -9,6 +9,7 @@
  */
 #include "gpu/frame.h"
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -145,7 +146,58 @@ GuestTexture *BuildBCMirrorCore(const BCMirrorDesc &d,
   return t;
 }
 
+// XE_GPU_TEXTURE_SWIZZLE: 0..3 = X..W, 4 = zero, 5 = one; 6 and 7 are invalid
+// and fold onto 4 and 5 as in Xenia.
+constexpr u32 kSwizzleZero = 4;
+constexpr u32 kSwizzleBits = 3;
+constexpr u32 kSwizzleMask = 0x7;
+constexpr u32 kRgbaSwizzle = 0 | (1 << 3) | (2 << 6) | (3 << 9);
+
+constexpr plume::RenderSwizzle kChannels[] = {
+    plume::RenderSwizzle::R, plume::RenderSwizzle::G, plume::RenderSwizzle::B,
+    plume::RenderSwizzle::A};
+
+plume::RenderSwizzle HostSwizzle(u32 guest, u32 component_count) {
+  if (guest >= kSwizzleZero)
+    return (guest & 1u) ? plume::RenderSwizzle::ONE : plume::RenderSwizzle::ZERO;
+  // Components the format does not store read the last stored one.
+  return kChannels[std::min(guest, component_count - 1)];
+}
+
 } // namespace
+
+bool ApplyFetchSwizzle(GuestTexture *tex, u32 component_count, u32 fetch_swizzle) {
+  if (!tex || !tex->texture || component_count == 0 || component_count > 4)
+    return false;
+  // RGBA on a 4-component format is what the default view already samples.
+  if (component_count == 4 && fetch_swizzle == kRgbaSwizzle)
+    return true;
+
+  plume::RenderSwizzle mapped[4];
+  for (u32 i = 0; i < 4; ++i)
+    mapped[i] = HostSwizzle((fetch_swizzle >> (kSwizzleBits * i)) & kSwizzleMask,
+                            component_count);
+
+  auto &s = state();
+  std::lock_guard lock(s.mutex);
+  plume::RenderTextureViewDesc view_desc;
+  view_desc.format = tex->format;
+  view_desc.dimension = tex->viewDimension;
+  view_desc.mipLevels = tex->mipLevels;
+  view_desc.componentMapping =
+      plume::RenderComponentMapping(mapped[0], mapped[1], mapped[2], mapped[3]);
+  auto view = tex->texture->createTextureView(view_desc);
+  if (!view)
+    return false;
+  // Point the slot at the new view before the old one is destroyed. The mirror
+  // was built this frame, so no recorded draw samples the old view.
+  if (tex->descriptorIndex != kInvalidDescriptorIndex)
+    s.texture_descriptor_set->setTexture(tex->descriptorIndex, tex->texture,
+                                         plume::RenderTextureLayout::SHADER_READ,
+                                         view.get());
+  tex->textureView = std::move(view);
+  return true;
+}
 
 GuestTexture *BuildBCMirrorTexture(u32 width, u32 height, u32 format,
                                           const void *block_data,

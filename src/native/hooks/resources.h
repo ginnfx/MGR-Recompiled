@@ -7,6 +7,8 @@
 // are adopted lazily from their fetch constants.
 #pragma once
 
+#include <string>
+
 #include <rex/types.h>
 
 namespace mgrn::gpu {
@@ -29,5 +31,9 @@ gpu::GuestTexture* LookupPresentTexture(u32 texture_va);
 // Re-copies vertex and index buffers still bound from earlier setter calls
 // that the guest has rewritten since. Call before each draw.
 void RefreshBoundGeometry();
+
+// Dev: for streams 0..stream_count-1 and the index buffer, the device's bound
+// guest pointer, flagged !STALE when the hooks track another buffer for it.
+std::string DescribeBoundStreams(u32 device_guest, u32 stream_count);
 
 }  // namespace mgrn::native

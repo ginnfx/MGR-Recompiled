@@ -208,10 +208,10 @@ void Video::FlushViewport() {
     return;
 
   if (s.dirtyStates.viewport) {
-    plume::RenderViewport vp = s.viewport;
-    if (vp.minDepth > vp.maxDepth)
-      std::swap(vp.minDepth, vp.maxDepth);
-    s.command_list->setViewports(&vp, 1);
+    // MGR draws reversed Z through the viewport (min 1, max 0). Vulkan and
+    // Metal take the reversed range as is; re:Blue swapped it for D3D12, which
+    // stored z_ndc instead and let far geometry win MGR's GREATER_EQUAL tests.
+    s.command_list->setViewports(&s.viewport, 1);
     s.dirtyStates.viewport = false;
   }
 

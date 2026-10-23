@@ -11,6 +11,7 @@
  */
 #include "gpu/frame.h"
 #include "gpu/capture.h"
+#include "gpu/depth_probe.h"
 
 #include <atomic>
 #include <chrono>
@@ -300,6 +301,7 @@ void Video::Present(GuestTexture *frontBuffer) {
                                  s.fences[cur].get());
   }
   s.command_list_submitted[cur] = true;
+  FinishDepthProbes(s, cur);  // MGR dev: draw-dump depth readback
   FinishCapture(s, cur);
   ApplyVsync(s);
   {

@@ -276,6 +276,8 @@ struct RegisterBlock {
 inline constexpr RegisterBlock kRegisterBlocks[] = {
     {0x2000, 19, 0x2880}, {0x2100, 21, 0x28CC}, {0x2180, 5, 0x2920},
     {0x2200, 12, 0x2934}, {0x2280, 21, 0x2964}, {0x2300, 38, 0x29B8},
+    // PA_SU_POLY_OFFSET_{FRONT,BACK}_{SCALE,OFFSET} only; the block runs on.
+    {0x2380, 4, 0x2A50},
 };
 
 // Value of GPU register 'reg' as the guest last set it, or 'fallback' when the

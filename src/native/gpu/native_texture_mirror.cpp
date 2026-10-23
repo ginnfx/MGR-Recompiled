@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <rex/graphics/pipeline/texture/conversion.h>
@@ -50,6 +51,39 @@ struct NamedNativeTexture {
 };
 std::unordered_map<u32, NamedNativeTexture> g_native_names;
 u64 g_native_name_seq = 0;
+
+// Components each mirrored format stores, for the fetch swizzle's replication.
+u32 StoredComponentCount(xe::TextureFormat format) {
+  using TF = xe::TextureFormat;
+  switch (format) {
+  case TF::k_8:
+  case TF::k_8_A:
+  case TF::k_8_B:
+  case TF::k_16:
+  case TF::k_16_FLOAT:
+  case TF::k_32_FLOAT:
+  case TF::k_DXT5A:
+    return 1;
+  case TF::k_8_8:
+  case TF::k_16_16:
+  case TF::k_16_16_FLOAT:
+  case TF::k_32_32_FLOAT:
+  case TF::k_DXN:
+    return 2;
+  default:
+    return 4;
+  }
+}
+
+// Dev log: each (format, swizzle) pair once, to check what MGR binds.
+void NoteFetchSwizzle(const xe::xe_gpu_texture_fetch_t &fetch, u32 guest_va) {
+  static std::unordered_set<u32> seen;
+  const u32 key = (u32(fetch.format) << 12) | fetch.swizzle;
+  if (!DevMode() || !seen.insert(key).second)
+    return;
+  MGRN_WARN("[tex-swizzle] fmt=0x{:X} swizzle=0x{:03X} first va=0x{:08X}",
+            u32(fetch.format), u32(fetch.swizzle), guest_va);
+}
 
 std::string NormalizeTextureName(std::string_view raw) {
   const size_t slash = raw.find_last_of("\\/");
@@ -482,6 +516,16 @@ GuestTexture *GetOrCreateNativeMirror(u32 guest_va, u32 name_va) {
   }
   if (!tex)
     return nullptr;
+  NoteFetchSwizzle(fetch, guest_va);
+  // The companions (volume slice 0, cube_* atlas cube) are what some fetches
+  // actually bind, so they take the same swizzle.
+  const u32 components = StoredComponentCount(fetch.format);
+  for (GuestTexture *view_owner :
+       {tex, tex->companion2D.get(), tex->companionCube.get()}) {
+    if (view_owner && !ApplyFetchSwizzle(view_owner, components, fetch.swizzle))
+      MGRN_WARN("native texture va=0x{:08X}: swizzle view 0x{:03X} failed, "
+                "sampling unswizzled", guest_va, u32(fetch.swizzle));
+  }
 
   auto stored = std::unique_ptr<GuestTexture>(tex);
   GuestTexture *raw = stored.get();

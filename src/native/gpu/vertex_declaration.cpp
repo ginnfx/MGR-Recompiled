@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <xxhash.h>
@@ -46,6 +47,29 @@ constexpr Location kLocations[] = {
 #undef REBLUE_VERTEX_LOCATION_ROW
 
 constexpr u32 kNoLocation = ~u32{0};
+
+// Each (usage, type) pair once: always for unmapped types, which bind as
+// UNKNOWN and read garbage; in dev mode for every pair.
+void NoteDeclElement(D3DDeclUsage usage, u32 usage_index, D3DDeclType type,
+                     plume::RenderFormat format) {
+  static std::mutex mutex;
+  static std::unordered_set<u64> seen;
+  const bool unmapped = format == plume::RenderFormat::UNKNOWN;
+  if (!unmapped && !DevMode())
+    return;
+  const u64 key = (u64(u32(usage)) << 40) | (u64(usage_index) << 32) | u32(type);
+  {
+    std::lock_guard lock(mutex);
+    if (!seen.insert(key).second)
+      return;
+  }
+  if (unmapped)
+    MGRN_WARN("vertex decl: unmapped type 0x{:06X} for usage {}[{}], attribute "
+              "reads garbage", u32(type), u32(usage), usage_index);
+  else
+    MGRN_WARN("[decl-diag] usage {}[{}] type 0x{:06X} -> format {}", u32(usage),
+              usage_index, u32(type), u32(format));
+}
 
 constexpr auto resolve_location = [](D3DDeclUsage usage, u32 usage_index) {
   for (const auto &loc : kLocations) {
@@ -216,6 +240,7 @@ GuestVertexDeclaration *CreateVertexDeclaration(GuestVertexElement *elements) {
     if (g_vulkan && input.location == kNoLocation) {
       continue;
     }
+    NoteDeclElement(usage, usage_index, type, input.format);
     input_elements.push_back(input);
   }
 
@@ -289,6 +314,20 @@ GuestVertexDeclaration *FindVertexDeclarationByHash(u64 hash) {
   std::lock_guard<std::mutex> lock(g_declByHashMutex);
   auto it = g_declByHash.find(hash);
   return it != g_declByHash.end() ? it->second : nullptr;
+}
+
+} // namespace mgrn::gpu
+
+namespace mgrn::gpu {
+
+bool IsSkinnedDeclaration(const GuestVertexDeclaration *decl) {
+  if (!decl || !decl->vertexElements)
+    return false;
+  for (u32 i = 0; i < decl->vertexElementCount; ++i)
+    if (static_cast<D3DDeclUsage>(decl->vertexElements[i].usage) ==
+        D3DDeclUsage::kBlendIndices)
+      return true;
+  return false;
 }
 
 } // namespace mgrn::gpu

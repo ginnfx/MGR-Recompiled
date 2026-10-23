@@ -57,4 +57,11 @@ GuestTexture *BuildBCMirrorTextureVolume(u32 width, u32 height, u32 depth,
                                          u32 staging_row_bytes,
                                          u32 row_width_texels);
 
+// Applies the fetch constant's 12-bit swizzle (xyzw, 3 bits each) to a mirror's
+// view. Xenos replicates the last stored component into the missing ones
+// before swizzling (k_8 samples as RRRR, k_8_8 as RGGG); a host R8/RG8 view
+// does not, so the mapping folds that in. Returns false if the view could not
+// be rebuilt (the mirror keeps its identity view).
+bool ApplyFetchSwizzle(GuestTexture *tex, u32 component_count, u32 fetch_swizzle);
+
 } // namespace mgrn::gpu

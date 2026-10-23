@@ -172,8 +172,9 @@ void FinishCapture(VideoState &s, u32 frame_slot) {
     return;
   c.recorded = false;
   // plume resets the fence after the wait, so the frame ring must not wait on
-  // this slot again when it comes round.
-  s.queue->waitForCommandFence(s.fences[frame_slot].get());
+  // this slot again when it comes round (nor here, after FinishDepthProbes).
+  if (s.command_list_submitted[frame_slot])
+    s.queue->waitForCommandFence(s.fences[frame_slot].get());
   s.command_list_submitted[frame_slot] = false;
   const auto *mapped = static_cast<const u8 *>(c.readback->map());
   if (!mapped) {

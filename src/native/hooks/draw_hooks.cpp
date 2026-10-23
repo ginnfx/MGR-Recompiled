@@ -7,6 +7,9 @@
 // 2026 Tom Clay).
 
 #include <atomic>
+#include <cstdlib>
+#include <format>
+#include <string>
 #include <mutex>
 
 #include <rex/graphics/xenos.h>
@@ -17,9 +20,12 @@
 #include "core/logging.h"
 #include "core/memory_helpers.h"
 #include "gpu/d3d.h"
+#include "gpu/depth_probe.h"
 #include "gpu/device.h"
+#include "gpu/format.h"
 #include "gpu/frame.h"
 #include "gpu/host_resource_heap.h"
+#include "gpu/vertex_declaration.h"
 #include "hooks/hook_macros.h"
 #include "hooks/resources.h"
 
@@ -62,6 +68,148 @@ plume::RenderPrimitiveTopology MapPrimitiveType(u32 prim) {
   }
 }
 
+// Presents so far; the Swap hook bumps it.
+std::atomic<u32> g_present_count{0};
+
+// Dev: MGR_NATIVE_DRAW_DUMP=<present> logs every draw of that frame that got
+// past framebuffer bind and state flush (dropped draws log as [draw-diag]).
+u32 DrawDumpFrame() {
+  static const u32 frame = [] {
+    const char* value = std::getenv("MGR_NATIVE_DRAW_DUMP");
+    return (mgrn::DevMode() && value) ? u32(std::strtoul(value, nullptr, 10)) : 0u;
+  }();
+  return frame;
+}
+
+u64 ShaderHash(const gpu::GuestShader* shader) {
+  return (shader && shader->shaderCacheEntry) ? shader->shaderCacheEntry->hash : 0;
+}
+
+
+void DumpDraw(const gpu::VideoState& s, u32 primitive_type, const DrawArgs& args) {
+  static std::atomic<u32> draw_index{0};
+  const auto& ps = s.pipelineState;
+  const auto* rt = s.render_target;
+  const auto* ds = s.depth_stencil;
+  const auto& vp = s.viewport;
+  MGRN_WARN("[draw-dump] #{} prim={} {}={} vs={:016X} ps={:016X} decl={:016X}{} "
+            "rt={}x{}/{} ds={}/{}@{} z={}{}f{} bias={}/{:.3f} cull={} blend={} cw=0x{:X} "
+            "vp={:.0f},{:.0f} {:.0f}x{:.0f} z{:.2f}-{:.2f}",
+            draw_index.fetch_add(1, std::memory_order_relaxed), primitive_type,
+            args.indexed ? "idx" : "vtx", args.vertex_or_index_count,
+            ShaderHash(ps.vertexShader), ShaderHash(ps.pixelShader),
+            ps.vertexDeclaration ? ps.vertexDeclaration->hash : 0,
+            gpu::IsSkinnedDeclaration(ps.vertexDeclaration) ? " SKINNED" : "", rt ? rt->width : 0,
+            rt ? rt->height : 0, rt ? u32(rt->format) : 0, ds ? ds->width : 0,
+            ds ? u32(ds->format) : 0, static_cast<const void*>(ds), ps.zEnable ? 1 : 0, ps.zWriteEnable ? "w" : "",
+            u32(ps.zFunc), ps.depthBias, ps.slopeScaledDepthBias, u32(ps.cullMode), ps.alphaBlendEnable ? 1 : 0,
+            ps.colorWriteEnable, vp.x, vp.y, vp.width, vp.height, vp.minDepth,
+            vp.maxDepth);
+}
+
+// Each element as stream:offset usage[index] type.
+std::string DescribeDecl(const gpu::GuestVertexDeclaration* decl) {
+  std::string out;
+  if (!decl || !decl->vertexElements)
+    return out;
+  for (u32 i = 0; i < decl->vertexElementCount; ++i) {
+    const auto& e = decl->vertexElements[i];
+    out += std::format(" {}:{} u{}[{}] 0x{:06X}", u32(e.stream), u32(e.offset), u32(e.usage),
+                       u32(e.usageIndex), u32(e.type));
+  }
+  return out;
+}
+
+// Streams compared in the skinned-draw dump; MGR's skinned decls use 0..1.
+constexpr u32 kDumpStreamCount = 4;
+
+// First bone-palette register (g_WorldArray) in MGR's skinned vertex shaders.
+constexpr u32 kBonePaletteFirstReg = 40;
+constexpr u32 kBonePaletteRegs = 216;
+
+// For skinned draws: the first bone matrix from the device constant shadow and
+// how many palette registers are non-zero, to see whether bones reach it.
+void DumpBonePalette(u32 device_guest) {
+  const auto* dev = mgrn::mem::at<const gpu::D3DDevice>(device_guest);
+  if (!dev)
+    return;
+  u32 nonzero = 0;
+  for (u32 r = kBonePaletteFirstReg; r < kBonePaletteFirstReg + kBonePaletteRegs; ++r)
+    for (u32 c = 0; c < 4; ++c)
+      if (float(dev->vsFloatConstants[r][c]) != 0.0f) {
+        ++nonzero;
+        break;
+      }
+  const auto& c = dev->vsFloatConstants;
+  const u32 b = kBonePaletteFirstReg;
+  MGRN_WARN("[draw-dump]   bones nonzero_regs={}/{} c40=({:.3f},{:.3f},{:.3f},{:.3f}) "
+            "c41=({:.3f},{:.3f},{:.3f},{:.3f}) c42=({:.3f},{:.3f},{:.3f},{:.3f})",
+            nonzero, kBonePaletteRegs, float(c[b][0]), float(c[b][1]), float(c[b][2]),
+            float(c[b][3]), float(c[b + 1][0]), float(c[b + 1][1]), float(c[b + 1][2]),
+            float(c[b + 1][3]), float(c[b + 2][0]), float(c[b + 2][1]), float(c[b + 2][2]),
+            float(c[b + 2][3]));
+}
+
+// Dev: four consecutive VS float registers (a matrix) from the device shadow.
+void DumpVsMatrix(u32 device_guest, const char* name, u32 first) {
+  const auto* dev = mgrn::mem::at<const gpu::D3DDevice>(device_guest);
+  if (!dev)
+    return;
+  const auto& c = dev->vsFloatConstants;
+  std::string rows;
+  for (u32 r = first; r < first + 4; ++r)
+    rows += fmt::format(" c{}=({:.4f},{:.4f},{:.4f},{:.4f})", r, float(c[r][0]), float(c[r][1]),
+                        float(c[r][2]), float(c[r][3]));
+  MGRN_WARN("[draw-dump]   {}{}", name, rows);
+}
+
+// Dev: MGR_NATIVE_SKIP_SKINNED_PREPASS=1 drops skinned draws with colour
+// writes off (depth pre-pass and shadow casters), to test their depth; =2
+// drops every colour-off draw.
+char SkipPrepassMode() {
+  static const char mode = [] {
+    const char* value = std::getenv("MGR_NATIVE_SKIP_SKINNED_PREPASS");
+    return (mgrn::DevMode() && value) ? value[0] : '0';
+  }();
+  return mode;
+}
+
+bool SkipPrepassDraw(const gpu::PipelineState& ps) {
+  const char mode = SkipPrepassMode();
+  if (ps.colorWriteEnable != 0 || (mode != '1' && mode != '2'))
+    return false;
+  return mode == '2' || gpu::IsSkinnedDeclaration(ps.vertexDeclaration);
+}
+
+// Dev: in the dump frame, read back the depth target before the first
+// depth-tested colour draw of each kind (skinned, then static).
+void ProbeDepthBeforeDraw(gpu::VideoState& s) {
+  static bool probed_skinned = false;
+  static bool probed_static = false;
+  const auto& ps = s.pipelineState;
+  const bool skinned = gpu::IsSkinnedDeclaration(ps.vertexDeclaration);
+  if (ps.zEnable && ps.zWriteEnable && ps.colorWriteEnable == 0) {
+    // Depth-only draws: probe after the first of each kind, to see which one
+    // covers the target.
+    static u32 depth_only_seen = 0;
+    ++depth_only_seen;
+    if (depth_only_seen <= 2 || (depth_only_seen >= 24 && depth_only_seen <= 31)) {
+      const std::string tag = fmt::format("before-depth-only-{}-{}", depth_only_seen,
+                                          skinned ? "skinned" : "static");
+      gpu::RecordDepthProbeLocked(s, s.depth_stencil, tag.c_str());
+    }
+    return;
+  }
+  if (!ps.zEnable || ps.colorWriteEnable == 0)
+    return;
+  bool& probed = skinned ? probed_skinned : probed_static;
+  if (probed)
+    return;
+  probed = true;
+  gpu::RecordDepthProbeLocked(s, s.depth_stencil,
+                              skinned ? "before-skinned-colour" : "before-static-colour");
+}
+
 void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
   mgrn::native::RefreshBoundGeometry();
   auto& s = gpu::state();
@@ -82,6 +230,22 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
 
   auto* cmd_list = s.command_list;
   if (!cmd_list) return;
+  if (SkipPrepassDraw(s.pipelineState))
+    return;
+  const u32 dump_frame = DrawDumpFrame();
+  if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame) {
+    ProbeDepthBeforeDraw(s);
+    DumpDraw(s, primitive_type, args);
+    if (gpu::IsSkinnedDeclaration(s.pipelineState.vertexDeclaration) ||
+        s.pipelineState.colorWriteEnable == 0) {
+      DumpBonePalette(device_guest);
+      DumpVsMatrix(device_guest, "proj", 4);
+      DumpVsMatrix(device_guest, "worldview", 20);
+      MGRN_WARN("[draw-dump]   streams{}",
+                mgrn::native::DescribeBoundStreams(device_guest, kDumpStreamCount));
+      MGRN_WARN("[draw-dump]   decl{}", DescribeDecl(s.pipelineState.vertexDeclaration));
+    }
+  }
 
   if (static_cast<xe::PrimitiveType>(primitive_type) == xe::PrimitiveType::kQuadList) {
     const u32 quads = std::min(args.vertex_or_index_count / 4, gpu::Video::QuadlistMaxQuads());
@@ -138,7 +302,20 @@ MGRN_HOOK_RAW(D3DDevice_DrawVertices) {
 MGRN_EXTERN(D3DDevice_Clear);
 MGRN_HOOK_RAW(D3DDevice_Clear) {
   if (!NativeRendererActive()) return MGRN_IMP(D3DDevice_Clear)(ctx, base);
+  const u32 dump_frame = DrawDumpFrame();
+  if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame) {
+    const auto& s = gpu::state();
+    MGRN_WARN("[draw-dump] CLEAR flags=0x{:X} color=0x{:08X} z={:.3f} stencil={} rt={} ds={}",
+              ctx.r6.u32, ctx.r7.u32, float(ctx.f1.f64), ctx.r9.u32,
+              static_cast<const void*>(s.render_target), static_cast<const void*>(s.depth_stencil));
+  }
   gpu::Video::Clear(ctx.r6.u32, ctx.r7.u32, float(ctx.f1.f64), ctx.r9.u32);
+  if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame &&
+      (ctx.r6.u32 & gpu::kClearZBuffer)) {
+    auto& s = gpu::state();
+    std::lock_guard lock(s.mutex);
+    gpu::RecordDepthProbeLocked(s, s.depth_stencil, "after-depth-clear");
+  }
 }
 
 // D3DDevice_Resolve(pDevice, Flags, pSourceRect, pDestTexture, pDestPoint,
@@ -148,6 +325,11 @@ MGRN_HOOK_RAW(D3DDevice_Resolve) {
   if (!NativeRendererActive()) return MGRN_IMP(D3DDevice_Resolve)(ctx, base);
   const u32 flags = ctx.r4.u32, dest = ctx.r6.u32, level = ctx.r8.u32, slice = ctx.r9.u32;
   gpu::GuestTexture* dst = mgrn::native::ResolveDestination(dest);
+  const u32 dump_frame = DrawDumpFrame();
+  if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame)
+    MGRN_WARN("[draw-dump] RESOLVE flags=0x{:X} dest=0x{:08X} host={} {}x{}/{}", flags, dest,
+              static_cast<const void*>(dst), dst ? dst->width : 0, dst ? dst->height : 0,
+              dst ? u32(dst->format) : 0);
   if (!dst) {
     static std::atomic<u32> warned{0};
     if (warned.fetch_add(1, std::memory_order_relaxed) < 16)
@@ -156,13 +338,22 @@ MGRN_HOOK_RAW(D3DDevice_Resolve) {
   }
   gpu::Video::TrackResolveSource(flags, dst, level, slice);
   gpu::Video::ResolveRtToTexture(dst);
+  if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame) {
+    auto& s = gpu::state();
+    std::lock_guard lock(s.mutex);
+    const std::string tag = fmt::format("after-resolve-0x{:X}-to-{}x{}", flags, dst->width,
+                                        dst->height);
+    gpu::RecordDepthProbeLocked(s, s.depth_stencil, tag.c_str());
+  }
 }
 
 // D3DDevice_Swap(pDevice, pFrontBuffer, pParameters): pFrontBuffer is the
 // texture the engine just resolved the finished frame into.
 MGRN_EXTERN(D3DDevice_Swap);
 MGRN_HOOK_RAW(D3DDevice_Swap) {
-  if (NativeRendererActive())
+  if (NativeRendererActive()) {
     gpu::Video::Present(mgrn::native::LookupPresentTexture(ctx.r4.u32));
+    g_present_count.fetch_add(1, std::memory_order_relaxed);
+  }
   MGRN_IMP(D3DDevice_Swap)(ctx, base);
 }
