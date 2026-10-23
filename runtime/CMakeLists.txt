@@ -2,7 +2,7 @@
 # vendor/rexglue-sdk (bd833a2 = the shipped SDK binary's source) so runtime-side
 # fixes can ship without the full SDK superbuild (FFmpeg/SDL3/MoltenVK sources).
 # Reuses the vendored per-module CMakeLists unchanged; third-party deps come
-# from the prebuilt SDK (tools/sdk/mac-arm64). Local fixes: see PROGRESS.md.
+# from the prebuilt SDK (tools/sdk/mac-arm64). Local fixes: see patches/ and README.md.
 #
 #   cmake -S runtime -B build-tools/rexruntime -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
 #         -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++

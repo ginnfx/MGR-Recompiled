@@ -1,13 +1,16 @@
 Metal Gear Rising: Revengeance recompiled from the Xbox 360 version using [ReXGlue](https://github.com/rexglue/rexglue-sdk)
-Usa version of game i think
+Built against one exact `default.xex` (title ID `4B4E080A`, media ID `6CC18291`, version 4, no title update), SHA-256:
+`907c8ebe94f085924f230d815ffa0b89c65ce60adfd00184b047276954ddf443`
+Other regions or updated builds won't match the hardcoded addresses
 WIP, don't expect good performance . No Win11 build planned since that one works fine on steam
 you will prolly also see some streaks from raiden's sword that idk how to fix yet ;-;
 
 ## needed
 
-- Your own extracted Xbox 360 copy of the game
-- Clang with C++23 support
-- CMake 3⸱25 or newer
+- macOS on Apple Silicon (arm64)
+- Your own extracted Xbox 360 copy of the game (the build above)
+- Xcode Command Line Tools (the scripts use Apple clang at `/usr/bin/clang`, C++23)
+- CMake 3.25 or newer
 - Ninja
 - Python 3
 - Git
@@ -43,8 +46,20 @@ vendor/rexglue-sdk/
 vendor/glslang/
 ```
 
-The vendor setup still needs the project runtime and renderer changes
-A fresh clone alone isn't enough yet
+Set up the vendor sources and apply the MGR patches
+
+```sh
+git clone https://github.com/rexglue/rexglue-sdk.git vendor/rexglue-sdk
+git -C vendor/rexglue-sdk checkout bd833a2
+git -C vendor/rexglue-sdk apply ../../patches/xenos-gpu-mgr.patch
+git -C vendor/rexglue-sdk submodule update --init --depth 1 thirdparty/cli11 thirdparty/imgui thirdparty/FFmpeg thirdparty/libmspack
+git clone https://github.com/KhronosGroup/glslang.git vendor/glslang
+git -C vendor/glslang checkout f4f1d8a
+```
+
+`scripts/build-optimized.sh` (below) builds the patched runtime and GPU plugin
+`patches/rexglue-pr382-fp-traps.patch` is an upstream proposal and isn't part of the tested build
+`patches/xenosrecomp-mgr.patch` is only needed for the shader analysis tools
 
 ## Build and run
 

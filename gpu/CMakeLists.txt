@@ -7,7 +7,7 @@
 set(REXSDK_SRC ${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk)
 set(XENOS_SRC ${REXSDK_SRC}/src/graphics)
 if(NOT EXISTS ${XENOS_SRC}/plugin_main.cpp)
-    message(FATAL_ERROR "Missing ${XENOS_SRC}; see PROGRESS.md (vendor setup)")
+    message(FATAL_ERROR "Missing ${XENOS_SRC}; see README.md (vendor setup)")
 endif()
 
 set(XENOS_SOURCES
