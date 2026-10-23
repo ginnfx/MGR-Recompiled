@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <string_view>
 
 namespace rex::ui {
 class Window;
@@ -20,6 +21,8 @@ struct MgrResolutionStatus {
   std::string reason;
 };
 MgrResolutionStatus MgrGetResolutionStatus();
+// Sets the model LOD bias used by the guest chooser hook (mgr_lod.cpp).
+void MgrApplyLod(std::string_view value);
 std::string MgrActiveRenderTargetPrecision();
 // Saves user choices only: status cvars, per-launch values and the GPU cvars
 // that MgrApplySettings derives at startup are left out of the file.
