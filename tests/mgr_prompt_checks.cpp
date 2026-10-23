@@ -115,6 +115,9 @@ void CheckRoundCaps() {
     Check(icon.width == 49 && icon.height == 55, "round cap size");
     Check(Alpha(icon, 2, 2) == 0 && Alpha(icon, 46, 52) == 0, "round cap leaves the cell corners empty");
     Check(Alpha(icon, 9, 27) > 200, "round cap fills beside its label");
+    // The HUD highlight adds color without alpha: empty texels must be black.
+    const uint8_t* corner = icon.rgba.data();
+    Check(corner[0] == 0 && corner[1] == 0 && corner[2] == 0, "empty texels carry no color");
   }
 }
 
@@ -143,6 +146,12 @@ void CheckAtlas(const std::vector<uint8_t>& original, const char* dump_path) {
   const ButtonLabels labels = LabelsFor(DefaultBinds());
   const std::vector<uint8_t> patched = PatchAtlas(original, labels, RenderKeyIcon, kRoundButtons);
   Check(patched.size() == kAtlasBytes && patched != original, "atlas is patched");
+  // A patched HUD cell keeps its empty corner dark after DXT5 encoding.
+  {
+    const Image cell = DecodeAtlas(patched);
+    const uint8_t* corner = cell.rgba.data() + (size_t(456) * kAtlasWidth) * 4;  // B, act_btn
+    Check(corner[0] < 16 && corner[1] < 16 && corner[2] < 16, "encoded empty texels stay dark");
+  }
   // act_btn_sign_02 ('+') at (0,772) 34x31 is not an icon and must be preserved.
   const Image after = DecodeAtlas(patched);
   for (uint32_t y = 772; y < 772 + 31; ++y) {

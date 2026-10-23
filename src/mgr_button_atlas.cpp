@@ -130,13 +130,12 @@ void EncodeBlock(const uint8_t px[64], uint8_t* block) {
     const uint8_t a = px[i * 4 + 3];
     a_min = std::min(a_min, a);
     a_max = std::max(a_max, a);
-    if (!a) continue;  // invisible texels do not constrain color
+    // Invisible texels constrain color too: additive HUD draws show it.
     for (int c = 0; c < 3; ++c) {
       lo[c] = std::min<int>(lo[c], px[i * 4 + c]);
       hi[c] = std::max<int>(hi[c], px[i * 4 + c]);
     }
   }
-  if (a_max == 0) lo[0] = lo[1] = lo[2] = hi[0] = hi[1] = hi[2] = 255;
 
   uint8_t alpha[8];
   AlphaPalette(a_max, a_min, alpha);

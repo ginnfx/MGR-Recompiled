@@ -96,6 +96,7 @@ constexpr Choice kResolution[] = {
 constexpr Choice kFiltering[] = {{"Game default", "game"}, {"Off", "off"},
                                  {"2x", "2x"}, {"4x", "4x"}, {"8x", "8x"}, {"16x", "16x"}};
 constexpr Choice kPrecision[] = {{"High (accurate)", "high"}, {"Fast (less bandwidth)", "fast"}};
+constexpr Choice kLod[] = {{"Game default", "game"}, {"High (2x)", "high"}, {"Maximum", "max"}};
 constexpr Choice kPrompts[] = {{"Automatic (last used device)", "auto"},
                                {"Keyboard", "keyboard"},
                                {"Xbox", "xbox"},
@@ -121,6 +122,10 @@ constexpr Option kGraphics[] = {
     {"mgr_texture_filtering", "Texture filtering",
      "Anisotropic filtering. Game default preserves the game's own requests.", kFiltering,
      false},
+    {"mgr_lod", "Model detail",
+     "Detail of distant characters and objects. High doubles the detail distance and draw "
+     "distance; Maximum keeps full detail at any distance and draws four times as far.",
+     kLod, false},
     {"mgr_render_target_precision", "Render target precision",
      "Fast uses 8-bit sRGB gamma targets: half the bandwidth, slight banding possible.",
      kPrecision, true},

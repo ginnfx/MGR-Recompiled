@@ -178,9 +178,8 @@ Image RenderKeyIcon(const IconRect& rect, const std::string& label, bool round) 
     DrawLabel(c, label, text_box, size);
   }
   CGContextFlush(c);
-  // Everything drawn is white: store straight alpha with white color.
-  for (size_t i = 0; i < image.rgba.size(); i += 4) {
-    image.rgba[i] = image.rgba[i + 1] = image.rgba[i + 2] = 255;
-  }
+  // Keep the context's premultiplied white (color = alpha), like the original
+  // art's dark empty texels: the HUD's pulsing highlight adds the icon's color
+  // without its alpha, so white empty texels would light up the whole cell.
   return image;
 }

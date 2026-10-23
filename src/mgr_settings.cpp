@@ -74,6 +74,11 @@ REXCVAR_DEFINE_STRING(mgr_texture_filtering, "game", "MGR/Graphics",
                       "Anisotropic filtering: game (as requested by the Xbox 360 game), off, 2x, 4x, "
                       "8x, 16x")
     .allowed({"game", "off", "2x", "4x", "8x", "16x"});
+REXCVAR_DEFINE_STRING(mgr_lod, "game", "MGR/Graphics",
+                      "Model detail at a distance: game (original), high (detail levels and "
+                      "draw distance x2) or max (always full detail, draw distance x4). "
+                      "Applies immediately")
+    .allowed({"game", "high", "max"});
 REXCVAR_DEFINE_STRING(mgr_render_target_precision, "high", "MGR/Graphics",
                       "Gamma render targets: high (16-bit, matches Xbox 360 gamma) or fast "
                       "(8-bit sRGB, half the bandwidth; slight banding possible)")
@@ -199,6 +204,7 @@ void MgrApplySettings() {
   ApplyFrameRate(REXCVAR_GET(mgr_frame_rate));
   ApplyDisplaySync(REXCVAR_GET(mgr_vsync));
   ApplyFiltering(REXCVAR_GET(mgr_texture_filtering));
+  MgrApplyLod(REXCVAR_GET(mgr_lod));
   ApplyPrecision(REXCVAR_GET(mgr_render_target_precision));
   // Startup mirroring is not a user change awaiting a restart.
   rex::cvar::ClearPendingRestartFlags();
@@ -208,6 +214,8 @@ void MgrApplySettings() {
       "mgr_vsync", [](std::string_view, std::string_view value) { ApplyDisplaySync(value == "true"); });
   rex::cvar::RegisterChangeCallback(
       "mgr_texture_filtering", [](std::string_view, std::string_view value) { ApplyFiltering(value); });
+  rex::cvar::RegisterChangeCallback(
+      "mgr_lod", [](std::string_view, std::string_view value) { MgrApplyLod(value); });
   rex::cvar::RegisterChangeCallback(
       "mgr_render_target_precision",
       [](std::string_view, std::string_view value) { ApplyPrecision(value); });
