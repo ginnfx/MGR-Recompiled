@@ -216,12 +216,9 @@ void Video::FlushViewport() {
   }
 
   if (s.dirtyStates.scissorRect) {
-    // Scissor always tracks the viewport extent.
-    plume::RenderRect rc{static_cast<i32>(s.viewport.x),
-                         static_cast<i32>(s.viewport.y),
-                         static_cast<i32>(s.viewport.x + s.viewport.width),
-                         static_cast<i32>(s.viewport.y + s.viewport.height)};
-    s.command_list->setScissors(&rc, 1);
+    // The guest's window scissor: its SetScissorRect rect clamped to the
+    // viewport, or the viewport extent when scissor testing is off.
+    s.command_list->setScissors(&s.scissor, 1);
     s.dirtyStates.scissorRect = false;
   }
 }

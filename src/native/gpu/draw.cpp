@@ -10,6 +10,7 @@
  */
 #include "gpu/frame.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdlib>
@@ -163,10 +164,32 @@ constexpr u32 kDepthControlZEnable = 0x2u;
 constexpr u32 kModeControlCullBits = 0x3u;
 constexpr u32 kColorControlAlphaTestEnable = 0x8u;
 
+// PA_SC_WINDOW_SCISSOR_TL/BR images at device+0x28C4/+0x28C8 (regs2000[17..18]).
+// D3DDevice_SetScissorRect (826B8578) is their only writer: the guest rect
+// clamped to the viewport when scissor testing is on, else the viewport
+// extent. SetViewport and the enable toggle both rerun it.
+constexpr u32 kScissorTlIndex = (0x28C4 - 0x2880) / 4;
+constexpr u32 kScissorBrIndex = (0x28C8 - 0x2880) / 4;
+constexpr u32 kScissorCoordMask = 0x7FFFu;
+
+void ReadDeviceScissor(VideoState &s, const D3DDevice &dev) {
+  const u32 tl = dev.regs2000[kScissorTlIndex];
+  const u32 br = dev.regs2000[kScissorBrIndex];
+  const i32 left = i32(tl & kScissorCoordMask), top = i32((tl >> 16) & kScissorCoordMask);
+  const i32 right = std::max(left, i32(br & kScissorCoordMask));
+  const i32 bottom = std::max(top, i32((br >> 16) & kScissorCoordMask));
+  plume::RenderRect &rc = s.scissor;
+  if (rc.left == left && rc.top == top && rc.right == right && rc.bottom == bottom)
+    return;
+  rc = plume::RenderRect(left, top, right, bottom);
+  s.dirtyStates.scissorRect = true;
+}
+
 void ReadDeviceRenderState(VideoState &s, u32 device_guest) {
   const auto *dev = mgrn::mem::at<const D3DDevice>(device_guest);
   if (!dev)
     return;
+  ReadDeviceScissor(s, *dev);
   static const DiagStateOverrides kNone;
   const DiagStateOverrides &diag = DiagState();
   const DiagStateOverrides &o =
@@ -291,6 +314,9 @@ bool Video::FlushRenderStateLocked(u32 device_guest) {
   // and routes the rest through bdSetRenderState's dispatch table, so the
   // register shadow merges both.
   ReadDeviceRenderState(s, device_guest);
+  // BindDrawFramebuffer flushes only when the targets change; viewport and
+  // scissor also move between draws on one target (the radar, split views).
+  FlushViewport();
 
   // Anything missing here means the engine has not wired the pipeline up yet.
   if (!s.pipelineState.vertexShader || !s.pipelineState.vertexDeclaration) {

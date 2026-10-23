@@ -382,6 +382,8 @@ struct VideoState {
   std::unique_ptr<plume::RenderSampler> point_sampler;
 
   plume::RenderViewport viewport{0.0f, 0.0f, 1280.0f, 720.0f, 0.0f, 1.0f};
+  // Guest window scissor (ReadDeviceRenderState), already clamped to the viewport.
+  plume::RenderRect scissor{0, 0, 1280, 720};
   bool design_canvas_drain = false;
   PipelineState pipelineState{};
   DirtyStates dirtyStates{true};
