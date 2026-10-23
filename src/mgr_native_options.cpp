@@ -15,8 +15,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -43,7 +45,11 @@ constexpr float kCursorRowStep = 44.0f, kCursorGroupGap = 6.0f;
 constexpr int kDisplayFirstRow = 6, kSoundFirstRow = 9;
 // OptionGroup node ids for the two System slider bars (built by 82C44810).
 constexpr uint32_t kSliderSegmentIds = 136, kSliderSegments = 20;
-enum class Page { Categories, Retail, Graphics, MoreGraphics, Recompilation };
+enum class Page { Categories, Retail, Graphics, Screen, Misc };
+// The first three categories are the retail System/Display/Audio groups.
+constexpr const char* kCategories[] = {"SYSTEM", "DISPLAY", "AUDIO", "GRAPHICS", "SCREEN", "MISC"};
+constexpr int kFirstCustomCategory = 3;
+constexpr Page kCustomPages[] = {Page::Graphics, Page::Screen, Page::Misc};
 
 uint8_t* Guest(uint8_t* base, uint32_t a) { return REX_RAW_ADDR(a); }
 const uint8_t* Guest(const uint8_t* base, uint32_t a) { return REX_RAW_ADDR(a); }
@@ -77,22 +83,27 @@ constexpr Choice kPacing[] = {{"LOW LATENCY", "true"}, {"COMPATIBILITY", "false"
 constexpr Choice kFilter[] = {{"GAME DEFAULT", "game"}, {"OFF", "off"}, {"2X", "2x"}, {"4X", "4x"}, {"8X", "8x"}, {"16X", "16x"}};
 constexpr Choice kPrecision[] = {{"HIGH (ACCURATE)", "high"}, {"FAST (RESTART REQUIRED)", "fast"}};
 constexpr Choice kOutput[] = {{"MATCH GAME", "source"}, {"MATCH DISPLAY", "display"}, {"1920X1080 OUTPUT", "1920x1080"}, {"2560X1440 OUTPUT", "2560x1440"}};
-const Option kOptions[] = {
+constexpr Choice kLod[] = {{"GAME DEFAULT", "game"}, {"HIGH", "high"}, {"MAXIMUM", "max"}};
+// Each custom page fits the six retail row slots.
+const Option kGraphics[] = {
   {"mgr_resolution_scale", "INTERNAL RESOLUTION", "Changes internal rendering detail. Applies after the GPU rebuilds its resources.", kScale},
+  {"mgr_texture_filtering", "TEXTURE FILTERING", "Anisotropic filtering improves textures viewed at an angle.", kFilter},
+  {"mgr_lod", "MODEL DETAIL", "Detail and draw distance of far away characters and objects. Higher settings cost frame rate.", kLod},
+  {"mgr_render_target_precision", "RENDERING QUALITY", "High preserves the original gamma precision. Changing this setting requires a restart.", kPrecision},
+  {"mgr_film_grain", "FILM GRAIN", "Enables the original film grain post processing effect.", kBool},
+};
+const Option kScreen[] = {
+  {"mgr_output_resolution", "OUTPUT RESOLUTION", "Resizes the completed image. Internal rendering detail is controlled separately.", kOutput},
+  {"fullscreen", "FULLSCREEN", "Uses the current display in fullscreen mode.", kBool},
+  {"present_letterbox", "PRESERVE ASPECT RATIO", "Preserves the original image proportions on wider or taller displays.", kBool},
   {"mgr_vsync", "VSYNC", "Syncs frames to the display refresh, preventing tearing. Frame rates above the refresh rate need it off.", kBool},
   {"mgr_frame_rate", "FRAME RATE", "60 FPS is the original timing. Higher rates are experimental.", kRate},
   {"vulkan_nonblocking_guest_present", "FRAME PACING", "Low latency avoids blocking the game while waiting for a display image.", kPacing},
-  {"mgr_texture_filtering", "TEXTURE FILTERING", "Anisotropic filtering improves textures viewed at an angle.", kFilter},
-  {"mgr_render_target_precision", "RENDERING QUALITY", "High preserves the original gamma precision. Changing this setting requires a restart.", kPrecision},
-  {"mgr_film_grain", "FILM GRAIN", "Enables the original film grain post processing effect.", kBool},
-  {"fullscreen", "FULLSCREEN", "Uses the current display in fullscreen mode.", kBool},
-  {"mgr_output_resolution", "OUTPUT RESOLUTION", "Resizes the completed image. Internal rendering detail is controlled separately.", kOutput},
-  {"present_letterbox", "PRESERVE ASPECT RATIO", "Preserves the original image proportions on wider or taller displays.", kBool},
 };
 
 constexpr Choice kPrompts[] = {{"AUTOMATIC", "auto"}, {"KEYBOARD", "keyboard"}, {"XBOX", "xbox"}, {"PLAYSTATION", "playstation"}};
 constexpr Choice kSensitivity[] = {{"0.5", "0.5"}, {"1.0", "1"}, {"2.0", "2"}, {"3.0", "3"}};
-const Option kRecompilation[] = {
+const Option kMisc[] = {
   {"mgr_prompt_style", "BUTTON PROMPTS", "Automatic follows the keyboard or controller used last.", kPrompts},
   {"mnk_mouse", "MOUSE CAMERA", "Use the mouse for camera movement and free angle Blade Mode.", kBool},
   {"mnk_sensitivity", "MOUSE SENSITIVITY", "Changes mouse camera and Blade Mode sensitivity.", kSensitivity},
@@ -289,8 +300,23 @@ void Highlight(PPCContext& ctx, uint8_t* base, int row, bool selected) {
   Call(ctx, base, sub_82C40DD8, menu.object + 28, uint32_t(row), selected);
 }
 std::span<const Option> Options() {
-  if (menu.page == Page::Recompilation) return kRecompilation;
-  return menu.page == Page::Graphics ? std::span(kOptions).first(5) : std::span(kOptions).subspan(5);
+  switch (menu.page) {
+    case Page::Graphics: return kGraphics;
+    case Page::Screen: return kScreen;
+    case Page::Misc: return kMisc;
+    default: return {};
+  }
+}
+const char* PageTitle() {
+  switch (menu.page) {
+    case Page::Graphics: return "GRAPHICS";
+    case Page::Screen: return "SCREEN";
+    case Page::Misc: return "MISC";
+    default: return "OPTIONS";
+  }
+}
+bool OnRow(std::string_view key) {
+  return menu.row < int(Options().size()) && Options()[menu.row].key == key;
 }
 bool IsDeferred(const Option& option) { return std::string_view(option.key) == "mgr_resolution_scale"; }
 std::string RequestedScale() {
@@ -304,22 +330,27 @@ void ApplyPendingScale() {
   }
   menu.pending_scale.clear();
 }
+// Double cvars read back as "1.000000"; compare those to "1" numerically.
+bool IsChoice(const std::string& value, const char* choice) {
+  if (value == choice) return true;
+  char *value_end = nullptr, *choice_end = nullptr;
+  const double a = std::strtod(value.c_str(), &value_end), b = std::strtod(choice, &choice_end);
+  return value_end != value.c_str() && *value_end == '\0' && choice_end != choice && *choice_end == '\0' && a == b;
+}
 std::string Value(const Option& option) {
   const auto value = IsDeferred(option) ? RequestedScale() : rex::cvar::GetFlagByName(option.key);
-  for (const Choice& c : option.choices) if (value == c.value) return c.label;
+  for (const Choice& c : option.choices) if (IsChoice(value, c.value)) return c.label;
   return value;
 }
 void Labels(uint8_t* base) {
   const uint32_t group = menu.object + 28;
-  constexpr const char* categories[] = {"SYSTEM", "DISPLAY", "AUDIO", "GRAPHICS", "RECOMPILATION"};
   for (int i = 0; i < 6; ++i) {
     std::string label, value;
     if (menu.page == Page::Categories) {
-      if (i < 5) label = categories[i];
+      label = kCategories[i];
     } else if (i < int(Options().size())) {
       const auto& option = Options()[i]; label = option.label; value = Value(option);
-    } else if (menu.page != Page::Recompilation)
-      label = menu.page == Page::Graphics ? "MORE GRAPHICS" : "PREVIOUS GRAPHICS";
+    }
     const bool shown = !label.empty();
     Visible(base, group, U32(base, group + 40 + i * 4), shown);
     Visible(base, group, U32(base, group + 64 + i * 4), shown);
@@ -334,12 +365,12 @@ void Labels(uint8_t* base) {
     const uint32_t id = U32(base, group + kSliderSegmentIds + k * 4);
     if (id) Visible(base, group, id, false);
   }
-  SetText(base, group, 5, menu.page == Page::Categories ? "OPTIONS" : menu.page == Page::Recompilation ? "RECOMPILATION" : "GRAPHICS", 8);
-  SetText(base, group, 6, menu.page == Page::Categories ? "OPTIONS" : menu.page == Page::Recompilation ? "RECOMPILATION" : "GRAPHICS", 8);
+  SetText(base, group, 5, PageTitle(), 8);
+  SetText(base, group, 6, PageTitle(), 8);
   const char* help = menu.page == Page::Categories ? "SELECT AN OPTIONS CATEGORY." :
-      menu.row < int(Options().size()) ? Options()[menu.row].help : "SELECT TO VIEW THE OTHER GRAPHICS SETTINGS.";
+      menu.row < int(Options().size()) ? Options()[menu.row].help : "";
   std::string wrapped(help);
-  if (menu.page == Page::Graphics && menu.row == 0) {
+  if (OnRow("mgr_resolution_scale")) {
     const auto status = MgrGetResolutionStatus();
     const auto resolution = [](const std::string& scale) {
       for (const Choice& c : kScale)
@@ -347,12 +378,12 @@ void Labels(uint8_t* base) {
       return "UNAVAILABLE";
     };
     if (!menu.pending_scale.empty())
-      wrapped = Value(kOptions[0]) + " applies when you close Options. Active: " + resolution(status.active) + ".";
+      wrapped = Value(kGraphics[0]) + " applies when you close Options. Active: " + resolution(status.active) + ".";
     else
-      wrapped = "Requested: " + Value(kOptions[0]) + ". Active: " + resolution(status.active) + ". " + status.state + ".";
+      wrapped = "Requested: " + Value(kGraphics[0]) + ". Active: " + resolution(status.active) + ". " + status.state + ".";
     if (status.state == "failed") wrapped += " " + status.reason.substr(0, 55);
   }
-  if (menu.page == Page::MoreGraphics && menu.row == 0 &&
+  if (OnRow("mgr_render_target_precision") &&
       rex::cvar::GetFlagByName("mgr_render_target_precision") != MgrActiveRenderTargetPrecision())
     wrapped = "Restart the game to apply this rendering quality.";
   size_t start = 0;
@@ -363,6 +394,11 @@ void Labels(uint8_t* base) {
   }
   SetText(base, menu.object, U32(base, menu.object + 864), wrapped);
 }
+// The controller diagram and its legend belong to the retail System page.
+void ControllerDiagram(uint8_t* base, bool shown) {
+  Visible(base, menu.object, 9, shown);
+  for (uint32_t id = 12; id <= 34; ++id) Visible(base, menu.object, id, shown);
+}
 void CustomPage(PPCContext& ctx, uint8_t* base, Page page, int row = 0) {
   Restore(base);
   menu.page = page; menu.row = row;
@@ -370,9 +406,7 @@ void CustomPage(PPCContext& ctx, uint8_t* base, Page page, int row = 0) {
     const bool first = offset == 28;
     Visible(base, menu.object, U32(base, menu.object + 848 + ((offset - 28) / 268) * 4), first);
   }
-  // The controller diagram belongs to the retail Controls page.
-  Visible(base, menu.object, 9, false);
-  for (uint32_t id = 12; id <= 34; ++id) Visible(base, menu.object, id, false);
+  ControllerDiagram(base, false);
   // A retail category leaves groups 1 and 2 active; custom pages use group 0.
   for (int i = 0; i < 3; ++i) Call(ctx, base, sub_82C40F08, menu.object + kGroupOffsets[i], i == 0);
   for (int i = 0; i < 6; ++i) Highlight(ctx, base, i, false);
@@ -396,6 +430,7 @@ void RetailPage(PPCContext& ctx, uint8_t* base, int category) {
   // first group's slot. Restore() puts both back.
   for (int k = 0; k < 3; ++k)
     Visible(base, menu.object, U32(base, menu.object + kGroupContainers + k * 4), k == category);
+  ControllerDiagram(base, category == 0);
   const uint32_t container = Node(base, menu.object, U32(base, menu.object + kGroupContainers + category * 4));
   if (category > 0 && container) {
     menu.lifted_node = container; menu.lifted_y = U32(base, container + kNodeY);
@@ -493,7 +528,7 @@ bool MgrNativeOptionsUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
     Save(); CustomPage(ctx, base, Page::Categories, menu.category); Sound(ctx, base, 0x8218A524); return true;
   }
   if (up || down) {
-    const int count = menu.page == Page::Categories ? 5 : menu.page == Page::Recompilation ? int(Options().size()) : 6;
+    const int count = menu.page == Page::Categories ? int(std::size(kCategories)) : int(Options().size());
     Highlight(ctx, base, menu.row, false);
     menu.row = (menu.row + (down ? 1 : count - 1)) % count;
     std::fprintf(stderr, "[mgr-native-options] select page=%d row=%d\n", int(menu.page), menu.row);
@@ -502,19 +537,15 @@ bool MgrNativeOptionsUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
     Sound(ctx, base, 0x8218A538);
   } else if (menu.page == Page::Categories && confirm) {
     menu.category = menu.row;
-    if (menu.row == 3) CustomPage(ctx, base, Page::Graphics);
-    else if (menu.row == 4) CustomPage(ctx, base, Page::Recompilation);
-    else RetailPage(ctx, base, menu.row);
-    Sound(ctx, base, 0x8218A660);
-  } else if ((menu.page == Page::Graphics || menu.page == Page::MoreGraphics) && menu.row == 5 && (confirm || left || right)) {
-    CustomPage(ctx, base, menu.page == Page::Graphics ? Page::MoreGraphics : Page::Graphics);
+    if (menu.row < kFirstCustomCategory) RetailPage(ctx, base, menu.row);
+    else CustomPage(ctx, base, kCustomPages[menu.row - kFirstCustomCategory]);
     Sound(ctx, base, 0x8218A660);
   } else if (menu.page != Page::Categories && menu.row < int(Options().size()) && (left || right)) {
     const auto& option = Options()[menu.row];
     const bool deferred = IsDeferred(option);
     const std::string current = deferred ? RequestedScale() : rex::cvar::GetFlagByName(option.key);
     size_t i = 0;
-    for (size_t n = 0; n < option.choices.size(); ++n) if (current == option.choices[n].value) i = n;
+    for (size_t n = 0; n < option.choices.size(); ++n) if (IsChoice(current, option.choices[n].value)) i = n;
     const size_t next = (i + (right ? 1 : option.choices.size() - 1)) % option.choices.size();
     if (deferred) {
       const std::string_view value = option.choices[next].value;
