@@ -1,0 +1,99 @@
+diff --git a/plume_metal.cpp b/plume_metal.cpp
+index 5a9d686..79cf566 100644
+--- a/plume_metal.cpp
++++ b/plume_metal.cpp
+@@ -339,6 +339,8 @@ namespace plume {
+                 return MTL::PixelFormatRGBA8Unorm;
+             case RenderFormat::R8G8B8A8_UNORM:
+                 return MTL::PixelFormatRGBA8Unorm;
++            case RenderFormat::R8G8B8A8_UNORM_SRGB:
++                return MTL::PixelFormatRGBA8Unorm_sRGB;
+             case RenderFormat::R8G8B8A8_UINT:
+                 return MTL::PixelFormatRGBA8Uint;
+             case RenderFormat::R8G8B8A8_SNORM:
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index be1c5c3..5ff8cc3 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -161,6 +161,8 @@ namespace plume {
+         BC7_UNORM,
+         BC7_UNORM_SRGB,
+         R11G11B10_FLOAT,
++        // MGR: 8-bit sRGB color, for Xbox 360 gamma render targets and textures.
++        R8G8B8A8_UNORM_SRGB,
+         D24_UNORM_S8_UINT,
+         MAX
+     };
+@@ -546,6 +548,7 @@ namespace plume {
+             return 8;
+         case RenderFormat::R8G8B8A8_TYPELESS:
+         case RenderFormat::R8G8B8A8_UNORM:
++        case RenderFormat::R8G8B8A8_UNORM_SRGB:
+         case RenderFormat::R8G8B8A8_UINT:
+         case RenderFormat::R8G8B8A8_SNORM:
+         case RenderFormat::R8G8B8A8_SINT:
+@@ -631,6 +634,7 @@ namespace plume {
+         case RenderFormat::R32G32_SINT:
+         case RenderFormat::R8G8B8A8_TYPELESS:
+         case RenderFormat::R8G8B8A8_UNORM:
++        case RenderFormat::R8G8B8A8_UNORM_SRGB:
+         case RenderFormat::R8G8B8A8_UINT:
+         case RenderFormat::R8G8B8A8_SNORM:
+         case RenderFormat::R8G8B8A8_SINT:
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 11abda8..2b7487e 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -145,6 +145,8 @@ namespace plume {
+             return VK_FORMAT_R8G8B8A8_UNORM;
+         case RenderFormat::R8G8B8A8_UNORM:
+             return VK_FORMAT_R8G8B8A8_UNORM;
++        case RenderFormat::R8G8B8A8_UNORM_SRGB:
++            return VK_FORMAT_R8G8B8A8_SRGB;
+         case RenderFormat::R8G8B8A8_UINT:
+             return VK_FORMAT_R8G8B8A8_UINT;
+         case RenderFormat::R8G8B8A8_SNORM:
+@@ -3250,6 +3252,31 @@ namespace plume {
+             imageCopy.imageExtent.depth = srcLocation.placedFootprint.depth;
+             vkCmdCopyBufferToImage(vk, srcBuffer->vk, dstTexture->vk, toImageLayout(dstTexture->textureLayout), 1, &imageCopy);
+         }
++        else if ((dstLocation.type == RenderTextureCopyType::PLACED_FOOTPRINT) && (srcLocation.type == RenderTextureCopyType::SUBRESOURCE)) {
++            // MGR: texture readback (image to buffer).
++            assert(srcTexture != nullptr);
++            assert(dstBuffer != nullptr);
++
++            const uint32_t blockWidth = RenderFormatBlockWidth(srcTexture->desc.format);
++            VkBufferImageCopy imageCopy = {};
++            imageCopy.bufferOffset = dstLocation.placedFootprint.offset;
++            imageCopy.bufferRowLength = ((dstLocation.placedFootprint.rowWidth + blockWidth - 1) / blockWidth) * blockWidth;
++            imageCopy.bufferImageHeight = ((dstLocation.placedFootprint.height + blockWidth - 1) / blockWidth) * blockWidth;
++            imageCopy.imageSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
++            imageCopy.imageSubresource.baseArrayLayer = srcLocation.subresource.arrayIndex;
++            imageCopy.imageSubresource.layerCount = 1;
++            imageCopy.imageSubresource.mipLevel = srcLocation.subresource.mipLevel;
++            if (srcBox != nullptr) {
++                imageCopy.imageOffset = { srcBox->left, srcBox->top, srcBox->front };
++                imageCopy.imageExtent = { uint32_t(srcBox->right - srcBox->left), uint32_t(srcBox->bottom - srcBox->top), uint32_t(srcBox->back - srcBox->front) };
++            }
++            else {
++                imageCopy.imageExtent.width = dstLocation.placedFootprint.width;
++                imageCopy.imageExtent.height = dstLocation.placedFootprint.height;
++                imageCopy.imageExtent.depth = dstLocation.placedFootprint.depth;
++            }
++            vkCmdCopyImageToBuffer(vk, srcTexture->vk, toImageLayout(srcTexture->textureLayout), dstBuffer->vk, 1, &imageCopy);
++        }
+         else {
+             VkImageCopy imageCopy = {};
+             imageCopy.srcSubresource.aspectMask = toAspectFlags(srcTexture->desc.format, srcTexture->desc.flags);
+@@ -4481,7 +4508,10 @@ namespace plume {
+     // VulkanInterface
+ 
+     VulkanInterface::VulkanInterface() {
+-        VkResult res = volkInitialize();
++        // MGR: the host may already have pointed volk at a loader it opened by
++        // absolute path (volkInitializeCustom), since dyld only honors
++        // DYLD_LIBRARY_PATH at launch.
++        VkResult res = (vkGetInstanceProcAddr != nullptr) ? VK_SUCCESS : volkInitialize();
+         if (res != VK_SUCCESS) {
+             fprintf(stderr, "volkInitialize failed with error code 0x%X.\n", res);
+             return;

@@ -69,6 +69,9 @@ rexglue_setup_target(mgr GPU_PLUGINS xenos)
 foreach(_target mgr mgr_recomp rexgpu-xenos)
     mgr_apply_compiler_options(${_target})
 endforeach()
+# rexgpu-mgrnull is staged next to mgr by its LIBRARY_OUTPUT_DIRECTORY.
+add_dependencies(mgr rexgpu-mgrnull)
+include(cmake/native_renderer.cmake)
 # Guest addresses may alias through different scalar/vector access types.
 # Higher optimization must not assume ordinary C++ typed-object alias rules.
 # PPC integer arithmetic wraps; generated addi/addic use signed C++ intermediates.
@@ -171,6 +174,13 @@ add_executable(mgr_native_math_checks EXCLUDE_FROM_ALL tests/mgr_native_math_che
 target_include_directories(mgr_native_math_checks PRIVATE src generated/default)
 target_link_libraries(mgr_native_math_checks PRIVATE rex::runtime)
 mgr_apply_compiler_options(mgr_native_math_checks)
+
+# D3D-library call census for native renderer bring-up (run with MGR_D3D_CENSUS=1).
+option(MGR_D3D_CENSUS "Wrap every XDK D3D function to count calls per frame" OFF)
+if(MGR_D3D_CENSUS)
+    target_sources(mgr PRIVATE src/mgr_d3d_census.cpp)
+    target_compile_definitions(mgr PRIVATE MGR_D3D_CENSUS=1)
+endif()
 
 # Native guest memcpy (MGR_NATIVE_MEMORY=0 restores the guest body).
 target_sources(mgr PRIVATE src/mgr_native_memory.cpp)
