@@ -131,6 +131,9 @@ struct FrameMeter {
 }  // namespace
 
 void MgrD3DTraceOnPresent();  // mgr_d3d_trace.cpp
+#if MGR_D3D_CENSUS
+void MgrD3DCensusOnPresent();  // mgr_d3d_census.cpp
+#endif
 
 float MgrGuestFPS() { return guest_fps.load(std::memory_order_relaxed); }
 
@@ -141,6 +144,9 @@ extern "C" REX_FUNC(__imp__VdSwap) {
   static FrameMeter meter;  // VdSwap is only called from the guest render thread
   meter.OnFrame();
   MgrD3DTraceOnPresent();
+#if MGR_D3D_CENSUS
+  MgrD3DCensusOnPresent();
+#endif
   MgrTimingOnPresent(base);
   MgrPromptsOnPresent();
   MgrTestScriptOnPresent();

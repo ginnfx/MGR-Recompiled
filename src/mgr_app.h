@@ -17,6 +17,9 @@
 #include "mgr_native_options.h"
 #include "mgr_menu_fonts.h"
 #include "mgr_test_script.h"
+#if MGR_NATIVE_RENDERER
+#include "native/mgr_native.h"
+#endif
 
 #include <chrono>
 #include <cstdio>
@@ -44,7 +47,11 @@ class MgrApp : public rex::ReXApp {
  protected:
   // MGR options feed the GPU/runtime cvars before the plugin loads.
   void OnPreSetup(rex::RuntimeConfig& config) override {
+#if MGR_NATIVE_RENDERER
+    mgrn::MgrNativeConfigure(config);
+#else
     (void)config;
+#endif
     // Menu repaint ownership is session state, never a boot-time preference.
     rex::cvar::SetFlagByName("imgui_guest_paced", "false");
     if (rex::cvar::GetFlagSource("mnk_mode") == rex::cvar::Source::kDefault)
@@ -67,7 +74,25 @@ class MgrApp : public rex::ReXApp {
   }
 
   // Native guest Options owns settings access; F2 is a developer fallback.
-  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override {
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override { InstallGameUi(drawer); }
+
+#if MGR_NATIVE_RENDERER
+  // The native renderer has no SDK presenter, so ReXApp never builds overlays
+  // or calls OnCreateDialogs; its device and the game UI come up here, after
+  // the runtime exists and before the guest main thread starts.
+  void OnPreLaunchModule() override {
+    if (!mgrn::NativeRendererActive()) return;
+    if (!mgrn::MgrNativeStart(window())) {
+      app_context().QuitFromUIThread();
+      return;
+    }
+    InstallGameUi(nullptr);
+  }
+#endif
+
+ private:
+  // drawer is null without SDK overlays (native renderer): no F2 dialog then.
+  void InstallGameUi(rex::ui::ImGuiDrawer* drawer) {
     MgrTestScriptAttachWindow();  // the window has just opened
     // Cvar callbacks may originate off the UI thread. The weak token prevents
     // queued resize work from accessing this app after shutdown.
@@ -96,7 +121,7 @@ class MgrApp : public rex::ReXApp {
     MgrNativeOptionsConfigure(config_path_);
     // The retail Options lifecycle owns normal settings access. The legacy
     // host dialog is available only when explicitly enabling developer tools.
-    if (!std::getenv("MGR_DEVELOPER_UI")) return;
+    if (!drawer || !std::getenv("MGR_DEVELOPER_UI")) return;
     rex::ui::RegisterBind("bind_mgr_options", "F2", "Toggle MGR options", [this, drawer] {
       if (options_dialog_) {
         options_dialog_.reset();
@@ -108,6 +133,7 @@ class MgrApp : public rex::ReXApp {
     });
   }
 
+ protected:
   void OnWindowPixelSizeChanged(uint32_t, uint32_t) override {
     MgrApplyOutputResolution(window());
   }
@@ -181,10 +207,8 @@ class MgrApp : public rex::ReXApp {
       std::this_thread::sleep_for(CAPTURE_POLL);
       if (std::chrono::steady_clock::now() < next) continue;
       next += CAPTURE_INTERVAL;
-      auto* gs = runtime() ? runtime()->graphics_system() : nullptr;
-      auto* presenter = gs ? gs->presenter() : nullptr;
       rex::ui::RawImage image;
-      if (!presenter || !presenter->CaptureGuestOutput(image)) {
+      if (!CaptureFrame(image)) {
         std::fprintf(stderr, "[mgr-capture] no guest output yet\n");
         continue;
       }
@@ -200,16 +224,24 @@ class MgrApp : public rex::ReXApp {
         std::this_thread::sleep_for(SCRIPTED_CAPTURE_POLL);
         continue;
       }
-      auto* gs = runtime() ? runtime()->graphics_system() : nullptr;
-      auto* presenter = gs ? gs->presenter() : nullptr;
       rex::ui::RawImage image;
-      if (presenter && presenter->CaptureGuestOutput(image)) {
+      if (CaptureFrame(image)) {
         WritePpm(out_dir + "/" + name + ".ppm", image);
       } else {
         std::fprintf(stderr, "[mgr-capture] %s: no guest output yet\n", name.c_str());
       }
       MgrTestScriptCaptureDone();
     }
+  }
+
+  // The guest frame from the SDK presenter, or the native renderer's present.
+  bool CaptureFrame(rex::ui::RawImage& image) {
+#if MGR_NATIVE_RENDERER
+    if (mgrn::NativeRendererActive()) return mgrn::MgrNativeCapture(image);
+#endif
+    auto* gs = runtime() ? runtime()->graphics_system() : nullptr;
+    auto* presenter = gs ? gs->presenter() : nullptr;
+    return presenter && presenter->CaptureGuestOutput(image);
   }
 
   static void WritePpm(const std::string& path, const rex::ui::RawImage& image) {

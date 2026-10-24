@@ -16,7 +16,7 @@ if [ -n "${MGR_RUNTIME_DIR:-}" ]; then
   echo "runtime override: $MGR_RUNTIME_DIR"
 fi
 ./mgr \
-  --gpu_plugin=xenos \
+  --gpu_plugin="${MGR_GPU_PLUGIN:-xenos}" \
   --game_data_root="$ROOT/private/game" \
   --user_data_root="${MGR_USER_DATA_ROOT:-$ROOT/private/user}" \
   --cache_root="$ROOT/private/cache" \

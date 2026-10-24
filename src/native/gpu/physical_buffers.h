@@ -1,0 +1,50 @@
+/**
+ * @file    gpu/physical_buffers.h
+ * @brief   Registry bridging engine-owned D3DVertexBuffer/D3DIndexBuffer struct
+ *          VAs (asset-loaded geometry that bypasses CreateVertex/IndexBuffer)
+ * to host GuestBuffers. Owns its own mutex, separate from VideoState.
+ *
+ * @copyright Copyright (c) 2026 Tom Clay <tomc@tctechstuff.com>
+ *            All rights reserved.
+ * @license   BSD 3-Clause License
+ *            See LICENSE file in the project root for full license text.
+ */
+#pragma once
+
+#include <rex/types.h>
+
+namespace mgrn::gpu {
+
+struct GuestBuffer;
+enum class ResourceType : u32;
+
+// For an engine-owned D3DIndexBuffer / D3DVertexBuffer struct VA that missed
+// HostResourceHeap::FromGuest. Bootstrap rebuilds and registers a host
+// GuestBuffer from a fully initialized X360 struct, for buffers no
+// creation-time registration ever saw (asset-loaded meshes patched by an
+// unhooked loader).
+GuestBuffer *FindPhysicalBufferByStruct(u32 struct_va);
+GuestBuffer *AdoptPhysicalBuffer(u32 struct_va,
+                                               ResourceType rtype);
+
+// FindPhysicalBufferByStruct, then AdoptPhysicalBuffer. Used by
+// every draw/lock hook that binds a physical VB/IB by its engine-owned VA.
+// Re-adopts a struct now describing other memory. Content rewrites are left to
+// RefreshIfWritten, since the caller must rebind every view of a replaced
+// buffer.
+GuestBuffer *ResolveGuestBufferVa(u32 va, ResourceType rtype);
+
+// Re-copies 'buf' from guest memory if the guest wrote it since the last
+// copy. True when the host buffer was replaced, so bound views must be reset.
+bool RefreshIfWritten(GuestBuffer *buf);
+
+// Called once per GuestBuffer the registry evicts, before it is destroyed and
+// outside the registry lock, so holders of raw pointers to it can drop them.
+using GuestBufferEvictedFn = void (*)(const GuestBuffer *);
+void SetGuestBufferEvictedListener(GuestBufferEvictedFn fn);
+
+// Free the plume buffers retired by the registry's stale-reuse refresh. Runs
+// from the per-slot post-fence drain, so no in-flight list references them.
+void DrainBufferGraveyard(u32 slot);
+
+} // namespace mgrn::gpu

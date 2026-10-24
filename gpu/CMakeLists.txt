@@ -60,3 +60,28 @@ target_link_libraries(rexgpu-xenos PRIVATE
     rex::SPIRV
     rex::glslang
 )
+
+# rexgpu-mgrnull: guest GPU services without rendering, for the native renderer
+# (mgr_renderer=native). Same SDK GraphicsSystem/CommandProcessor sources as
+# rexgpu-xenos, so vblank, fences, interrupts and ring write-back behave
+# identically; draws, resolves, shader loads and swaps are no-ops.
+set(MGR_NULL_GPU_SOURCES
+    flags.cpp register_file.cpp registers.cpp graphics_system.cpp command_processor.cpp
+    packet_disassembler.cpp pipeline/shader/shader.cpp format/ucode.cpp sampler_info.cpp
+)
+list(TRANSFORM MGR_NULL_GPU_SOURCES PREPEND ${XENOS_SRC}/)
+add_library(rexgpu-mgrnull SHARED ${MGR_NULL_GPU_SOURCES}
+    ${CMAKE_CURRENT_SOURCE_DIR}/null/mgr_null_gpu.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/mgr_cmd_stats.cpp)
+set_target_properties(rexgpu-mgrnull PROPERTIES
+    OUTPUT_NAME_DEBUG rexgpu-mgrnulld
+    OUTPUT_NAME_RELWITHDEBINFO rexgpu-mgrnullrd
+    OUTPUT_NAME_RELEASE rexgpu-mgrnull
+    LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
+target_include_directories(rexgpu-mgrnull BEFORE PRIVATE
+    ${REXSDK_SRC}/include ${REXSDK_SRC} ${REXSDK_SRC}/src)
+target_compile_options(rexgpu-mgrnull PRIVATE -Wno-unused-variable -Wno-deprecated-declarations)
+target_link_libraries(rexgpu-mgrnull PRIVATE rex::runtime rex::xxhash)
