@@ -91,7 +91,7 @@ void MirrorVertexDeclaration(u32 decl_va) {
   {
     // The recompiled VS guards each semantic's R11G11B10 decode on its own bit.
     auto& s = gpu::state();
-      u32 spec = s.pipelineState.specConstants & ~gpu::kSpecConstantR11G11B10Mask;
+    u32 spec = s.pipelineState.specConstants & ~gpu::kSpecConstantR11G11B10Mask;
     if (decl) spec |= decl->r11g11b10Spec;
     gpu::Video::SetDirtyValue<u32>(s.dirtyStates.pipelineState, s.pipelineState.specConstants,
                                    spec);
@@ -101,7 +101,7 @@ void MirrorVertexDeclaration(u32 decl_va) {
 
 // Geometry bound through the hooks, so a draw can re-copy what the guest
 // rewrote while it stayed bound. Guest render thread only, like the setters.
-constexpr u32 kStreamCount = 16;
+constexpr u32 kStreamCount = mgrn::native::kBoundStreamCount;
 // Draw-time header re-points logged; later ones are not reported.
 constexpr u32 kMaxRepointLogs = 32;
 struct BoundStream {
@@ -219,43 +219,13 @@ void mgrn::native::RefreshBoundGeometry(u32 device_guest, bool indexed) {
   if (indexed) RefreshAndRebind(g_indices);
 }
 
-std::string mgrn::native::DescribeBoundStreams(u32 device_guest, u32 stream_count) {
-  // Adopted buffers are keyed by their struct VA, so compare host objects.
-  const auto* dev = mgrn::mem::at<const gpu::D3DDevice>(device_guest);
-  auto describe = [](const char* name, u32 guest, const gpu::GuestBuffer* ours) {
-    const gpu::GuestBuffer* expected = guest ? gpu::FindPhysicalBufferByStruct(guest) : nullptr;
-    return std::format(" {}=0x{:08X}{}", name, guest,
-                       expected == ours ? "" : (expected ? "!STALE" : "!UNADOPTED"));
-  };
-  // First bytes of the bound data, as the guest stored them (big-endian).
-  auto head_bytes = [](const gpu::GuestBuffer* buf, u32 offset) {
-    constexpr u32 kHeadBytes = 32;
-    if (!buf || !buf->guestMirrorVa || offset + kHeadBytes > buf->dataSize)
-      return std::string();
-    const auto* src = mgrn::mem::try_at<const u8>(buf->guestMirrorVa + offset);
-    if (!src)
-      return std::string();
-    std::string hex = " [";
-    for (u32 b = 0; b < kHeadBytes; ++b)
-      hex += std::format("{}{:02X}", (b && b % 4 == 0) ? " " : "", src[b]);
-    return hex + "]";
-  };
-  std::string out;
-  for (u32 i = 0; i < stream_count && i < kStreamCount; ++i) {
-    const BoundStream& bound = g_streams[i];
-    out += describe(std::format("s{}", i).c_str(), dev ? u32(dev->streamSources[i]) : 0,
-                    bound.buffer);
-    if (bound.buffer)
-      out += std::format(" base=0x{:08X}+{} stride={} size={}{}", bound.buffer->guestMirrorVa,
-                         bound.offset, bound.stride, bound.buffer->dataSize,
-                         head_bytes(bound.buffer, bound.offset));
-  }
-  out += describe("ib", dev ? u32(dev->indexBuffer) : 0, g_indices);
-  if (g_indices)
-    out += std::format(" base=0x{:08X} size={} elem={}{}", g_indices->guestMirrorVa,
-                       g_indices->dataSize, g_indices->elementSize, head_bytes(g_indices, 0));
-  return out;
+mgrn::native::BoundStreamInfo mgrn::native::BoundStreamAt(u32 stream) {
+  if (stream >= kStreamCount) return {};
+  const BoundStream& bound = g_streams[stream];
+  return {bound.buffer, bound.offset, bound.stride};
 }
+
+const gpu::GuestBuffer* mgrn::native::BoundIndexBuffer() { return g_indices; }
 
 // --- Render targets ----------------------------------------------------------
 

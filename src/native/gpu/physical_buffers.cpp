@@ -185,12 +185,19 @@ bool RefreshPhysicalBufferLocked(mgrn::gpu::GuestBuffer *buf, u32 base_va,
   buf->guestMirrorVa = base_va;
   buf->elementSize = element_size;
   buf->writeStamp = stamp;
+  // Dev: a guest write that lands while the copy runs means another thread
+  // was still filling the buffer, so the host copy mixes two states of it.
+  static u64 s_torn = 0; // guarded by the mutex
+  if (mgrn::DevMode() && mgrn::gpu::write_watch::WrittenSince(base_va, size, stamp) &&
+      s_torn++ < 64)
+    MGRN_INFO("[torn-copy] physical buffer {:#010x}+{:#x} written during its refresh copy",
+              base_va, size);
   // Rewritten geometry costs a full re-copy, so keep its volume visible.
   static u64 s_refreshes = 0, s_refresh_bytes = 0; // guarded by the mutex
   s_refresh_bytes += size;
   if ((++s_refreshes & 1023u) == 0)
-    MGRN_INFO("Physical buffer refreshes: {} ({} MiB re-copied)", s_refreshes,
-              s_refresh_bytes >> 20);
+    MGRN_INFO("Physical buffer refreshes: {} ({} MiB re-copied, {} torn)", s_refreshes,
+              s_refresh_bytes >> 20, s_torn);
   return true;
 }
 
@@ -216,6 +223,13 @@ mgrn::gpu::GuestBuffer *RegisterPhysicalBufferOnce(u32 base_va, u32 size,
     if (cached->dataSize == size && cached->type == rtype) {
       return cached; // the same mesh is still at this address
     }
+    static u32 s_reshapes = 0; // guarded by g_physicalBuffersMutex
+    if (s_reshapes++ < 64)
+      MGRN_INFO("physical buffer {:#010x} reshaped: {} {} bytes (elem {}) -> {} {} bytes "
+                "(elem {})",
+                base_va, cached->type == mgrn::gpu::ResourceType::IndexBuffer ? "ib" : "vb",
+                cached->dataSize, cached->elementSize, is_index ? "ib" : "vb", size,
+                element_size);
     cached->type = rtype;
     if (RefreshPhysicalBufferLocked(cached, base_va, size, element_size))
       cached->format = plume::RenderFormat::UNKNOWN; // caller re-pins IB format
@@ -345,6 +359,7 @@ mgrn::gpu::GuestBuffer *GetOrCreateBlockMeshLocked(PhysicalBlock &a, u32 base_va
   gb->ownsMirror = false;
   gb->dataSize = size;
   gb->format = format;
+  gb->elementSize = element_size;
   mgrn::gpu::GuestBuffer *raw = gb.get();
   a.meshes[offset] = std::move(gb);
   return raw;

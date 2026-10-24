@@ -8,10 +8,12 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdlib>
 #include <format>
 #include <string>
 #include <mutex>
+#include <unordered_set>
 #include <vector>
 
 #include <rex/graphics/xenos.h>
@@ -178,6 +180,33 @@ char SkipPrepassMode() {
   return mode;
 }
 
+// Dev bisection: MGR_NATIVE_SKIP_DRAWS=skinned-colour | static-colour |
+// <vs hash>[,<vs hash>...] drops those colour draws.
+bool SkipBisectedDraw(const gpu::PipelineState& ps) {
+  static const std::string spec = [] {
+    const char* value = std::getenv("MGR_NATIVE_SKIP_DRAWS");
+    return (mgrn::DevMode() && value) ? std::string(value) : std::string();
+  }();
+  if (spec.empty())
+    return false;
+  // vb:<hex base VA> drops every draw (depth-only included) reading that buffer.
+  static const u32 skip_buffer_va = [] {
+    const size_t at = spec.find("vb:");
+    return at == std::string::npos ? 0u : u32(std::strtoul(spec.c_str() + at + 3, nullptr, 16));
+  }();
+  if (skip_buffer_va && mgrn::native::DrawReadsGuestBuffer(skip_buffer_va))
+    return true;
+  if (ps.colorWriteEnable == 0)
+    return false;
+  const bool skinned = gpu::IsSkinnedDeclaration(ps.vertexDeclaration);
+  if (spec == "skinned-colour")
+    return skinned;
+  if (spec == "static-colour")
+    return !skinned;
+  const std::string hash = std::format("{:016X}", ShaderHash(ps.vertexShader));
+  return spec.find(hash) != std::string::npos;
+}
+
 bool SkipPrepassDraw(const gpu::PipelineState& ps) {
   const char mode = SkipPrepassMode();
   if (ps.colorWriteEnable != 0 || (mode != '1' && mode != '2'))
@@ -212,6 +241,55 @@ void ProbeDepthBeforeDraw(gpu::VideoState& s) {
   probed = true;
   gpu::RecordDepthProbeLocked(s, s.depth_stencil,
                               skinned ? "before-skinned-colour" : "before-static-colour");
+}
+
+// Dev: logs (rate-limited) VS constant registers holding +-inf at draw time.
+// Xenos multiplies 0 * inf to 0; the recompiled shaders give NaN.
+void CheckInfConstants(u32 device_guest, u32 present, u64 vs_hash) {
+  constexpr u32 kMaxReports = 100;
+  static std::atomic<u32> reported{0};
+  if (reported.load(std::memory_order_relaxed) >= kMaxReports)
+    return;
+  const auto* dev = mgrn::mem::at<const gpu::D3DDevice>(device_guest);
+  if (!dev)
+    return;
+  for (u32 r = 0; r < 256; ++r)
+    for (u32 c = 0; c < 4; ++c)
+      if (std::isinf(float(dev->vsFloatConstants[r][c]))) {
+        if (reported.fetch_add(1, std::memory_order_relaxed) < kMaxReports)
+          MGRN_WARN("[inf-const] present {} vs={:016X} c{}.{} = {}", present, vs_hash, r,
+                    "xyzw"[c], float(dev->vsFloatConstants[r][c]));
+        return;
+      }
+}
+
+// Dev: logs each (vs, ps) pair drawn in a frame that the previous frame did
+// not draw, to catch draws that only occur in some frames.
+void NoteRareShaderPair(const gpu::VideoState& s, u32 present, u32 primitive_type,
+                        const DrawArgs& args) {
+  static std::unordered_set<u64> previous, current;
+  static u32 current_present = 0;
+  static std::atomic<u32> reported{0};
+  constexpr u32 kMaxReports = 2000;
+  // Present 4700 onward: idle gameplay on the census route.
+  constexpr u32 kFirstPresent = 4700;
+  if (present != current_present) {
+    previous.swap(current);
+    current.clear();
+    current_present = present;
+  }
+  const auto& ps = s.pipelineState;
+  const u64 vs = ShaderHash(ps.vertexShader), pix = ShaderHash(ps.pixelShader);
+  const u64 key = vs * 0x9E3779B97F4A7C15ull ^ pix;
+  if (!current.insert(key).second || present < kFirstPresent || previous.count(key) ||
+      reported.fetch_add(1, std::memory_order_relaxed) >= kMaxReports)
+    return;
+  MGRN_WARN("[rare-pair] present {} vs={:016X} ps={:016X} prim={} {}={} blend={} cw=0x{:X} "
+            "decl={:016X}{}",
+            present, vs, pix, primitive_type, args.indexed ? "idx" : "vtx",
+            args.vertex_or_index_count, ps.alphaBlendEnable ? 1 : 0, ps.colorWriteEnable,
+            ps.vertexDeclaration ? ps.vertexDeclaration->hash : 0,
+            gpu::IsSkinnedDeclaration(ps.vertexDeclaration) ? " SKINNED" : "");
 }
 
 // Indexed quad list: expands the guest's indices (4 per quad) into two
@@ -270,11 +348,33 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
 
   auto* cmd_list = s.command_list;
   if (!cmd_list) return;
-  if (SkipPrepassDraw(s.pipelineState))
+  if (SkipPrepassDraw(s.pipelineState) || SkipBisectedDraw(s.pipelineState))
     return;
+  if (mgrn::DevMode())
+    NoteRareShaderPair(s, g_present_count.load(std::memory_order_relaxed), primitive_type, args);
+  if (mgrn::DevMode())
+    mgrn::native::CheckIndexStability(args.indexed, args.start_index, args.vertex_or_index_count,
+                                      g_present_count.load(std::memory_order_relaxed));
+  if (mgrn::DevMode())
+    CheckInfConstants(device_guest, g_present_count.load(std::memory_order_relaxed),
+                      ShaderHash(s.pipelineState.vertexShader));
+  if (mgrn::DevMode() && gpu::IsSkinnedDeclaration(s.pipelineState.vertexDeclaration))
+    mgrn::native::CheckSkinSanity(device_guest, s.pipelineState.vertexDeclaration, args.indexed,
+                                  args.indexed ? args.start_index : args.start_vertex,
+                                  args.vertex_or_index_count, args.base_vertex_index,
+                                  kBonePaletteFirstReg, kBonePaletteRegs,
+                                  g_present_count.load(std::memory_order_relaxed),
+                                  ShaderHash(s.pipelineState.vertexShader));
+  if (mgrn::DevMode())
+    mgrn::native::CheckStreamBounds(s.pipelineState.vertexDeclaration, args.indexed,
+                                    args.indexed ? args.start_index : args.start_vertex,
+                                    args.vertex_or_index_count, args.base_vertex_index,
+                                    g_present_count.load(std::memory_order_relaxed));
   const u32 dump_frame = DrawDumpFrame();
   if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame) {
     ProbeDepthBeforeDraw(s);
+    static u32 noted_draws = 0;
+    mgrn::native::NoteDrawGeometry(noted_draws++);
     DumpDraw(s, primitive_type, args);
     if (gpu::IsSkinnedDeclaration(s.pipelineState.vertexDeclaration) ||
         s.pipelineState.colorWriteEnable == 0) {
@@ -284,6 +384,13 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
       MGRN_WARN("[draw-dump]   streams{}",
                 mgrn::native::DescribeBoundStreams(device_guest, kDumpStreamCount));
       MGRN_WARN("[draw-dump]   decl{}", DescribeDecl(s.pipelineState.vertexDeclaration));
+      if (gpu::IsSkinnedDeclaration(s.pipelineState.vertexDeclaration))
+        MGRN_WARN("[draw-dump]   skin{}",
+                  mgrn::native::CheckSkinReferences(
+                      device_guest, s.pipelineState.vertexDeclaration, args.indexed,
+                      args.indexed ? args.start_index : args.start_vertex,
+                      args.vertex_or_index_count, args.base_vertex_index,
+                      kBonePaletteFirstReg, kBonePaletteRegs));
     }
   }
 
@@ -435,6 +542,9 @@ MGRN_HOOK_RAW(D3DDevice_Resolve) {
 MGRN_EXTERN(D3DDevice_Swap);
 MGRN_HOOK_RAW(D3DDevice_Swap) {
   if (NativeRendererActive()) {
+    const u32 dump_frame = DrawDumpFrame();
+    if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame)
+      mgrn::native::ReportLateGeometryWrites();
     gpu::Video::Present(mgrn::native::LookupPresentTexture(ctx.r4.u32));
     g_present_count.fetch_add(1, std::memory_order_relaxed);
     // A new mgr_resolution_scale takes effect from the next frame's targets.
