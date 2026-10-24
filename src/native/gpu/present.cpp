@@ -191,9 +191,22 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt,
 
 } // namespace
 
-void Video::Clear(u32 flags, u32 color_argb, float depth, u32 stencil) {
-  auto &s = state();
-  std::lock_guard lock(s.mutex);
+namespace {
+
+// Guest-pixel rectangles to host pixels of a target at 'scale'.
+std::vector<plume::RenderRect>
+ScaleClearRects(const std::vector<plume::RenderRect> &guest_rects, float scale) {
+  std::vector<plume::RenderRect> host;
+  host.reserve(guest_rects.size());
+  for (const auto &r : guest_rects)
+    host.emplace_back(i32(r.left * scale), i32(r.top * scale),
+                      i32(r.right * scale), i32(r.bottom * scale));
+  return host;
+}
+
+void ClearLocked(VideoState &s, u32 flags, plume::RenderColor color,
+                 float depth, u32 stencil,
+                 const std::vector<plume::RenderRect> &guest_rects) {
   s.frame_present_committed = false;
   BeginCommandList(s);
   if (!s.command_list_open)
@@ -206,14 +219,41 @@ void Video::Clear(u32 flags, u32 color_argb, float depth, u32 stencil) {
   const bool clear_stencil = (flags & kClearStencil) != 0 && ds != nullptr;
   if (!clear_color && !clear_depth && !clear_stencil)
     return;
-  if (!BindDrawFramebufferLocked(clear_color))
+  if (!Video::BindDrawFramebufferLocked(clear_color))
     return;
+  const GuestTexture *scaled = rt ? rt : ds;
+  const auto rects = ScaleClearRects(guest_rects, scaled->renderScale);
+  const plume::RenderRect *rect_data = rects.empty() ? nullptr : rects.data();
+  const u32 rect_count = u32(rects.size());
   if (clear_color)
-    s.command_list->clearColor(0, ArgbToRenderColor(color_argb));
+    s.command_list->clearColor(0, color, rect_data, rect_count);
   if (clear_depth || clear_stencil) {
     s.command_list->clearDepthStencil(clear_depth, clear_stencil, depth,
-                                      stencil);
+                                      stencil, rect_data, rect_count);
   }
+}
+
+} // namespace
+
+void Video::Clear(u32 flags, u32 color_argb, float depth, u32 stencil,
+                  const std::vector<plume::RenderRect> &guest_rects) {
+  auto &s = state();
+  std::lock_guard lock(s.mutex);
+  ClearLocked(s, flags, ArgbToRenderColor(color_argb), depth, stencil,
+              guest_rects);
+}
+
+void Video::Clear(u32 flags, plume::RenderColor color, float depth,
+                  u32 stencil) {
+  auto &s = state();
+  std::lock_guard lock(s.mutex);
+  ClearLocked(s, flags, color, depth, stencil, {});
+}
+
+void Video::ArmNextPresent() {
+  auto &s = state();
+  std::lock_guard lock(s.mutex);
+  s.frame_present_committed = false;
 }
 
 void Video::RequestResize() {

@@ -341,6 +341,44 @@ MGRN_HOOK_RAW(D3DDevice_DrawVertices) {
 
 // D3DDevice_Clear(pDevice, Count, pRects, Flags, Color, Z, Stencil). Z travels
 // in f1 but still consumes the r8 slot, so Stencil is r9.
+// Count big-endian D3DRECTs (x1, y1, x2, y2) at rects_va, in guest pixels.
+std::vector<plume::RenderRect> ReadClearRects(u32 count, u32 rects_va) {
+  constexpr u32 kMaxClearRects = 64;
+  std::vector<plume::RenderRect> rects;
+  if (!count || !rects_va) return rects;
+  const auto* raw = mgrn::mem::try_at<const be_i32>(rects_va);
+  if (!raw) return rects;
+  count = std::min(count, kMaxClearRects);
+  for (u32 i = 0; i < count; ++i)
+    rects.emplace_back(i32(raw[i * 4 + 0]), i32(raw[i * 4 + 1]), i32(raw[i * 4 + 2]),
+                       i32(raw[i * 4 + 3]));
+  return rects;
+}
+
+// Resolve-and-clear: what D3DDevice_Resolve clears after its copy.
+constexpr u32 kResolveClearRenderTarget = 0x100u;
+constexpr u32 kResolveClearDepthStencil = 0x200u;
+// ClearStencil is the tenth argument: the caller's stack, where the guest
+// body loads it (lwz r29,252(r1) after its 160-byte stwu).
+constexpr u32 kResolveClearStencilStackOffset = 92;
+
+void ResolveClear(const PPCContext& ctx) {
+  const u32 flags = ctx.r4.u32;
+  u32 clear = 0;
+  plume::RenderColor color{};
+  if ((flags & kResolveClearRenderTarget) && ctx.r10.u32) {
+    if (const auto* c = mgrn::mem::try_at<const be_f32>(ctx.r10.u32)) {
+      color = plume::RenderColor(float(c[0]), float(c[1]), float(c[2]), float(c[3]));
+      clear |= gpu::kClearTarget;
+    }
+  }
+  if (flags & kResolveClearDepthStencil)
+    clear |= gpu::kClearZBuffer | gpu::kClearStencil;
+  if (!clear) return;
+  const auto* stencil = mgrn::mem::try_at<const be_u32>(ctx.r1.u32 + kResolveClearStencilStackOffset);
+  gpu::Video::Clear(clear, color, float(ctx.f1.f64), stencil ? u32(*stencil) : 0u);
+}
+
 MGRN_EXTERN(D3DDevice_Clear);
 MGRN_HOOK_RAW(D3DDevice_Clear) {
   if (!NativeRendererActive()) return MGRN_IMP(D3DDevice_Clear)(ctx, base);
@@ -351,7 +389,8 @@ MGRN_HOOK_RAW(D3DDevice_Clear) {
               ctx.r6.u32, ctx.r7.u32, float(ctx.f1.f64), ctx.r9.u32,
               static_cast<const void*>(s.render_target), static_cast<const void*>(s.depth_stencil));
   }
-  gpu::Video::Clear(ctx.r6.u32, ctx.r7.u32, float(ctx.f1.f64), ctx.r9.u32);
+  gpu::Video::Clear(ctx.r6.u32, ctx.r7.u32, float(ctx.f1.f64), ctx.r9.u32,
+                    ReadClearRects(ctx.r4.u32, ctx.r5.u32));
   if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame &&
       (ctx.r6.u32 & gpu::kClearZBuffer)) {
     auto& s = gpu::state();
@@ -376,10 +415,12 @@ MGRN_HOOK_RAW(D3DDevice_Resolve) {
     static std::atomic<u32> warned{0};
     if (warned.fetch_add(1, std::memory_order_relaxed) < 16)
       MGRN_WARN("native resolve: destination 0x{:08X} has no host texture", dest);
+    ResolveClear(ctx);
     return;
   }
   gpu::Video::TrackResolveSource(flags, dst, level, slice);
   gpu::Video::ResolveRtToTexture(dst);
+  ResolveClear(ctx);
   if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame) {
     auto& s = gpu::state();
     std::lock_guard lock(s.mutex);
@@ -398,6 +439,7 @@ MGRN_HOOK_RAW(D3DDevice_Swap) {
     g_present_count.fetch_add(1, std::memory_order_relaxed);
     // A new mgr_resolution_scale takes effect from the next frame's targets.
     gpu::RefreshSceneRenderScale();
+    gpu::Video::ArmNextPresent();
   }
   MGRN_IMP(D3DDevice_Swap)(ctx, base);
 }

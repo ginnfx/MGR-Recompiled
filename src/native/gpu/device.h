@@ -62,7 +62,15 @@ public:
   // Same, but the caller holds state().mutex.
   static void OpenCommandListLocked();
 
-  static void Clear(u32 flags, u32 color_argb, float depth, u32 stencil);
+  // guest_rects are in guest pixels; empty clears the whole target.
+  static void Clear(u32 flags, u32 color_argb, float depth, u32 stencil,
+                    const std::vector<plume::RenderRect> &guest_rects = {});
+  // Same, with a float colour (resolve-and-clear passes a D3DVECTOR4).
+  static void Clear(u32 flags, plume::RenderColor color, float depth,
+                    u32 stencil);
+  // Allows the next Present: one per guest Swap, whether or not the frame
+  // called Clear.
+  static void ArmNextPresent();
 
   static void ClearTexture(GuestTexture *texture, u32 color_argb);
 
