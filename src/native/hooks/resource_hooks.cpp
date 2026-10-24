@@ -208,7 +208,12 @@ gpu::GuestTexture* CreateRenderableTexture(u32 texture_va, const TextureCreateAr
   texture->viewDimension = view_dimension;
   texture->textureHolder = gpu::CreateHostTexture(device, desc, "guest-texture");
   texture->texture = texture->textureHolder.get();
-  if (texture->texture && !gpu::IsDepthFormat(format)) {
+  if (texture->texture && gpu::IsDepthFormat(format)) {
+    // BindTextureSRV creates the backend's depth-aspect sampling view.
+    texture->format = format;
+    texture->mipLevels = desc.mipLevels;
+    gpu::Video::BindTextureSRV(texture);
+  } else if (texture->texture) {
     plume::RenderTextureViewDesc view_desc;
     view_desc.format = format;
     view_desc.dimension = view_dimension;

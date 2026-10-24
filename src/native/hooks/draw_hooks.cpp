@@ -526,7 +526,32 @@ MGRN_HOOK_RAW(D3DDevice_Resolve) {
     return;
   }
   gpu::Video::TrackResolveSource(flags, dst, level, slice);
-  gpu::Video::ResolveRtToTexture(dst);
+  if (gpu::IsDepthFormat(dst->format)) {
+    auto& state = gpu::state();
+    auto* src = (flags & gpu::kResolveDepthStencil) ? state.depth_stencil : state.render_target;
+    if (src) {
+      plume::RenderRect rect(0, 0, i32(src->width / src->renderScale),
+                                  i32(src->height / src->renderScale));
+      if (ctx.r5.u32) {
+        const auto* r = mgrn::mem::try_at<const be_u32>(ctx.r5.u32);
+        if (!r) return;
+        rect = plume::RenderRect(i32(u32(r[0])), i32(u32(r[1])), i32(u32(r[2])), i32(u32(r[3])));
+      }
+      i32 x = 0, y = 0;
+      if (ctx.r7.u32) {
+        const auto* p = mgrn::mem::try_at<const be_u32>(ctx.r7.u32);
+        if (!p) return;
+        x = i32(u32(p[0])); y = i32(u32(p[1]));
+      }
+      static std::atomic<u32> noted{0};
+      if (noted.fetch_add(1) < 8)
+        MGRN_DEV_WARN("[depth-region] dest=0x{:08X} src={},{},{},{} dst={},{} {}x{}",
+                  dest, rect.left, rect.top, rect.right, rect.bottom, x, y, dst->width, dst->height);
+      gpu::Video::ResolveRtToTexture(dst, &rect, x, y);
+    }
+  } else {
+    gpu::Video::ResolveRtToTexture(dst);
+  }
   ResolveClear(ctx);
   if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame) {
     auto& s = gpu::state();

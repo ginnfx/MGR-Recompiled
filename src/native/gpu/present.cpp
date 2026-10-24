@@ -15,6 +15,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <mutex>
 #include <thread>
 
@@ -160,7 +161,9 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt,
       plume::RenderRect(off_x, off_y, off_x + static_cast<i32>(fit_w),
                         off_y + static_cast<i32>(fit_h)));
   constexpr float kPresentGamma = 1.0f;
-  constexpr float kPresentDisplayCorrection = 1.0f;
+  // Match Xenos' uncorrected front-buffer scanout. The re:Blue TV LUT
+  // reshaping is game-specific and is not part of MGR's native contract.
+  constexpr float kPresentDisplayCorrection = 0.0f;
   s.command_list->setPipeline(s.gamma_correction_pipeline.get());
   struct PresentPushConstants {
     u32 descriptor_index;
@@ -325,7 +328,20 @@ void Video::Present(GuestTexture *frontBuffer) {
 
   BeginCommandList(s);
   RecordPresentPass(s, rt, back, back_fb);
-  RecordCaptureCopy(s, rt);  // MGR: test harness readback
+  // Optional scanout capture includes the present ramp and sRGB view decode;
+  // the default guest-buffer capture preserves internal-resolution texels.
+  static const bool capture_present = std::getenv("MGR_NATIVE_CAPTURE_PRESENT") != nullptr;
+  if (capture_present) {
+    GuestTexture presented;
+    presented.texture = back;
+    presented.width = s.swap_chain->getWidth();
+    presented.height = s.swap_chain->getHeight();
+    presented.format = plume::RenderFormat::B8G8R8A8_UNORM;
+    presented.layout = plume::RenderTextureLayout::PRESENT;
+    RecordCaptureCopy(s, &presented);
+  } else {
+    RecordCaptureCopy(s, rt);
+  }
 
   const u32 cur = s.frame.load(std::memory_order_relaxed);
   s.command_lists[cur]->end();
