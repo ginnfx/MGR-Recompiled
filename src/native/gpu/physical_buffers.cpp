@@ -498,8 +498,22 @@ bool ReadBufferStruct(u32 struct_va, ResourceType rtype,
   const auto *raw = mgrn::mem::at<const D3DVertexBuffer>(struct_va);
   if (!raw)
     return false;
-  out.base_va = u32(raw->FetchLo) & 0xFFFFFFFCu;
-  out.size = u32(raw->FetchHi) & 0x03FFFFFCu;
+  // Two encodings (d3d.h). Post-XGOffset FetchLo holds a physical-heap VA
+  // (>= 0xA0000000); the bdPhysical*Create replication puts the size there,
+  // which the 26-bit size field caps below kPreXGOffsetLimit.
+  constexpr u32 kPreXGOffsetLimit = 0x04000000u;
+  const u32 fetch_lo = u32(raw->FetchLo), fetch_hi = u32(raw->FetchHi);
+  if (fetch_lo < kPreXGOffsetLimit) {
+    // The IB replication stores a masked base the data does not live at, so
+    // only the creation-time registration knows it.
+    if (rtype == ResourceType::IndexBuffer)
+      return false;
+    out.base_va = fetch_hi & 0xFFFFFFFCu;
+    out.size = fetch_lo & 0x03FFFFFCu;
+  } else {
+    out.base_va = fetch_lo & 0xFFFFFFFCu;
+    out.size = fetch_hi & 0x03FFFFFCu;
+  }
   if (!out.base_va || !out.size)
     return false;
   // The IB bswap stride depends on the index format (bit 31 of dword[0] =
