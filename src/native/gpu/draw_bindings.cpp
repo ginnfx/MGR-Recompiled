@@ -50,6 +50,14 @@ void Video::SetTexture(u32 index, GuestTexture *texture) {
   s.textures[index] = texture;
 }
 
+void Video::UnbindTexture(u32 index) {
+  if (index >= kFetchSlotCount)
+    return;
+  auto &s = state();
+  std::lock_guard lock(s.mutex);
+  s.textures[index] = nullptr;
+}
+
 void Video::SetVertexShader(GuestShader *shader) {
   auto &s = state();
   std::lock_guard lock(s.mutex);

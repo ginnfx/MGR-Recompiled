@@ -269,6 +269,13 @@ MGRN_EXTERN(D3DDevice_SetTexture);
 MGRN_HOOK_RAW(D3DDevice_SetTexture) {
   const u32 sampler = ctx.r4.u32, texture = ctx.r5.u32;
   MGRN_IMP(D3DDevice_SetTexture)(ctx, base);
-  if (NativeRendererActive())
-    gpu::Video::SetTexture(sampler, mgrn::native::ResolveTexture(texture));
+  if (!NativeRendererActive())
+    return;
+  gpu::GuestTexture* host = mgrn::native::ResolveTexture(texture);
+  // A real texture the mirror could not build (the k_24_8_FLOAT shadow map) must not
+  // leave the slot's previous texture bound for the shader to read.
+  if (texture && !host)
+    gpu::Video::UnbindTexture(sampler);
+  else
+    gpu::Video::SetTexture(sampler, host);
 }
