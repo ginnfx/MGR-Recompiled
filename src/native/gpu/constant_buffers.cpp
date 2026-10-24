@@ -165,6 +165,12 @@ ConstantAllocation Allocate(UploadState &s, u32 size, u32 alignment) {
 // post-fx composite. No BD shader reinterprets a float constant register as
 // int, so the flush cannot corrupt int-encoded data. Branchless (cmov) and
 // fused into the byte swap so it adds no extra memory pass.
+// +-Inf constants become +-FLT_MAX for the same reason: Xenos gives 0 * Inf =
+// 0, IEEE gives NaN. MGR keeps Inf in fog parameters (c184.x), a register the
+// skinned shaders also read as a bone row. FLT_MAX keeps 0 * x = 0 and still
+// saturates like Inf anywhere it is used non-zero.
+constexpr u32 kFltMaxBits = 0x7F7FFFFFu;
+
 template <bool kFlushNaN>
 void CopyByteSwap32Impl(u8 *dst, u32 guest_va, u32 size) {
   const auto *src = mgrn::mem::at<const u32>(guest_va);
@@ -184,9 +190,13 @@ void CopyByteSwap32Impl(u8 *dst, u32 guest_va, u32 size) {
     v = _mm_shufflelo_epi16(v, _MM_SHUFFLE(2, 3, 0, 1));
     v = _mm_shufflehi_epi16(v, _MM_SHUFFLE(2, 3, 0, 1));
     if constexpr (kFlushNaN) {
-      const __m128i is_nan =
-          _mm_cmpgt_epi32(_mm_and_si128(v, abs_mask), inf_bits);
+      const __m128i magnitude = _mm_and_si128(v, abs_mask);
+      const __m128i is_nan = _mm_cmpgt_epi32(magnitude, inf_bits);
+      const __m128i is_inf = _mm_cmpeq_epi32(magnitude, inf_bits);
+      const __m128i clamped =
+          _mm_or_si128(_mm_andnot_si128(abs_mask, v), _mm_set1_epi32(kFltMaxBits));
       v = _mm_andnot_si128(is_nan, v);
+      v = _mm_or_si128(_mm_andnot_si128(is_inf, v), _mm_and_si128(is_inf, clamped));
     }
     _mm_storeu_si128(reinterpret_cast<__m128i *>(out + i), v);
   }
@@ -199,7 +209,10 @@ void CopyByteSwap32Impl(u8 *dst, u32 guest_va, u32 size) {
 #endif
     if constexpr (kFlushNaN) {
       // NaN iff exponent all-1 and mantissa != 0, i.e. |bits| > +Inf bits.
-      out[i] = (v & 0x7FFFFFFFu) > 0x7F800000u ? 0u : v;
+      const u32 magnitude = v & 0x7FFFFFFFu;
+      out[i] = magnitude > 0x7F800000u    ? 0u
+               : magnitude == 0x7F800000u ? (v & 0x80000000u) | kFltMaxBits
+                                          : v;
     } else {
       out[i] = v;
     }
