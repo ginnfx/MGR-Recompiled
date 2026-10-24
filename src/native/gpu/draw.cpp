@@ -71,6 +71,11 @@ struct DepthBias {
   float slope = 0.0f;
 };
 
+// Extra bias on scene depth pre-pass draws (see ReadDeviceRenderState): a
+// few depth units plus one pixel's depth slope, well past float rounding.
+constexpr i32 kPrepassDepthBias = -8;
+constexpr float kPrepassSlopeDepthBias = -1.0f;
+
 constexpr u32 kModeCullFront = 0x1u;
 constexpr u32 kModeCullBack = 0x2u;
 constexpr u32 kModePolyOffsetFront = 1u << 11;
@@ -243,12 +248,25 @@ void ReadDeviceRenderState(VideoState &s, u32 device_guest) {
   (void)ref_mask_bf;  // plume takes one ref/mask pair for both faces
 
   Video::SetDirtyValue(dirty, ps.cullMode, ReadCullMode(mode));
-  const DepthBias bias = ReadDepthBias(*dev, mode, IsPolygonal(ps.primitiveTopology));
+  DepthBias bias = ReadDepthBias(*dev, mode, IsPolygonal(ps.primitiveTopology));
+  const u32 color_mask = ReadDeviceRegister(*dev, kRegColorMask, 0xFu) & 0xFu;
+  // MGR's depth pre-pass and colour pass are separate shaders that Xenos ran
+  // to bit-identical depth; Metal compiles their float math independently, so
+  // a colour triangle can land slightly behind its own pre-pass and fail the
+  // GREATER_EQUAL test (black triangles). Push scene pre-pass depth slightly
+  // farther; reversed Z makes farther negative. Shadow maps are reversed too
+  // but square, and biasing their casters would shift the shadows.
+  const bool scene_prepass = color_mask == 0 && ps.zEnable && ps.zWriteEnable &&
+                             s.viewport.minDepth > s.viewport.maxDepth &&
+                             s.depth_stencil && s.depth_stencil->followsSceneScale;
+  if (scene_prepass) {
+    bias.constant += kPrepassDepthBias;
+    bias.slope += kPrepassSlopeDepthBias;
+  }
   Video::SetDirtyValue(dirty, ps.depthBias, bias.constant);
   Video::SetDirtyValue(dirty, ps.slopeScaledDepthBias, bias.slope);
   Video::SetDirtyValue(dirty, ps.fillMode, ReadFillMode(mode));
-  Video::SetDirtyValue(dirty, ps.colorWriteEnable,
-                       ReadDeviceRegister(*dev, kRegColorMask, 0xFu) & 0xFu);
+  Video::SetDirtyValue(dirty, ps.colorWriteEnable, color_mask);
 
   // Alpha test is fixed-function on Xenos; the recompiled PS clips on the spec
   // constant against g_AlphaThreshold ("pass if alpha >= ref").
