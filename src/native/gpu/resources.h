@@ -130,6 +130,9 @@ struct GuestBuffer {
   // write_watch stamp it was taken under.
   u32 elementSize = 4;
   u32 writeStamp = 0;
+  // Physical registry tick of the last bind or draw that resolved it, so
+  // per-buffer records the engine stopped using can be evicted.
+  u32 lastUseTick = 0;
 
   // True once a host RenderBuffer (owned or block-shared) backs this buffer.
   bool hasBuffer() const { return blockBuffer != nullptr || buffer != nullptr; }

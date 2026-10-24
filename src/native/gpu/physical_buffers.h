@@ -38,6 +38,11 @@ GuestBuffer *ResolveGuestBufferVa(u32 va, ResourceType rtype);
 // copy. True when the host buffer was replaced, so bound views must be reset.
 bool RefreshIfWritten(GuestBuffer *buf);
 
+// Called once per GuestBuffer the registry evicts, before it is destroyed and
+// outside the registry lock, so holders of raw pointers to it can drop them.
+using GuestBufferEvictedFn = void (*)(const GuestBuffer *);
+void SetGuestBufferEvictedListener(GuestBufferEvictedFn fn);
+
 // Free the plume buffers retired by the registry's stale-reuse refresh. Runs
 // from the per-slot post-fence drain, so no in-flight list references them.
 void DrainBufferGraveyard(u32 slot);

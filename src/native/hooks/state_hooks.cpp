@@ -163,6 +163,19 @@ u32 DeclaredStreamMask() {
   return mask;
 }
 
+// Drops raw pointers to a buffer the physical registry is about to destroy.
+void ForgetEvictedBuffer(const gpu::GuestBuffer* buf) {
+  for (u32 i = 0; i < kStreamCount; ++i)
+    if (g_streams[i].buffer == buf) BindVertexStream(i, nullptr, 0, 0);
+  if (g_indices == buf) {
+    g_indices = nullptr;
+    gpu::Video::SetIndices(nullptr);
+  }
+}
+
+const bool g_evicted_listener_set =
+    (gpu::SetGuestBufferEvictedListener(&ForgetEvictedBuffer), true);
+
 }  // namespace
 
 void mgrn::native::RefreshBoundGeometry(u32 device_guest, bool indexed) {

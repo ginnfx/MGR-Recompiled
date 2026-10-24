@@ -18,6 +18,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <plume_render_interface.h>
@@ -71,6 +72,15 @@ struct PhysicalBlock {
   std::unordered_map<u32, std::unique_ptr<mgrn::gpu::GuestBuffer>> meshes;
 };
 std::map<u32 /*block base*/, PhysicalBlock> g_physicalBlocks;
+
+mgrn::gpu::GuestBufferEvictedFn g_evictedListener = nullptr;
+
+// Advanced once per drained frame slot. Per-buffer records idle this long are
+// evicted: the engine re-points per-frame headers at new memory and frees
+// effect/UI buffers, and nothing else ever removes those records.
+u32 g_registryTick = 0;
+constexpr u32 kIdleEvictTicks = 600;
+constexpr u32 kIdleSweepInterval = 64;
 
 // Live host geometry buffers owned by g_physicalBuffers, both guarded by
 // g_physicalBuffersMutex. Tracked so UPLOAD heap growth is visible.
@@ -225,6 +235,7 @@ mgrn::gpu::GuestBuffer *RegisterPhysicalBufferOnce(u32 base_va, u32 size,
   guest_buffer->format = plume::RenderFormat::UNKNOWN;
   guest_buffer->elementSize = element_size;
   guest_buffer->writeStamp = stamp;
+  guest_buffer->lastUseTick = g_registryTick;
 
   mgrn::gpu::GuestBuffer *raw = guest_buffer.get();
   g_physicalBuffers[base_va] = PhysicalBufferRecord{std::move(guest_buffer)};
@@ -378,6 +389,74 @@ mgrn::gpu::GuestBuffer *RegisterPhysicalGeometry(u32 struct_va, u32 base_va,
   return buf;
 }
 
+// Drops every struct bridge to 'gb' and parks its plume buffer for 'slot'.
+// Caller holds g_physicalBuffersMutex and destroys 'gb' after FinishEviction.
+void RetireRecordLocked(mgrn::gpu::GuestBuffer *gb, u32 slot,
+                        std::vector<plume::RenderBuffer *> &scrub) {
+  for (auto sit = g_physicalBufferStructs.begin();
+       sit != g_physicalBufferStructs.end();) {
+    if (sit->second == gb)
+      sit = g_physicalBufferStructs.erase(sit);
+    else
+      ++sit;
+  }
+  if (gb->buffer) {
+    scrub.push_back(gb->buffer.get());
+    g_physicalBufferGraveyard[slot].push_back(std::move(gb->buffer));
+  }
+}
+
+// Outside the registry lock: ScrubBufferBindings takes s.mutex, and the
+// listener drops raw pointers before 'dead' destroys the GuestBuffers.
+void FinishEviction(std::vector<std::unique_ptr<mgrn::gpu::GuestBuffer>> &dead,
+                    const std::vector<plume::RenderBuffer *> &scrub) {
+  if (g_evictedListener)
+    for (const auto &gb : dead)
+      g_evictedListener(gb.get());
+  for (auto *b : scrub)
+    mgrn::gpu::Video::ScrubBufferBindings(b);
+  dead.clear();
+}
+
+// Evicts per-buffer records that no struct maps to any more (the engine
+// re-pointed or reused every header naming them) and that no bind or draw
+// resolved for kIdleEvictTicks. Mapped records stay: a creation-time IB
+// cannot be re-adopted from its struct.
+void EvictIdlePhysicalBuffers() {
+  std::vector<plume::RenderBuffer *> scrub;
+  std::vector<std::unique_ptr<mgrn::gpu::GuestBuffer>> dead;
+  {
+    std::lock_guard lock(g_physicalBuffersMutex);
+    std::unordered_set<const mgrn::gpu::GuestBuffer *> mapped;
+    for (const auto &[struct_va, gb] : g_physicalBufferStructs)
+      mapped.insert(gb);
+    u32 slot = 0;
+    u64 freed_bytes = 0;
+    for (auto it = g_physicalBuffers.begin(); it != g_physicalBuffers.end();) {
+      mgrn::gpu::GuestBuffer *gb = it->second.buffer.get();
+      if (mapped.count(gb) ||
+          g_registryTick - gb->lastUseTick < kIdleEvictTicks) {
+        ++it;
+        continue;
+      }
+      if (dead.empty())
+        slot = mgrn::gpu::Video::RetireSlot("idle geometry");
+      RetireRecordLocked(gb, slot, scrub);
+      freed_bytes += gb->dataSize;
+      dead.push_back(std::move(it->second.buffer));
+      it = g_physicalBuffers.erase(it);
+    }
+    if (!dead.empty()) {
+      g_physLiveCount -= std::min<u64>(g_physLiveCount, dead.size());
+      g_physUploadBytes -= std::min<u64>(g_physUploadBytes, freed_bytes);
+      MGRN_DEBUG("Physical buffers: evicted {} idle ({} KiB), live={} uploadMiB={}",
+                 dead.size(), freed_bytes >> 10, g_physLiveCount,
+                 g_physUploadBytes >> 20);
+    }
+  }
+  FinishEviction(dead, scrub);
+}
+
 // The engine frees a model's whole VB/IB block at once, so the host mirrors
 // must go with it or the UPLOAD heap grows without bound. Serialized against
 // the render thread's draw-time lookups by the BD DrawStart/DrawEnd handshake.
@@ -388,8 +467,10 @@ void EvictPhysicalBuffersInBlock(u32 block_base, u32 block_size) {
     return;
   const u32 block_end = block_base + block_size;
   // Scrubbed after the registry lock drops, since ScrubBufferBindings takes
-  // s.mutex.
+  // s.mutex. The GuestBuffers stay alive until the listener has dropped every
+  // raw pointer to them.
   std::vector<plume::RenderBuffer *> scrub;
+  std::vector<std::unique_ptr<mgrn::gpu::GuestBuffer>> dead;
   {
     std::lock_guard lock(g_physicalBuffersMutex);
     const u32 slot = mgrn::gpu::Video::RetireSlot("geometry block");
@@ -402,19 +483,10 @@ void EvictPhysicalBuffersInBlock(u32 block_base, u32 block_size) {
       }
       mgrn::gpu::GuestBuffer *gb = it->second.buffer.get();
       // Struct VA bridges are keyed by a malloc'd VA outside the block, so
-      // match by value not range. Drop them before the owning record dies.
-      for (auto sit = g_physicalBufferStructs.begin();
-           sit != g_physicalBufferStructs.end();) {
-        if (sit->second == gb)
-          sit = g_physicalBufferStructs.erase(sit);
-        else
-          ++sit;
-      }
+      // RetireRecordLocked matches them by value, not range.
+      RetireRecordLocked(gb, slot, scrub);
       freed_bytes += gb->dataSize;
-      if (gb->buffer) {
-        scrub.push_back(gb->buffer.get());
-        g_physicalBufferGraveyard[slot].push_back(std::move(gb->buffer));
-      }
+      dead.push_back(std::move(it->second.buffer));
       it = g_physicalBuffers.erase(it);
       ++evicted;
     }
@@ -425,6 +497,8 @@ void EvictPhysicalBuffersInBlock(u32 block_base, u32 block_size) {
         ait != g_physicalBlocks.end()) {
       PhysicalBlock &block = ait->second;
       block_meshes = static_cast<u32>(block.meshes.size());
+      for (auto &[offset, view] : block.meshes)
+        dead.push_back(std::move(view));
       if (block.buffer) {
         plume::RenderBuffer *block_buf = block.buffer.get();
         for (auto sit = g_physicalBufferStructs.begin();
@@ -457,8 +531,7 @@ void EvictPhysicalBuffersInBlock(u32 block_base, u32 block_size) {
                freed_bytes >> 10, g_physLiveCount, g_physUploadBytes >> 20);
     }
   } // release g_physicalBuffersMutex before taking s.mutex in the scrub
-  for (auto *b : scrub)
-    mgrn::gpu::Video::ScrubBufferBindings(b);
+  FinishEviction(dead, scrub);
 }
 
 } // namespace
@@ -557,9 +630,9 @@ bool RefreshIfWritten(GuestBuffer *buf) {
                                      buf->elementSize);
 }
 
-GuestBuffer *ResolveGuestBufferVa(u32 va, ResourceType rtype) {
-  if (!va)
-    return nullptr;
+namespace {
+
+GuestBuffer *ResolveGuestBufferVaUnmarked(u32 va, ResourceType rtype) {
   auto *buf = FindPhysicalBufferByStruct(va);
   if (!buf)
     return AdoptBufferStruct(va, rtype);
@@ -570,6 +643,21 @@ GuestBuffer *ResolveGuestBufferVa(u32 va, ResourceType rtype) {
       !buf->blockBuffer)
     return AdoptBufferStruct(va, rtype);
   return buf;
+}
+
+} // namespace
+
+GuestBuffer *ResolveGuestBufferVa(u32 va, ResourceType rtype) {
+  if (!va)
+    return nullptr;
+  auto *buf = ResolveGuestBufferVaUnmarked(va, rtype);
+  if (buf)
+    buf->lastUseTick = g_registryTick;
+  return buf;
+}
+
+void SetGuestBufferEvictedListener(GuestBufferEvictedFn fn) {
+  g_evictedListener = fn;
 }
 
 void DrainBufferGraveyard(u32 slot) {
@@ -584,6 +672,8 @@ void DrainBufferGraveyard(u32 slot) {
   for (auto &b : dead)
     mgrn::gpu::Video::ScrubBufferBindings(b.get());
   dead.clear();
+  if ((++g_registryTick % kIdleSweepInterval) == 0)
+    EvictIdlePhysicalBuffers();
 }
 
 } // namespace mgrn::gpu
