@@ -28,9 +28,10 @@ gpu::GuestTexture* ResolveDestination(u32 texture_va);
 // it (directly or through another header over the same memory), or nullptr.
 gpu::GuestTexture* LookupPresentTexture(u32 texture_va);
 
-// Re-copies vertex and index buffers still bound from earlier setter calls
-// that the guest has rewritten since. Call before each draw.
-void RefreshBoundGeometry();
+// Re-resolves the bound vertex/index buffer headers from the device (the
+// engine re-points them) and re-copies buffers the guest has rewritten since.
+// Call before each draw.
+void RefreshBoundGeometry(u32 device_guest, bool indexed);
 
 // Dev: for streams 0..stream_count-1 and the index buffer, the device's bound
 // guest pointer, flagged !STALE when the hooks track another buffer for it.

@@ -102,6 +102,8 @@ void MirrorVertexDeclaration(u32 decl_va) {
 // Geometry bound through the hooks, so a draw can re-copy what the guest
 // rewrote while it stayed bound. Guest render thread only, like the setters.
 constexpr u32 kStreamCount = 16;
+// Draw-time header re-points logged; later ones are not reported.
+constexpr u32 kMaxRepointLogs = 32;
 struct BoundStream {
   gpu::GuestBuffer* buffer = nullptr;
   u32 offset = 0;
@@ -147,11 +149,61 @@ void MirrorIndices(u32 indices_va) {
   gpu::Video::SetIndices(buf);
 }
 
+// Bit i set when the bound declaration fetches from stream i. All streams when
+// no declaration is bound.
+u32 DeclaredStreamMask() {
+  auto& s = gpu::state();
+  std::lock_guard lock(s.mutex);
+  const auto* decl = s.pipelineState.vertexDeclaration;
+  if (!decl || !decl->vertexElements) return (1u << kStreamCount) - 1;
+  u32 mask = 0;
+  for (u32 i = 0; i < decl->vertexElementCount; ++i)
+    if (u32 stream = u32(decl->vertexElements[i].stream); stream < kStreamCount)
+      mask |= 1u << stream;
+  return mask;
+}
+
 }  // namespace
 
-void mgrn::native::RefreshBoundGeometry() {
-  for (const BoundStream& bound : g_streams) RefreshAndRebind(bound.buffer);
-  RefreshAndRebind(g_indices);
+void mgrn::native::RefreshBoundGeometry(u32 device_guest, bool indexed) {
+  // The engine re-points buffer headers at other memory (double-buffered
+  // dynamic geometry) without setting them again, so re-resolve each bound
+  // header from the device before the draw, as the GPU would read it. Only
+  // streams the declaration fetches (and the index buffer of an indexed
+  // draw): a slot left bound from an earlier draw may hold a freed header.
+  const u32 streams = DeclaredStreamMask();
+  if (const auto* dev = mgrn::mem::at<const gpu::D3DDevice>(device_guest)) {
+    static std::atomic<u32> repoints{0};
+    for (u32 i = 0; i < kStreamCount; ++i) {
+      BoundStream& bound = g_streams[i];
+      const u32 header = u32(dev->streamSources[i]);
+      if (!(streams & (1u << i)) || !bound.buffer || !header)
+        continue;
+      auto* current = gpu::ResolveGuestBufferVa(header, gpu::ResourceType::VertexBuffer);
+      if (current && current != bound.buffer) {
+        if (repoints.fetch_add(1, std::memory_order_relaxed) < kMaxRepointLogs)
+          MGRN_INFO("native: stream {} header 0x{:08X} re-pointed 0x{:08X} -> 0x{:08X} "
+                    "since it was set",
+                    i, header, bound.buffer->guestMirrorVa, current->guestMirrorVa);
+        BindVertexStream(i, current, bound.offset, bound.stride);
+      }
+    }
+    const u32 ib_header = u32(dev->indexBuffer);
+    if (indexed && g_indices && ib_header) {
+      auto* current = gpu::ResolveGuestBufferVa(ib_header, gpu::ResourceType::IndexBuffer);
+      if (current && current != g_indices) {
+        if (repoints.fetch_add(1, std::memory_order_relaxed) < kMaxRepointLogs)
+          MGRN_INFO("native: index header 0x{:08X} re-pointed 0x{:08X} -> 0x{:08X} since it "
+                    "was set",
+                    ib_header, g_indices->guestMirrorVa, current->guestMirrorVa);
+        g_indices = current;
+        gpu::Video::SetIndices(current);
+      }
+    }
+  }
+  for (u32 i = 0; i < kStreamCount; ++i)
+    if (streams & (1u << i)) RefreshAndRebind(g_streams[i].buffer);
+  if (indexed) RefreshAndRebind(g_indices);
 }
 
 std::string mgrn::native::DescribeBoundStreams(u32 device_guest, u32 stream_count) {

@@ -212,7 +212,7 @@ void ProbeDepthBeforeDraw(gpu::VideoState& s) {
 }
 
 void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
-  mgrn::native::RefreshBoundGeometry();
+  mgrn::native::RefreshBoundGeometry(device_guest, args.indexed);
   auto& s = gpu::state();
   std::unique_lock<std::mutex> lock(s.mutex);
   gpu::Video::OpenCommandListLocked();
