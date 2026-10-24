@@ -79,8 +79,12 @@ Stamp Arm(u32 va, u32 size) {
   auto* memory = RuntimeMemory();
   u32 start, end;
   if (!memory || !PhysicalRange(memory, va, size, start, end)) return kUnwatched;
+  // Stamp first: a write trapped between protecting and returning must carry a
+  // newer generation than the stamp, or it is never seen (its page is left
+  // unprotected, so later writes do not trap either).
+  const Stamp stamp = generations().current.load(std::memory_order_acquire);
   memory->EnablePhysicalMemoryAccessCallbacks(start, end - start, true, false);
-  return generations().current.load(std::memory_order_acquire);
+  return stamp;
 }
 
 bool WrittenSince(u32 va, u32 size, Stamp stamp) {
