@@ -6,11 +6,13 @@
 // DispatchDraw adapted from re:Blue gpu/hooks/draw.cpp (BSD-3, Copyright (c)
 // 2026 Tom Clay).
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <format>
 #include <string>
 #include <mutex>
+#include <vector>
 
 #include <rex/graphics/xenos.h>
 #include <rex/types.h>
@@ -19,6 +21,7 @@
 
 #include "core/logging.h"
 #include "core/memory_helpers.h"
+#include "gpu/constant_buffers.h"
 #include "gpu/d3d.h"
 #include "gpu/depth_probe.h"
 #include "gpu/device.h"
@@ -211,6 +214,42 @@ void ProbeDepthBeforeDraw(gpu::VideoState& s) {
                               skinned ? "before-skinned-colour" : "before-static-colour");
 }
 
+// Indexed quad list: expands the guest's indices (4 per quad) into two
+// triangles per quad in the upload heap, since the shared expansion IB only
+// covers sequential vertices. Caller holds s.mutex.
+void DrawIndexedQuadList(gpu::VideoState& s, plume::RenderCommandList* cmd_list,
+                         const DrawArgs& args) {
+  const gpu::GuestBuffer* ib = s.index_buffer;
+  if (!ib || !ib->guestMirrorVa) return;
+  const u32 elem = ib->format == plume::RenderFormat::R32_UINT ? 4u : 2u;
+  const u64 first_byte = u64(args.start_index) * elem;
+  const u32 available = first_byte < ib->dataSize ? u32((ib->dataSize - first_byte) / elem) : 0;
+  const u32 quads = std::min(std::min(args.vertex_or_index_count, available) / 4,
+                             gpu::Video::QuadlistMaxQuads());
+  const auto* src = mgrn::mem::try_at<const u8>(ib->guestMirrorVa + u32(first_byte));
+  if (!quads || !src) return;
+  auto index_at = [&](u32 n) {
+    const u8* p = src + u64(n) * elem;
+    return elem == 4 ? u32(p[0]) << 24 | u32(p[1]) << 16 | u32(p[2]) << 8 | p[3]
+                     : u32(p[0]) << 8 | p[1];
+  };
+  constexpr u32 kCorners[6] = {0, 1, 2, 0, 2, 3};
+  std::vector<u32> expanded(quads * 6);
+  for (u32 q = 0; q < quads; ++q)
+    for (u32 k = 0; k < 6; ++k) expanded[q * 6 + k] = index_at(q * 4 + kCorners[k]);
+  const u32 bytes = u32(expanded.size() * sizeof(u32));
+  const auto alloc = gpu::UploadHostBytes(expanded.data(), bytes);
+  if (!alloc.size) return;
+  plume::RenderIndexBufferView view{};
+  view.buffer = alloc.ref;
+  view.size = bytes;
+  view.format = plume::RenderFormat::R32_UINT;
+  cmd_list->setIndexBuffer(&view);
+  cmd_list->drawIndexedInstanced(quads * 6, 1, 0, args.base_vertex_index, 0);
+  // The expanded IB replaced the tracked guest IB on the command list.
+  s.dirtyStates.indices = true;
+}
+
 void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
   mgrn::native::RefreshBoundGeometry(device_guest, args.indexed);
   auto& s = gpu::state();
@@ -248,13 +287,15 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
     }
   }
 
-  if (static_cast<xe::PrimitiveType>(primitive_type) == xe::PrimitiveType::kQuadList) {
+  if (static_cast<xe::PrimitiveType>(primitive_type) == xe::PrimitiveType::kQuadList &&
+      args.indexed) {
+    DrawIndexedQuadList(s, cmd_list, args);
+  } else if (static_cast<xe::PrimitiveType>(primitive_type) == xe::PrimitiveType::kQuadList) {
     const u32 quads = std::min(args.vertex_or_index_count / 4, gpu::Video::QuadlistMaxQuads());
     const auto* ib = gpu::Video::QuadlistExpansionIBView();
     if (quads && ib) {
-      const i32 first = args.indexed ? args.base_vertex_index : i32(args.start_vertex);
       cmd_list->setIndexBuffer(ib);
-      cmd_list->drawIndexedInstanced(quads * 6, 1, 0, first, 0);
+      cmd_list->drawIndexedInstanced(quads * 6, 1, 0, i32(args.start_vertex), 0);
       // The expansion IB replaced the tracked guest IB on the command list.
       s.dirtyStates.indices = true;
     }
