@@ -190,7 +190,8 @@ struct GuestVertexDeclaration {
   // back to the X360 raw-int-as-float vfetch the shader math (e.g. (uv+1)/512)
   // expects. SHORT2N/4N stay SNORM and leave the bit clear.
   u32 sintTexcoords = 0;
-  bool hasR11G11B10Normal = false;
+  // kSpecConstantR11G11B10* bit of each tangent-basis semantic packed 10:11:11.
+  u32 r11g11b10Spec = 0;
   bool vertexStreams[16]{};
   u32 indexVertexStream = 0;
 

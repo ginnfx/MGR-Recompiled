@@ -194,9 +194,13 @@ GuestVertexDeclaration *CreateVertexDeclaration(GuestVertexElement *elements) {
                                 : plume::RenderFormat::R32G32B32_UINT;
       } else if (type == D3DDeclType::kDec3NAlt ||
                  type == D3DDeclType::kDec3NAlt2) {
-        // X360 packed 10/11/11 normal: one 32-bit lane, decoded by the
-        // kSpecConstantR11G11B10Normal branch in tfetchR11G11B10.
-        decl->hasR11G11B10Normal = true;
+        // X360 packed 10/11/11 normal: one 32-bit lane, decoded by
+        // tfetchR11G11B10 under this semantic's own spec bit.
+        decl->r11g11b10Spec |= usage == D3DDeclUsage::kNormal
+                                   ? kSpecConstantR11G11B10Normal
+                               : usage == D3DDeclUsage::kTangent
+                                   ? kSpecConstantR11G11B10Tangent
+                                   : kSpecConstantR11G11B10Binormal;
         if (g_vulkan)
           input.format = plume::RenderFormat::R32_FLOAT;
       } else if (needs_bswap_swap(type)) {

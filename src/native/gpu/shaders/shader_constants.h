@@ -16,8 +16,15 @@
 #include <shader_common.h>
 
 namespace mgrn::gpu {
-// The only two the REBLUE_RECOMP recompiler emits, the rest are Unleashed's.
+// The ones the REBLUE_RECOMP recompiler emits, the rest are Unleashed's.
 inline constexpr u32 kSpecConstantR11G11B10Normal =
     SPEC_CONSTANT_R11G11B10_NORMAL;
+inline constexpr u32 kSpecConstantR11G11B10Tangent =
+    SPEC_CONSTANT_R11G11B10_TANGENT;
+inline constexpr u32 kSpecConstantR11G11B10Binormal =
+    SPEC_CONSTANT_R11G11B10_BINORMAL;
+inline constexpr u32 kSpecConstantR11G11B10Mask =
+    kSpecConstantR11G11B10Normal | kSpecConstantR11G11B10Tangent |
+    kSpecConstantR11G11B10Binormal;
 inline constexpr u32 kSpecConstantAlphaTest = SPEC_CONSTANT_ALPHA_TEST;
 } // namespace mgrn::gpu

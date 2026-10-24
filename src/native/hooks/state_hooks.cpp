@@ -89,10 +89,10 @@ void MirrorViewport(u32 viewport_va) {
 void MirrorVertexDeclaration(u32 decl_va) {
   auto* decl = gpu::HostResourceHeap::FromGuest<gpu::GuestVertexDeclaration>(decl_va);
   {
-    // The recompiled VS guards its R11G11B10 normal decode on this bit.
+    // The recompiled VS guards each semantic's R11G11B10 decode on its own bit.
     auto& s = gpu::state();
-      u32 spec = s.pipelineState.specConstants & ~gpu::kSpecConstantR11G11B10Normal;
-    if (decl && decl->hasR11G11B10Normal) spec |= gpu::kSpecConstantR11G11B10Normal;
+      u32 spec = s.pipelineState.specConstants & ~gpu::kSpecConstantR11G11B10Mask;
+    if (decl) spec |= decl->r11g11b10Spec;
     gpu::Video::SetDirtyValue<u32>(s.dirtyStates.pipelineState, s.pipelineState.specConstants,
                                    spec);
   }
