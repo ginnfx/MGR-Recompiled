@@ -51,6 +51,20 @@ public:
 // Internal resolution scale applied to the game's scene render targets
 // (mgr_resolution_scale; 1 = the game's 1280x720).
 f32 SceneRenderScale();
+inline constexpr f32 kMinSceneRenderScale = 1.0f;
+inline constexpr f32 kMaxSceneRenderScale = 3.0f;
+inline constexpr u32 kGameWidth = 1280;
+inline constexpr u32 kGameHeight = 720;
+inline constexpr u32 kMinScaledTargetWidth = 320;
+// Bumped whenever the scene scale changes; scaled targets built at an older
+// generation are resized before their next use.
+u32 SceneScaleGeneration();
+// Re-reads mgr_resolution_scale; call once per frame on the render thread.
+void RefreshSceneRenderScale();
+// True for render targets of these guest dimensions that follow the scale.
+bool IsSceneShapedTarget(u32 width, u32 height);
+// A guest extent in host pixels, at least 1.
+u32 ScaleExtent(u32 extent, f32 scale);
 // Shadow-distance multiplier the shadow PCF kernel compensates for. MGR does
 // not change shadow distance, so it stays 1.
 inline f64 ShadowCoverageScale() { return 1.0; }

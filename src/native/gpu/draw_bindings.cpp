@@ -186,8 +186,11 @@ void Video::SetDefaultViewport(D3DDevice *device, GuestTexture *surface) {
 
   auto &s = state();
 
-  const float fwidth = static_cast<float>(surface->width);
-  const float fheight = static_cast<float>(surface->height);
+  // s.viewport is in guest pixels (FlushViewport scales it to the target), so
+  // a scaled target contributes its guest size, not its host texels.
+  const bool scaled = surface->followsSceneScale && surface->guestWidth;
+  const float fwidth = static_cast<float>(scaled ? surface->guestWidth : surface->width);
+  const float fheight = static_cast<float>(scaled ? surface->guestHeight : surface->height);
 
   SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.x, 0.0f);
   SetDirtyValue<float>(s.dirtyStates.viewport, s.viewport.y, 0.0f);
@@ -215,20 +218,38 @@ void Video::FlushViewport() {
   if (!s.command_list)
     return;
 
+  // Viewport and scissor stay in guest pixels; a scaled target takes them in
+  // host pixels. Binding another target marks both dirty.
+  const float scale = BoundTargetScale();
   if (s.dirtyStates.viewport) {
     // MGR draws reversed Z through the viewport (min 1, max 0). Vulkan and
     // Metal take the reversed range as is; re:Blue swapped it for D3D12, which
     // stored z_ndc instead and let far geometry win MGR's GREATER_EQUAL tests.
-    s.command_list->setViewports(&s.viewport, 1);
+    plume::RenderViewport viewport = s.viewport;
+    viewport.x *= scale;
+    viewport.y *= scale;
+    viewport.width *= scale;
+    viewport.height *= scale;
+    s.command_list->setViewports(&viewport, 1);
     s.dirtyStates.viewport = false;
   }
 
   if (s.dirtyStates.scissorRect) {
     // The guest's window scissor: its SetScissorRect rect clamped to the
     // viewport, or the viewport extent when scissor testing is off.
-    s.command_list->setScissors(&s.scissor, 1);
+    const auto scaled = [scale](i32 v) { return i32(float(v) * scale + 0.5f); };
+    const plume::RenderRect scissor(scaled(s.scissor.left), scaled(s.scissor.top),
+                                    scaled(s.scissor.right), scaled(s.scissor.bottom));
+    s.command_list->setScissors(&scissor, 1);
     s.dirtyStates.scissorRect = false;
   }
+}
+
+float Video::BoundTargetScale() {
+  const auto &s = state();
+  if (s.render_target)
+    return s.render_target->renderScale;
+  return s.depth_stencil ? s.depth_stencil->renderScale : 1.0f;
 }
 
 } // namespace mgrn::gpu

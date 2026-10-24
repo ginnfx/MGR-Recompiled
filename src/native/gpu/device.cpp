@@ -469,6 +469,7 @@ bool Video::CreateHostDevice(rex::ui::Window *window) {
   InitGPUProfiler(static_cast<plume::D3D12Device *>(s.device.get())->d3d,
                   static_cast<plume::D3D12CommandQueue *>(s.queue.get())->d3d);
 #endif
+  RefreshSceneRenderScale();
   s.ready = true;
   MGRN_DEBUG("Plume backend ready: {}x{} ({} buffers, {} bindless slots)",
            static_cast<u32>(s.viewport.width),

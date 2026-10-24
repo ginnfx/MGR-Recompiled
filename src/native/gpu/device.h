@@ -102,6 +102,8 @@ public:
   // The slot samples the null descriptor: for a guest texture the mirror could
   // not build, which would otherwise leave the previous texture bound.
   static void UnbindTexture(u32 index);
+  // Host pixels per guest pixel of the bound render target (else depth).
+  static float BoundTargetScale();
   static void SetVertexShader(GuestShader *shader);
   static void SetPixelShader(GuestShader *shader);
   static void SetVertexDeclaration(GuestVertexDeclaration *decl);

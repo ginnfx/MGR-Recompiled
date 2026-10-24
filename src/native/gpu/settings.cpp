@@ -7,6 +7,7 @@
  *
  * Adapted for MGR (see settings.h).
  */
+#include <algorithm>
 #include "gpu/settings.h"
 
 #include <string>
@@ -52,13 +53,42 @@ i32 Settings::ShadowDimension() const { return REXCVAR_GET(mgr_shadow_resolution
 
 i32 Settings::MSAA() const { return REXCVAR_GET(mgr_msaa); }
 
-f32 SceneRenderScale() {
+namespace {
+f32 ReadSceneRenderScaleCvar() {
   try {
     const f32 scale = std::stof(Flag("mgr_resolution_scale"));
-    return scale > 0.0f ? scale : 1.0f;
+    return std::clamp(scale, kMinSceneRenderScale, kMaxSceneRenderScale);
   } catch (...) {
     return 1.0f;
   }
+}
+// Render thread only: RefreshSceneRenderScale at device init and each present
+// (cvars are not loaded yet at static init).
+f32 g_scene_scale = 1.0f;
+u32 g_scene_scale_generation = 1;
+} // namespace
+
+f32 SceneRenderScale() { return g_scene_scale; }
+
+u32 SceneScaleGeneration() { return g_scene_scale_generation; }
+
+void RefreshSceneRenderScale() {
+  const f32 scale = ReadSceneRenderScaleCvar();
+  if (scale == g_scene_scale)
+    return;
+  g_scene_scale = scale;
+  ++g_scene_scale_generation;
+}
+
+bool IsSceneShapedTarget(u32 width, u32 height) {
+  // Screen-proportioned targets (1280x720 and its halves) follow the scene
+  // scale; shadow maps, reduction targets and cubes keep their size.
+  return u64(width) * kGameHeight == u64(height) * kGameWidth &&
+         width >= kMinScaledTargetWidth;
+}
+
+u32 ScaleExtent(u32 extent, f32 scale) {
+  return std::max(1u, u32(f32(extent) * scale + 0.5f));
 }
 
 } // namespace mgrn::gpu

@@ -53,10 +53,20 @@ struct GuestTexture {
   std::unique_ptr<plume::RenderTexture> textureHolder;
   plume::RenderTexture *texture = nullptr;
   std::unique_ptr<plume::RenderTextureView> textureView;
+  // Host texel dimensions: the guest's times renderScale.
   u32 width = 0;
   u32 height = 0;
   u32 depth = 0;
   u32 mipLevels = 1;
+  // Host pixels per guest pixel; not 1 only for scene-shaped render targets
+  // under mgr_resolution_scale (see IsSceneShapedTarget).
+  float renderScale = 1.0f;
+  // Scene-shaped targets: guest size and the scale generation the host
+  // texture was built at (native::EnsureSceneScale resizes stale ones).
+  bool followsSceneScale = false;
+  u32 guestWidth = 0;
+  u32 guestHeight = 0;
+  u32 sceneScaleGeneration = 0;
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
   u32 guestFormat = 0;
   u32 descriptorIndex = ~u32{0};

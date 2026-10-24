@@ -25,6 +25,7 @@
 #include "gpu/format.h"
 #include "gpu/frame.h"
 #include "gpu/host_resource_heap.h"
+#include "gpu/settings.h"
 #include "gpu/vertex_declaration.h"
 #include "hooks/hook_macros.h"
 #include "hooks/resources.h"
@@ -354,6 +355,8 @@ MGRN_HOOK_RAW(D3DDevice_Swap) {
   if (NativeRendererActive()) {
     gpu::Video::Present(mgrn::native::LookupPresentTexture(ctx.r4.u32));
     g_present_count.fetch_add(1, std::memory_order_relaxed);
+    // A new mgr_resolution_scale takes effect from the next frame's targets.
+    gpu::RefreshSceneRenderScale();
   }
   MGRN_IMP(D3DDevice_Swap)(ctx, base);
 }

@@ -46,7 +46,9 @@ struct SharedConstants {
   u32 sintTexcoords{}; // byte 580
   // Shadow PCF tap scale (g_ShadowPcfScale), see RecomputeShadowPcfScale.
   float shadowPcfScale{1.0f}; // byte 584
-  u32 _pad588{};              // byte 588
+  // Host pixels per guest pixel of the bound target (g_RenderScale), so the
+  // pixel shader's position input stays in guest pixels.
+  float renderScale{1.0f}; // byte 588
   // Half-pixel NDC nudge read only by host blit shaders.
   float blitHalfPixelOffsetX{}; // byte 592
   float blitHalfPixelOffsetY{}; // byte 596
