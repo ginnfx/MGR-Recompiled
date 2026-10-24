@@ -102,10 +102,21 @@ index 754198c..24a33b5 100644
  
          StringBuffer f;
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index 63c37c9..60a44d2 100644
+index 63c37c9..7bfc4e4 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
-@@ -12,18 +12,26 @@
+@@ -3,6 +3,10 @@
+ 
+ #define SPEC_CONSTANT_R11G11B10_NORMAL  (1 << 0)
+ #define SPEC_CONSTANT_ALPHA_TEST        (1 << 1)
++// One packed-decode bit per semantic: a decl can pack the normal as 10:11:11
++// while its tangent is UBYTE4N, and decoding that tangent as packed garbles it.
++#define SPEC_CONSTANT_R11G11B10_TANGENT  (1 << 5)
++#define SPEC_CONSTANT_R11G11B10_BINORMAL (1 << 6)
+ 
+ #ifdef UNLEASHED_RECOMP
+     #define SPEC_CONSTANT_BICUBIC_GI_FILTER (1 << 2)
+@@ -12,18 +16,26 @@
  
  // SPIR-V vertex input locations, shared with reblue's host input-layout
  // builder. A semantic missing here gets no location from the emitter.
@@ -143,7 +154,7 @@ index 63c37c9..60a44d2 100644
  
  // SPEC_CONSTANTS_ONLY keeps the HLSL below out of host C++ TUs, which IntelliSense would otherwise parse.
  #if (!defined(__cplusplus) || defined(__INTELLISENSE__)) && !defined(SHADER_COMMON_SPEC_CONSTANTS_ONLY)
-@@ -33,6 +41,13 @@
+@@ -33,6 +45,13 @@
  
  #ifdef __spirv__
  
@@ -157,7 +168,7 @@ index 63c37c9..60a44d2 100644
  struct PushConstants
  {
      uint64_t VertexShaderConstants;
-@@ -42,24 +57,48 @@ struct PushConstants
+@@ -42,24 +61,49 @@ struct PushConstants
  
  [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
  
@@ -210,6 +221,7 @@ index 63c37c9..60a44d2 100644
 +#define g_SwappedPositions         XR_SHARED_CONST(uint, 576)
 +#define g_SintTexcoords            XR_SHARED_CONST(uint, 580)
 +#define g_ShadowPcfScale           XR_SHARED_CONST(float, 584)
++#define g_RenderScale              XR_SHARED_CONST(float, 588)
  #else
 -#define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
 -#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
@@ -222,7 +234,7 @@ index 63c37c9..60a44d2 100644
  #endif
  
  [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
-@@ -100,10 +139,17 @@ uint g_SpecConstants();
+@@ -100,10 +144,17 @@ uint g_SpecConstants();
  #define BOOL_BIT(n) ((g_Booleans((n) / 32u) & (1u << ((n) & 31u))) != 0)
  #endif
  
@@ -240,7 +252,7 @@ index 63c37c9..60a44d2 100644
  
  uint2 getTexture2DDimensions(Texture2D<float4> texture)
  {
-@@ -112,10 +158,17 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+@@ -112,10 +163,17 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
      return dimensions;
  }
  
@@ -259,7 +271,7 @@ index 63c37c9..60a44d2 100644
  }
  
  float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
-@@ -218,7 +271,7 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+@@ -218,7 +276,7 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
  
  float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
  {
@@ -268,7 +280,7 @@ index 63c37c9..60a44d2 100644
  }
  
  struct CubeMapData
-@@ -236,7 +289,7 @@ struct CubeMapData
+@@ -236,14 +294,15 @@ struct CubeMapData
  
  float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
  {
@@ -277,8 +289,18 @@ index 63c37c9..60a44d2 100644
  }
  
  #ifdef REBLUE_RECOMP
+ // DEC3N normal decode; IA binds as R32_UINT so lane .x carries the raw bits (asuint recovers them).
+-float4 tfetchR11G11B10(float4 value)
++// specBit is the semantic's own SPEC_CONSTANT_R11G11B10_* bit.
++float4 tfetchR11G11B10(float4 value, uint specBit)
+ {
+-    if (g_SpecConstants() & SPEC_CONSTANT_R11G11B10_NORMAL)
++    if (g_SpecConstants() & specBit)
+     {
+         uint v = asuint(value.x);
+         return float4(
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index feaa90b..cd4161a 100644
+index feaa90b..4653aef 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -133,6 +133,19 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
@@ -301,7 +323,36 @@ index feaa90b..cd4161a 100644
  static constexpr std::string_view TEXTURE_DIMENSIONS[] = 
  {
      "2D",
-@@ -727,8 +740,12 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+@@ -203,11 +216,11 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
+         print("tfetchR11G11B10(swapFloats(g_SwappedNormals, ");
+         break;
+     case DeclUsage::Tangent:
+-        specConstantsMask |= SPEC_CONSTANT_R11G11B10_NORMAL;
++        specConstantsMask |= SPEC_CONSTANT_R11G11B10_TANGENT;
+         print("tfetchR11G11B10(swapFloats(g_SwappedTangents, ");
+         break;
+     case DeclUsage::Binormal:
+-        specConstantsMask |= SPEC_CONSTANT_R11G11B10_NORMAL;
++        specConstantsMask |= SPEC_CONSTANT_R11G11B10_BINORMAL;
+         print("tfetchR11G11B10(swapFloats(g_SwappedBinormals, ");
+         break;
+     case DeclUsage::BlendWeight:
+@@ -242,9 +255,13 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
+     switch (findResult->second.usage)
+     {
+     case DeclUsage::Normal:
++        print(", {}), SPEC_CONSTANT_R11G11B10_NORMAL)", uint32_t(findResult->second.usageIndex));
++        break;
+     case DeclUsage::Tangent:
++        print(", {}), SPEC_CONSTANT_R11G11B10_TANGENT)", uint32_t(findResult->second.usageIndex));
++        break;
+     case DeclUsage::Binormal:
+-        print(", {}))", uint32_t(findResult->second.usageIndex));
++        print(", {}), SPEC_CONSTANT_R11G11B10_BINORMAL)", uint32_t(findResult->second.usageIndex));
+         break;
+ 
+     case DeclUsage::TexCoord:
+@@ -727,8 +744,12 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
              default:
              {
                  auto findResult = interpolators.find(instr.vectorDest);
@@ -316,7 +367,7 @@ index feaa90b..cd4161a 100644
                  break;
              }
              }
-@@ -1280,6 +1297,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1280,6 +1301,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      assert((shaderContainer->flags & 0xFFFFFF00) == 0x102A1100);
      assert(shaderContainer->constantTableOffset != NULL);
  
@@ -330,7 +381,7 @@ index feaa90b..cd4161a 100644
      out += include;
      out += '\n';
  
-@@ -1335,15 +1359,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1335,15 +1363,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
  
              if (constantInfo->registerCount > 1)
              {
@@ -353,7 +404,7 @@ index feaa90b..cd4161a 100644
              }
              
  #ifdef REBLUE_RECOMP
-@@ -1367,12 +1393,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1367,12 +1397,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
          {
              for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
              {
@@ -371,7 +422,7 @@ index feaa90b..cd4161a 100644
  
              samplers.emplace(constantInfo->registerIndex, constantName);
              break;
-@@ -1382,18 +1409,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1382,18 +1413,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      }
  
  #ifdef REBLUE_RECOMP
@@ -395,7 +446,7 @@ index feaa90b..cd4161a 100644
      }
  #endif
  
-@@ -1518,14 +1544,32 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1518,14 +1548,32 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      {
          out += "\tin float4 iPos : SV_Position,\n";
  
@@ -433,7 +484,7 @@ index feaa90b..cd4161a 100644
          }
  
          out += "#ifdef __spirv__\n";
-@@ -1597,10 +1641,18 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1597,10 +1645,18 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
          }
      #endif
  
@@ -453,7 +504,7 @@ index feaa90b..cd4161a 100644
      }
  
      out += ")\n";
-@@ -1740,6 +1792,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1740,6 +1796,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
  
          for (auto& [usage, usageIndex] : INTERPOLATORS)
              println("\to{}{} = 0.0;", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
@@ -461,3 +512,16 @@ index feaa90b..cd4161a 100644
  
          out += "\n";
      }
+@@ -1751,7 +1808,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             print("\tfloat4 r{} = ", i);
+             if (isPixelShader && i == ((shader->fieldC >> 8) & 0xFF))
+             {
++            #ifdef REBLUE_RECOMP
++                // Guest pixels: the host target may be rendered at a scale.
++                out += "float4((iPos.xy / g_RenderScale - 0.5) * float2(iFace ? 1.0 : -1.0, 1.0), 0.0, 0.0);\n";
++            #else
+                 out += "float4((iPos.xy - 0.5) * float2(iFace ? 1.0 : -1.0, 1.0), 0.0, 0.0);\n";
++            #endif
+             }
+         #ifdef UNLEASHED_RECOMP
+             else if (!isPixelShader && hasIndexCount && i == 0)
