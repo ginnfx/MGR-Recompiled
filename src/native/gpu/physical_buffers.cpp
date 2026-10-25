@@ -136,7 +136,10 @@ CreatePhysicalPlumeBuffer(plume::RenderDevice *device, u32 base_va, u32 size,
     MGRN_ERROR("CreatePhysicalPlumeBuffer: map failed (size={})", size);
     return nullptr;
   }
-  mgrn::gpu::ByteSwapElements(mapped, src8, size, element_size);
+  if (is_index)
+    mgrn::gpu::ByteSwapIndexElements(mapped, src8, size, element_size);
+  else
+    mgrn::gpu::ByteSwapElements(mapped, src8, size, element_size);
   plume_buffer->unmap();
   return plume_buffer;
 }
@@ -328,7 +331,7 @@ PhysicalBlock *FindBlockForBaseLocked(u32 base_va) {
 // pristine guest big-endian block, so re-running rewrites the same bytes
 // rather than swapping in place. The block buffer must already exist.
 void SwapBlockRegionLocked(PhysicalBlock &a, u32 offset, u32 size,
-                           u32 element_size) {
+                           u32 element_size, bool is_index) {
   const auto *src8 = mgrn::mem::at<const u8>(a.base + offset);
   if (!src8) {
     MGRN_WARN("Block swap: base {:#010x}+{:#x} did not translate", a.base,
@@ -341,7 +344,10 @@ void SwapBlockRegionLocked(PhysicalBlock &a, u32 offset, u32 size,
     return;
   }
   auto *dst8 = static_cast<u8 *>(mapped) + offset;
-  mgrn::gpu::ByteSwapElements(dst8, src8, size, element_size);
+  if (is_index)
+    mgrn::gpu::ByteSwapIndexElements(dst8, src8, size, element_size);
+  else
+    mgrn::gpu::ByteSwapElements(dst8, src8, size, element_size);
   a.buffer->unmap();
 }
 
@@ -387,7 +393,8 @@ mgrn::gpu::GuestBuffer *GetOrCreateBlockMeshLocked(PhysicalBlock &a, u32 base_va
     ++g_physLiveCount;
     NotePhysicalGrowth();
   }
-  SwapBlockRegionLocked(a, offset, size, element_size);
+  SwapBlockRegionLocked(a, offset, size, element_size,
+                       rtype == mgrn::gpu::ResourceType::IndexBuffer);
 
   auto gb = std::make_unique<mgrn::gpu::GuestBuffer>(rtype);
   gb->blockBuffer = a.buffer.get();

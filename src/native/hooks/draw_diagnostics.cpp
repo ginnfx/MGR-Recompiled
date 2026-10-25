@@ -119,7 +119,10 @@ void mgrn::native::NoteDrawGeometry(u32 draw_index) {
     if (!src || !host)
       return;
     std::vector<u8> expected(buf->dataSize);
-    gpu::ByteSwapElements(expected.data(), src, buf->dataSize, buf->elementSize);
+    if (buf->type == gpu::ResourceType::IndexBuffer)
+      gpu::ByteSwapIndexElements(expected.data(), src, buf->dataSize, buf->elementSize);
+    else
+      gpu::ByteSwapElements(expected.data(), src, buf->dataSize, buf->elementSize);
     u32 diff = 0, first = ~0u;
     for (u32 i = 0; i < buf->dataSize; ++i)
       if (host[i] != expected[i] && diff++ == 0)
