@@ -27,6 +27,7 @@
 #include <rex/hook.h>
 #include <rex/ppc.h>
 #include <rex/runtime.h>
+#include <rex/thread/mutex.h>
 #include <rex/types.h>
 
 #include "core/logging.h"
@@ -135,7 +136,10 @@ CreatePhysicalPlumeBuffer(plume::RenderDevice *device, u32 base_va, u32 size,
     MGRN_ERROR("CreatePhysicalPlumeBuffer: map failed (size={})", size);
     return nullptr;
   }
-  mgrn::gpu::ByteSwapElements(mapped, src8, size, element_size);
+  if (is_index)
+    mgrn::gpu::ByteSwapIndexElements(mapped, src8, size, element_size);
+  else
+    mgrn::gpu::ByteSwapElements(mapped, src8, size, element_size);
   plume_buffer->unmap();
   return plume_buffer;
 }
@@ -145,16 +149,61 @@ CreatePhysicalPlumeBuffer(plume::RenderDevice *device, u32 base_va, u32 size,
 std::unique_ptr<plume::RenderBuffer>
 CopyWatchedPhysicalBuffer(plume::RenderDevice *device, u32 base_va, u32 size,
                           bool is_index, u32 element_size, u32 &stamp) {
-  stamp = mgrn::gpu::write_watch::Arm(base_va, size);
-  if (stamp == mgrn::gpu::write_watch::kUnwatched) {
+  constexpr u32 kStableCopyAttempts = 4;
+  bool watched = false;
+  for (u32 attempt = 0; attempt < kStableCopyAttempts; ++attempt) {
+    // Guest physical-memory write callbacks take this same recursive mutex.
+    // Arm while holding it: a guest write either completed before the watch
+    // was armed, or faults and waits until this complete byte-swapped snapshot
+    // is finished. Without this lock, a callback can unprotect a page midway
+    // through the copy and leave half old, half new vertex/index data.
+    auto guest_memory_lock = rex::thread::global_critical_region::AcquireDirect();
+    stamp = mgrn::gpu::write_watch::Arm(base_va, size);
+    watched = stamp != mgrn::gpu::write_watch::kUnwatched;
+    if (!watched) {
+      guest_memory_lock.unlock();
+      break;
+    }
+
+    // Physical geometry can be written by an emulated guest thread while the
+    // render thread copies it. A copy spanning that write combines two mesh
+    // states and can send otherwise valid indices to unrelated vertices. The
+    // watch callback re-arms only the pages it observed being written; arm
+    // again before retrying and accept the snapshot only if no page changed.
+    auto copy = CreatePhysicalPlumeBuffer(device, base_va, size, is_index,
+                                          element_size);
+    if (!copy) {
+      guest_memory_lock.unlock();
+      return nullptr;
+    }
+    const bool changed_during_copy =
+        mgrn::gpu::write_watch::WrittenSince(base_va, size, stamp);
+    guest_memory_lock.unlock();
+    if (!changed_during_copy) {
+      static u64 s_retries = 0;
+      if (attempt && mgrn::DevMode() && s_retries++ < 64)
+        MGRN_INFO("[stable-copy] physical buffer {:#010x}+{:#x} stabilized after {} retries",
+                  base_va, size, attempt);
+      return copy;
+    }
+  }
+
+  if (watched) {
+    static u64 s_unstable = 0;
+    if (mgrn::DevMode() && s_unstable++ < 64)
+      MGRN_WARN("[stable-copy] physical buffer {:#010x}+{:#x} changed during all {} copy attempts; "
+                "serving the previous copy when available",
+                base_va, size, kStableCopyAttempts);
+  } else {
     static u32 s_warned = 0; // guarded by g_physicalBuffersMutex
     if (s_warned++ < 8)
       MGRN_WARN("Physical buffer {:#010x}+{:#x} is outside the physical heaps; "
                 "guest rewrites of it are not tracked",
                 base_va, size);
+    return CreatePhysicalPlumeBuffer(device, base_va, size, is_index,
+                                     element_size);
   }
-  return CreatePhysicalPlumeBuffer(device, base_va, size, is_index,
-                                   element_size);
+  return nullptr;
 }
 
 // Replaces the host copy of 'buf' with a fresh one of base_va/size, parking
@@ -185,19 +234,12 @@ bool RefreshPhysicalBufferLocked(mgrn::gpu::GuestBuffer *buf, u32 base_va,
   buf->guestMirrorVa = base_va;
   buf->elementSize = element_size;
   buf->writeStamp = stamp;
-  // Dev: a guest write that lands while the copy runs means another thread
-  // was still filling the buffer, so the host copy mixes two states of it.
-  static u64 s_torn = 0; // guarded by the mutex
-  if (mgrn::DevMode() && mgrn::gpu::write_watch::WrittenSince(base_va, size, stamp) &&
-      s_torn++ < 64)
-    MGRN_INFO("[torn-copy] physical buffer {:#010x}+{:#x} written during its refresh copy",
-              base_va, size);
   // Rewritten geometry costs a full re-copy, so keep its volume visible.
   static u64 s_refreshes = 0, s_refresh_bytes = 0; // guarded by the mutex
   s_refresh_bytes += size;
   if ((++s_refreshes & 1023u) == 0)
-    MGRN_INFO("Physical buffer refreshes: {} ({} MiB re-copied, {} torn)", s_refreshes,
-              s_refresh_bytes >> 20, s_torn);
+    MGRN_INFO("Physical buffer refreshes: {} ({} MiB re-copied)", s_refreshes,
+              s_refresh_bytes >> 20);
   return true;
 }
 
@@ -289,7 +331,7 @@ PhysicalBlock *FindBlockForBaseLocked(u32 base_va) {
 // pristine guest big-endian block, so re-running rewrites the same bytes
 // rather than swapping in place. The block buffer must already exist.
 void SwapBlockRegionLocked(PhysicalBlock &a, u32 offset, u32 size,
-                           u32 element_size) {
+                           u32 element_size, bool is_index) {
   const auto *src8 = mgrn::mem::at<const u8>(a.base + offset);
   if (!src8) {
     MGRN_WARN("Block swap: base {:#010x}+{:#x} did not translate", a.base,
@@ -302,7 +344,10 @@ void SwapBlockRegionLocked(PhysicalBlock &a, u32 offset, u32 size,
     return;
   }
   auto *dst8 = static_cast<u8 *>(mapped) + offset;
-  mgrn::gpu::ByteSwapElements(dst8, src8, size, element_size);
+  if (is_index)
+    mgrn::gpu::ByteSwapIndexElements(dst8, src8, size, element_size);
+  else
+    mgrn::gpu::ByteSwapElements(dst8, src8, size, element_size);
   a.buffer->unmap();
 }
 
@@ -348,7 +393,8 @@ mgrn::gpu::GuestBuffer *GetOrCreateBlockMeshLocked(PhysicalBlock &a, u32 base_va
     ++g_physLiveCount;
     NotePhysicalGrowth();
   }
-  SwapBlockRegionLocked(a, offset, size, element_size);
+  SwapBlockRegionLocked(a, offset, size, element_size,
+                       rtype == mgrn::gpu::ResourceType::IndexBuffer);
 
   auto gb = std::make_unique<mgrn::gpu::GuestBuffer>(rtype);
   gb->blockBuffer = a.buffer.get();

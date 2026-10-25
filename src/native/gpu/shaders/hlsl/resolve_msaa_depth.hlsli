@@ -9,6 +9,9 @@ float main(in float4 position : SV_Position, in float2 texCoord : TEXCOORD) : SV
         g_Texture2DMSDescriptorHeap[g_PushConstants.ResourceDescriptorIndex];
     uint w, h, samples;
     tex.GetDimensions(w, h, samples);
+    uint origin = g_PushConstants.ResourceDescriptorIndex2;
+    texCoord = texCoord * float2(g_PushConstants.Param0, g_PushConstants.Param1)
+        + float2(origin & 65535u, origin >> 16) / float2(w, h);
     int2 coord = min(int2(texCoord * float2(w, h)), int2(w - 1, h - 1));
     // min() across samples = nearest-surface depth (matches UR's depth resolve
     // and is correct for the posteff DOF/fog that samples this). No scale.

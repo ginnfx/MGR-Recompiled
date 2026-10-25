@@ -217,6 +217,18 @@ void mgrn::native::RefreshBoundGeometry(u32 device_guest, bool indexed) {
   for (u32 i = 0; i < kStreamCount; ++i)
     if (streams & (1u << i)) RefreshAndRebind(g_streams[i].buffer);
   if (indexed) RefreshAndRebind(g_indices);
+
+  // A registry adoption can replace a GuestBuffer's host allocation while
+  // keeping the GuestBuffer pointer stable. RefreshIfWritten then sees a
+  // clean stamp and does not rebind it. Always reconcile the draw views with
+  // the current allocation, including views scrubbed when old copies retire.
+  // SetVertexStream/SetIndices only dirty state when the view really changed.
+  for (u32 i = 0; i < kStreamCount; ++i) {
+    if (!(streams & (1u << i))) continue;
+    const BoundStream bound = g_streams[i];
+    BindVertexStream(i, bound.buffer, bound.offset, bound.stride);
+  }
+  if (indexed) gpu::Video::SetIndices(g_indices);
 }
 
 mgrn::native::BoundStreamInfo mgrn::native::BoundStreamAt(u32 stream) {

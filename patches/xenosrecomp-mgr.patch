@@ -300,7 +300,7 @@ index 63c37c9..7bfc4e4 100644
          uint v = asuint(value.x);
          return float4(
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index feaa90b..4653aef 100644
+index feaa90b..212e3be 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -133,6 +133,19 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
@@ -352,7 +352,49 @@ index feaa90b..4653aef 100644
          break;
  
      case DeclUsage::TexCoord:
-@@ -727,8 +744,12 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+@@ -484,6 +501,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+         SCALAR_CONSTANT_1
+     };
+ 
++    bool scalarSnapshot = false;
+     auto op = [&](size_t operand)
+         {
+             size_t reg = 0;
+@@ -552,7 +570,8 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ 
+             if (select)
+             {
+-                regFormatted = fmt::format("r{}", reg);
++                regFormatted = scalarSnapshot && operand >= SCALAR_0
++                    ? "aluScalarSource" : fmt::format("r{}", reg);
+             }
+             else
+             {
+@@ -653,6 +672,23 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             return result;
+         };
+ 
++    // Xenos co-issues vector and scalar ALUs: both read the old GPRs.
++    // Preserve src3 before the vector write can overwrite it. Constant/GPR
++    // scalar opcodes encode their GPR source differently from ordinary ops.
++    const bool scalarConstant = instr.scalarOpcode >= AluScalarOpcode::Mulsc0 &&
++        instr.scalarOpcode <= AluScalarOpcode::Subsc1;
++    const uint32_t scalarReg = scalarConstant
++        ? ((uint32_t(instr.scalarOpcode) & 1) | (instr.src3Select << 1) | (instr.src3Swizzle & 0x3C))
++        : (instr.src3Register & 0x3F);
++    if (!instr.exportData && instr.vectorWriteMask != 0 &&
++        instr.scalarOpcode != AluScalarOpcode::RetainPrev &&
++        (scalarConstant || instr.src3Select) && scalarReg == instr.vectorDest)
++    {
++        indent();
++        println("aluScalarSource = r{};", scalarReg);
++        scalarSnapshot = true;
++    }
++
+     switch (instr.vectorOpcode)
+     {
+     case AluVectorOpcode::KillEq:
+@@ -727,8 +763,12 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
              default:
              {
                  auto findResult = interpolators.find(instr.vectorDest);
@@ -367,7 +409,7 @@ index feaa90b..4653aef 100644
                  break;
              }
              }
-@@ -1280,6 +1301,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1280,6 +1320,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      assert((shaderContainer->flags & 0xFFFFFF00) == 0x102A1100);
      assert(shaderContainer->constantTableOffset != NULL);
  
@@ -381,7 +423,7 @@ index feaa90b..4653aef 100644
      out += include;
      out += '\n';
  
-@@ -1335,15 +1363,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1335,15 +1382,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
  
              if (constantInfo->registerCount > 1)
              {
@@ -404,7 +446,7 @@ index feaa90b..4653aef 100644
              }
              
  #ifdef REBLUE_RECOMP
-@@ -1367,12 +1397,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1367,12 +1416,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
          {
              for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
              {
@@ -422,7 +464,7 @@ index feaa90b..4653aef 100644
  
              samplers.emplace(constantInfo->registerIndex, constantName);
              break;
-@@ -1382,18 +1413,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1382,18 +1432,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      }
  
  #ifdef REBLUE_RECOMP
@@ -446,7 +488,7 @@ index feaa90b..4653aef 100644
      }
  #endif
  
-@@ -1518,14 +1548,32 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1518,14 +1567,32 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      {
          out += "\tin float4 iPos : SV_Position,\n";
  
@@ -484,7 +526,7 @@ index feaa90b..4653aef 100644
          }
  
          out += "#ifdef __spirv__\n";
-@@ -1597,10 +1645,18 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1597,10 +1664,18 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
          }
      #endif
  
@@ -504,7 +546,7 @@ index feaa90b..4653aef 100644
      }
  
      out += ")\n";
-@@ -1740,6 +1796,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1740,6 +1815,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
  
          for (auto& [usage, usageIndex] : INTERPOLATORS)
              println("\to{}{} = 0.0;", USAGE_VARIABLES[uint32_t(usage)], usageIndex);
@@ -512,7 +554,7 @@ index feaa90b..4653aef 100644
  
          out += "\n";
      }
-@@ -1751,7 +1808,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1751,7 +1827,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
              print("\tfloat4 r{} = ", i);
              if (isPixelShader && i == ((shader->fieldC >> 8) & 0xFF))
              {
@@ -525,3 +567,12 @@ index feaa90b..4653aef 100644
              }
          #ifdef UNLEASHED_RECOMP
              else if (!isPixelShader && hasIndexCount && i == 0)
+@@ -1769,7 +1850,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     out += "\tint a0 = 0;\n";
+     out += "\tint aL = 0;\n";
+     out += "\tbool p0 = false;\n";
+-    out += "\tfloat ps = 0.0;\n";
++    out += "\tfloat ps = 0.0;\n\tfloat4 aluScalarSource = 0.0;\n";
+     if (isPixelShader)
+     {
+ #ifdef UNLEASHED_RECOMP

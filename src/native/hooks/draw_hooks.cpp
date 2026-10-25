@@ -92,15 +92,32 @@ u64 ShaderHash(const gpu::GuestShader* shader) {
 }
 
 
-void DumpDraw(const gpu::VideoState& s, u32 primitive_type, const DrawArgs& args) {
+void DumpDraw(u32 device_guest, const gpu::VideoState& s, u32 primitive_type,
+              const DrawArgs& args) {
   static std::atomic<u32> draw_index{0};
   const auto& ps = s.pipelineState;
   const auto* rt = s.render_target;
   const auto* ds = s.depth_stencil;
   const auto& vp = s.viewport;
+  const auto* dev = mgrn::mem::at<const gpu::D3DDevice>(device_guest);
+  const u32 mode_control = dev ? gpu::ReadDeviceRegister(*dev, 0x2205) : 0;
+  const u32 reset_index = dev ? gpu::ReadDeviceRegister(*dev, 0x2103) : 0;
+  const auto* ib = s.index_buffer;
+  u32 block_stream_mask = 0;
+  const auto* decl = s.pipelineState.vertexDeclaration;
+  if (decl && decl->vertexElements) {
+    for (u32 i = 0; i < decl->vertexElementCount; ++i) {
+      const u32 stream = u32(decl->vertexElements[i].stream);
+      if (stream < mgrn::native::kBoundStreamCount) {
+        const auto* vb = mgrn::native::BoundStreamAt(stream).buffer;
+        if (vb && vb->blockBuffer) block_stream_mask |= 1u << stream;
+      }
+    }
+  }
   MGRN_WARN("[draw-dump] #{} prim={} {}={} vs={:016X} ps={:016X} decl={:016X}{} "
             "rt={}x{}/{} ds={}/{}@{} z={}{}f{} bias={}/{:.3f} cull={} blend={} cw=0x{:X} "
-            "vp={:.0f},{:.0f} {:.0f}x{:.0f} z{:.2f}-{:.2f}",
+            "vp={:.0f},{:.0f} {:.0f}x{:.0f} z{:.2f}-{:.2f} "
+            "primReset={} reset=0x{:06X} ibElem={} ibBlock={} vbBlocks=0x{:04X}",
             draw_index.fetch_add(1, std::memory_order_relaxed), primitive_type,
             args.indexed ? "idx" : "vtx", args.vertex_or_index_count,
             ShaderHash(ps.vertexShader), ShaderHash(ps.pixelShader),
@@ -110,7 +127,9 @@ void DumpDraw(const gpu::VideoState& s, u32 primitive_type, const DrawArgs& args
             ds ? u32(ds->format) : 0, static_cast<const void*>(ds), ps.zEnable ? 1 : 0, ps.zWriteEnable ? "w" : "",
             u32(ps.zFunc), ps.depthBias, ps.slopeScaledDepthBias, u32(ps.cullMode), ps.alphaBlendEnable ? 1 : 0,
             ps.colorWriteEnable, vp.x, vp.y, vp.width, vp.height, vp.minDepth,
-            vp.maxDepth);
+            vp.maxDepth, (mode_control >> 21) & 1, reset_index & 0xFFFFFF,
+            ib ? ib->elementSize : 0, ib && ib->blockBuffer ? 1 : 0,
+            block_stream_mask);
 }
 
 // Each element as stream:offset usage[index] type.
@@ -375,7 +394,7 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
     ProbeDepthBeforeDraw(s);
     static u32 noted_draws = 0;
     mgrn::native::NoteDrawGeometry(noted_draws++);
-    DumpDraw(s, primitive_type, args);
+    DumpDraw(device_guest, s, primitive_type, args);
     if (gpu::IsSkinnedDeclaration(s.pipelineState.vertexDeclaration) ||
         s.pipelineState.colorWriteEnable == 0) {
       DumpBonePalette(device_guest);
@@ -526,7 +545,32 @@ MGRN_HOOK_RAW(D3DDevice_Resolve) {
     return;
   }
   gpu::Video::TrackResolveSource(flags, dst, level, slice);
-  gpu::Video::ResolveRtToTexture(dst);
+  if (gpu::IsDepthFormat(dst->format)) {
+    auto& state = gpu::state();
+    auto* src = (flags & gpu::kResolveDepthStencil) ? state.depth_stencil : state.render_target;
+    if (src) {
+      plume::RenderRect rect(0, 0, i32(src->width / src->renderScale),
+                                  i32(src->height / src->renderScale));
+      if (ctx.r5.u32) {
+        const auto* r = mgrn::mem::try_at<const be_u32>(ctx.r5.u32);
+        if (!r) return;
+        rect = plume::RenderRect(i32(u32(r[0])), i32(u32(r[1])), i32(u32(r[2])), i32(u32(r[3])));
+      }
+      i32 x = 0, y = 0;
+      if (ctx.r7.u32) {
+        const auto* p = mgrn::mem::try_at<const be_u32>(ctx.r7.u32);
+        if (!p) return;
+        x = i32(u32(p[0])); y = i32(u32(p[1]));
+      }
+      static std::atomic<u32> noted{0};
+      if (noted.fetch_add(1) < 8)
+        MGRN_DEV_WARN("[depth-region] dest=0x{:08X} src={},{},{},{} dst={},{} {}x{}",
+                  dest, rect.left, rect.top, rect.right, rect.bottom, x, y, dst->width, dst->height);
+      gpu::Video::ResolveRtToTexture(dst, &rect, x, y);
+    }
+  } else {
+    gpu::Video::ResolveRtToTexture(dst);
+  }
   ResolveClear(ctx);
   if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame) {
     auto& s = gpu::state();

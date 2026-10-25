@@ -61,7 +61,9 @@ void DetachSourceSurfaceLocked(VideoState &s, GuestTexture *texture) {
 }
 
 bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
-                                GuestTexture *dst, const char *reason) {
+                                GuestTexture *dst, const char *reason,
+                                const plume::RenderRect *depth_rect,
+                                i32 dest_x, i32 dest_y) {
   if (!dst || !dst->texture || !src || !src->texture || src == dst) {
     return false;
   }
@@ -103,7 +105,7 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
   const bool dst_is_cube =
       dst->viewDimension == plume::RenderTextureViewDimension::TEXTURE_CUBE;
 
-  if (dims_match && format_match && !needs_scale &&
+  if (!depth_rect && dims_match && format_match && !needs_scale &&
       src->sampleCount == plume::RenderSampleCount::COUNT_1) {
     plume::RenderTextureBarrier pre[2] = {
         plume::RenderTextureBarrier(src->texture,
@@ -211,11 +213,29 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
       s.command_list->discardTexture(dst->texture);
 
     s.command_list->setFramebuffer(dst_fb);
-    s.command_list->setViewports(
-        plume::RenderViewport(0.0f, 0.0f, static_cast<float>(dst->width),
-                              static_cast<float>(dst->height)));
-    s.command_list->setScissors(plume::RenderRect(
-        0, 0, static_cast<i32>(dst->width), static_cast<i32>(dst->height)));
+    // A depth resolve populates one atlas tile, preserving the other tiles.
+    // The hook supplies guest coordinates; source/destination scales can differ.
+    const float ds = dst->renderScale;
+    const float ss = src->renderScale;
+    const plume::RenderRect region = depth_rect ? *depth_rect
+        : plume::RenderRect(0, 0, i32(src->width / ss), i32(src->height / ss));
+    if (depth_rect) {
+      const i32 x = i32(dest_x * ds), y = i32(dest_y * ds);
+      const i32 w = i32((region.right - region.left) * ds);
+      const i32 h = i32((region.bottom - region.top) * ds);
+      if (region.isEmpty() || region.left < 0 || region.top < 0 ||
+          region.right * ss > src->width || region.bottom * ss > src->height ||
+          x < 0 || y < 0 || u64(x) + w > dst->width || u64(y) + h > dst->height)
+        return false;
+      s.command_list->setViewports(plume::RenderViewport(float(x), float(y), float(w), float(h)));
+      s.command_list->setScissors(plume::RenderRect(x, y, x + w, y + h));
+    } else {
+      s.command_list->setViewports(
+          plume::RenderViewport(0.0f, 0.0f, static_cast<float>(dst->width),
+                                static_cast<float>(dst->height)));
+      s.command_list->setScissors(plume::RenderRect(
+          0, 0, static_cast<i32>(dst->width), static_cast<i32>(dst->height)));
+    }
     plume::RenderPipeline *pipeline = nullptr;
     if (src->sampleCount != plume::RenderSampleCount::COUNT_1) {
       pipeline = GetOrCreateResolveMSAAPipeline(s, dst->format,
@@ -252,6 +272,14 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
       float param1;
     } push{descriptor_index, 0u, depth_dst ? 1.0f : resolve_scale,
            static_cast<float>(box_ratio)};
+    if (depth_dst) {
+      // Depth helpers use the spare word for a packed pixel origin and the
+      // float params for the source UV extent. Full resolves retain [0,1].
+      push.resourceDescriptorIndex2 = depth_rect
+          ? (u32(region.left * ss) | (u32(region.top * ss) << 16)) : 0u;
+      push.param0 = depth_rect ? (region.right - region.left) * ss / src->width : 1.0f;
+      push.param1 = depth_rect ? (region.bottom - region.top) * ss / src->height : 1.0f;
+    }
     s.command_list->setGraphicsPushConstants(kCopyPushConstantRangeIndex, &push,
                                              kCopyPushConstantByteOffset,
                                              sizeof(push));
@@ -406,7 +434,9 @@ void NoteTileContentLocked(VideoState &s, GuestTexture *dst) {
 
 } // namespace
 
-void Video::ResolveRtToTexture(GuestTexture *dst) {
+void Video::ResolveRtToTexture(GuestTexture *dst,
+                               const plume::RenderRect *depth_rect,
+                               i32 dest_x, i32 dest_y) {
   MGRN_CPU_ZONE("ResolveRtToTexture");
   if (!dst || !dst->texture)
     return;
@@ -418,14 +448,24 @@ void Video::ResolveRtToTexture(GuestTexture *dst) {
   if (!src || src == dst || !src->texture)
     return;
 
-  if (CanAliasResolveLocked(src, dst)) {
+  // Preserve the existing lazy fast path for a complete, one-to-one resolve.
+  // Atlas tiles must materialize immediately, before the source is cleared.
+  if (depth_rect && dest_x == 0 && dest_y == 0 &&
+      depth_rect->left == 0 && depth_rect->top == 0 &&
+      depth_rect->right * src->renderScale == src->width &&
+      depth_rect->bottom * src->renderScale == src->height &&
+      depth_rect->right * dst->renderScale == dst->width &&
+      depth_rect->bottom * dst->renderScale == dst->height &&
+      src->width == dst->width && src->height == dst->height)
+    depth_rect = nullptr;
+  if (!depth_rect && CanAliasResolveLocked(src, dst)) {
     s.last_resolved_dst = dst;
     NoteTileContentLocked(s, dst);
     s.draw_framebuffer_bound = false;
     return;
   }
 
-  if (CopySurfaceToTextureLocked(s, src, dst, "Resolve")) {
+  if (CopySurfaceToTextureLocked(s, src, dst, "Resolve", depth_rect, dest_x, dest_y)) {
     s.last_resolved_dst = dst;
     NoteTileContentLocked(s, dst);
     DetachSourceSurfaceLocked(s, dst);

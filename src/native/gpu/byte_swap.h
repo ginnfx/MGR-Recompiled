@@ -28,4 +28,23 @@ inline void ByteSwapElements(void *dst, const void *src, u32 bytes,
   }
 }
 
+// Xenos indexed draws use only the low 24 bits of a 32-bit index. Vulkan and
+// Plume use the full 32-bit value, and Plume's strip restart marker is fixed
+// at UINT32_MAX. Normalize both properties while making an INDEX32 host copy.
+// 0xFFFFFF cannot name a vertex in MGR's 16-bit draw-count range, so it is
+// reserved for Xenos primitive restart and maps safely to the host marker.
+inline void ByteSwapIndexElements(void *dst, const void *src, u32 bytes,
+                                  u32 element_size) {
+  if (element_size != 4) {
+    ByteSwapElements(dst, src, bytes, element_size);
+    return;
+  }
+  const auto *in = static_cast<const u32 *>(src);
+  auto *out = static_cast<u32 *>(dst);
+  for (u32 i = 0; i < bytes / sizeof(u32); ++i) {
+    const u32 index = rex::byte_swap(in[i]) & 0x00FFFFFFu;
+    out[i] = index == 0x00FFFFFFu ? 0xFFFFFFFFu : index;
+  }
+}
+
 } // namespace mgrn::gpu

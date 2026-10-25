@@ -33,7 +33,9 @@ plume::RenderFramebuffer *GetFramebuffer(VideoState &s, GuestTexture *rt,
                                          GuestTexture *ds);
 
 bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
-                                GuestTexture *dst, const char *reason);
+                                GuestTexture *dst, const char *reason,
+                                const plume::RenderRect *depth_rect = nullptr,
+                                i32 dest_x = 0, i32 dest_y = 0);
 bool MaterializeOutboundLocked(VideoState &s, GuestTexture *source,
                                bool aliasable_only = false);
 void MaterializeInboundLocked(VideoState &s, GuestTexture *dst);

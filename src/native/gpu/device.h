@@ -196,7 +196,9 @@ public:
   // a non-null host-owned GuestTexture with a live RenderTexture.
   static void TrackResolveSource(u32 flags, GuestTexture *dst, u32 level = 0,
                                  u32 face = 0);
-  static void ResolveRtToTexture(GuestTexture *dst);
+  static void ResolveRtToTexture(GuestTexture *dst,
+                                 const plume::RenderRect *depth_rect = nullptr,
+                                 i32 dest_x = 0, i32 dest_y = 0);
 
   // The other in-flight list may still reference it. Freed by DrainSlot. Takes
   // state().mutex.
@@ -328,10 +330,9 @@ struct VideoState {
   std::unique_ptr<plume::RenderPipeline> copy_color_pipeline;
   std::unique_ptr<plume::RenderPipeline> gamma_correction_pipeline;
   std::unique_ptr<plume::RenderShader> gamma_correction_ps;
-  // Exponent of the guest's scanout gamma ramp, captured by the
-  // bdBuildGammaRampLUT hook: BD uploads ramp(x) = x^((2-sub)*mul/2) via
-  // SetGammaRamp, default settings give x^0.5. Applied at present.
-  float guest_gamma = 0.5f;
+  // MGR has no mirrored gamma-ramp hook. Keep scanout neutral instead of
+  // inheriting re:Blue's game-specific x^0.5 default, which lifts every pixel.
+  float guest_gamma = 1.0f;
 
   // Per slot, so a pipelined frame cannot clobber an in-flight copy.
   std::unique_ptr<plume::RenderShader> occlusion_count_ps;
