@@ -1,6 +1,7 @@
 Metal Gear Rising: Revengeance recompiled from the Xbox 360 version using [ReXGlue](https://github.com/rexglue/rexglue-sdk)
 Usa version of game i think
 WIP, don't expect good performance . No Win11 build planned since that one works fine on steam
+you will prolly also see some streaks from raiden's sword that idk how to fix yet ;-;
 
 ## needed
 
