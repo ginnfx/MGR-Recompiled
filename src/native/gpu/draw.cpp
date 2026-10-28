@@ -325,6 +325,10 @@ bool Video::FlushRenderStateLocked(u32 device_guest) {
                   s.pipelineState.renderTargetFormat, rt_format);
     SetDirtyValue(s.dirtyStates.pipelineState,
                   s.pipelineState.depthStencilFormat, ds_format);
+    const auto samples = rt   ? rt->sampleCount
+                         : ds ? ds->sampleCount
+                              : plume::RenderSampleCounts(plume::RenderSampleCount::COUNT_1);
+    SetDirtyValue(s.dirtyStates.pipelineState, s.pipelineState.sampleCount, samples);
   }
 
   // RB_DEPTHCONTROL + RB_BLENDCONTROL0 + RB_STENCILREFMASK + the color control

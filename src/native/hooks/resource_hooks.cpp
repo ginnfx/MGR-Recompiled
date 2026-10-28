@@ -152,10 +152,12 @@ gpu::GuestTexture* EnsureSceneScale(gpu::GuestTexture* texture) {
 }
 
 gpu::GuestTexture* CreateSurfaceTexture(u32 surface_va, const SurfaceCreateArgs& args) {
-  const auto msaa = (args.multisample != 0 &&
-                     gpu::Video::CvarMSAASampleCount() != plume::RenderSampleCount::COUNT_1)
+  // MGR renders without MSAA. The setting multisamples the full-size scene
+  // colour and depth surfaces, so the pairs drawn together always match.
+  const bool scene_surface = args.width == gpu::kGameWidth && args.height == gpu::kGameHeight;
+  const auto msaa = (args.multisample != 0 || scene_surface)
                         ? gpu::Video::CvarMSAASampleCount()
-                        : plume::RenderSampleCount::COUNT_1;
+                        : plume::RenderSampleCounts(plume::RenderSampleCount::COUNT_1);
   if (gpu::ConvertGuestFormat(args.format) == plume::RenderFormat::UNKNOWN) return nullptr;
   const f32 scale = SceneScaleFor(args.width, args.height, true);
   auto* surface = gpu::SurfaceRegistry::Get(gpu::ScaleExtent(args.width, scale),
