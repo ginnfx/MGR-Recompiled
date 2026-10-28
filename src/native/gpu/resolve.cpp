@@ -10,6 +10,7 @@
  */
 #include "gpu/frame.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <memory>
@@ -221,9 +222,14 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
         : plume::RenderRect(0, 0, i32(src->width / ss), i32(src->height / ss));
     if (depth_rect) {
       const i32 x = i32(dest_x * ds), y = i32(dest_y * ds);
-      const i32 w = i32((region.right - region.left) * ds);
-      const i32 h = i32((region.bottom - region.top) * ds);
-      if (region.isEmpty() || region.left < 0 || region.top < 0 ||
+      i32 w = i32((region.right - region.left) * ds);
+      i32 h = i32((region.bottom - region.top) * ds);
+      // A colour resolve larger than its destination writes only what fits.
+      if (!depth_dst && x >= 0 && y >= 0) {
+        w = std::min(w, i32(dst->width) - x);
+        h = std::min(h, i32(dst->height) - y);
+      }
+      if (region.isEmpty() || w <= 0 || h <= 0 || region.left < 0 || region.top < 0 ||
           region.right * ss > src->width || region.bottom * ss > src->height ||
           x < 0 || y < 0 || u64(x) + w > dst->width || u64(y) + h > dst->height)
         return false;
@@ -272,6 +278,17 @@ bool CopySurfaceToTextureLocked(VideoState &s, GuestTexture *src,
       float param1;
     } push{descriptor_index, 0u, depth_dst ? 1.0f : resolve_scale,
            static_cast<float>(box_ratio)};
+    if (!depth_dst && depth_rect) {
+      // Colour region: source pixel = dest pixel * ratio + offset, with the
+      // offset packed as two signed 16-bit half-pixel counts (copy_color_ps).
+      const float ratio = ss / ds;
+      const auto half_pixels = [](float v) {
+        return u32(u16(i16(std::lround(v * 2.0f))));
+      };
+      push.resourceDescriptorIndex2 = half_pixels((region.left - dest_x) * ss) |
+                                      (half_pixels((region.top - dest_y) * ss) << 16);
+      push.param1 = ratio;
+    }
     if (depth_dst) {
       // Depth helpers use the spare word for a packed pixel origin and the
       // float params for the source UV extent. Full resolves retain [0,1].
