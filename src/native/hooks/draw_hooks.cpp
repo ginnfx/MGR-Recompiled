@@ -23,6 +23,7 @@
 
 #include "core/logging.h"
 #include "core/memory_helpers.h"
+#include "gpu/byte_swap.h"
 #include "gpu/constant_buffers.h"
 #include "gpu/d3d.h"
 #include "gpu/depth_probe.h"
@@ -311,6 +312,47 @@ void NoteRareShaderPair(const gpu::VideoState& s, u32 present, u32 primitive_typ
             gpu::IsSkinnedDeclaration(ps.vertexDeclaration) ? " SKINNED" : "");
 }
 
+// The guest IB struct keeps flags in the low two bits of its size, so a
+// recorded size can be up to 3 bytes short: an odd 16-bit index count loses
+// its last index. Xenos fetches by draw count, never by buffer size.
+constexpr u32 kIndexSizeMaskedBytes = 3;
+
+// Indices a draw may fetch from first_byte on, counting the masked tail.
+u32 GuestIndicesAvailable(const gpu::GuestBuffer& ib, u64 first_byte, u32 elem) {
+  const u64 end = u64(ib.dataSize) + kIndexSizeMaskedBytes;
+  return first_byte < end ? u32((end - first_byte) / elem) : 0;
+}
+
+// Indexed draw reaching past the host copy of its IB (the masked tail): the
+// GPU would read past that buffer and turn the last strip triangle into a
+// stray streak. Fetch the draw's indices from guest memory into the upload
+// heap instead, as Xenos does. False when they cannot be read. Caller holds
+// s.mutex.
+bool DrawIndexedFromGuest(gpu::VideoState& s, plume::RenderCommandList* cmd_list,
+                          const DrawArgs& args) {
+  const gpu::GuestBuffer* ib = s.index_buffer;
+  if (!ib || !ib->guestMirrorVa) return false;
+  const u32 elem = s.index_view.format == plume::RenderFormat::R32_UINT ? 4u : 2u;
+  const u64 first_byte = u64(args.start_index) * elem;
+  const u32 count =
+      std::min(args.vertex_or_index_count, GuestIndicesAvailable(*ib, first_byte, elem));
+  const auto* src = mgrn::mem::try_at<const u8>(ib->guestMirrorVa + u32(first_byte));
+  if (!count || !src) return false;
+  std::vector<u8> swapped(size_t(count) * elem);
+  gpu::ByteSwapIndexElements(swapped.data(), src, u32(swapped.size()), elem);
+  const auto alloc = gpu::UploadHostBytes(swapped.data(), u32(swapped.size()));
+  if (!alloc.size) return false;
+  plume::RenderIndexBufferView view{};
+  view.buffer = alloc.ref;
+  view.size = u32(swapped.size());
+  view.format = s.index_view.format;
+  cmd_list->setIndexBuffer(&view);
+  cmd_list->drawIndexedInstanced(count, 1, 0, args.base_vertex_index, 0);
+  // The uploaded IB replaced the tracked guest IB on the command list.
+  s.dirtyStates.indices = true;
+  return true;
+}
+
 // Indexed quad list: expands the guest's indices (4 per quad) into two
 // triangles per quad in the upload heap, since the shared expansion IB only
 // covers sequential vertices. Caller holds s.mutex.
@@ -320,7 +362,7 @@ void DrawIndexedQuadList(gpu::VideoState& s, plume::RenderCommandList* cmd_list,
   if (!ib || !ib->guestMirrorVa) return;
   const u32 elem = ib->format == plume::RenderFormat::R32_UINT ? 4u : 2u;
   const u64 first_byte = u64(args.start_index) * elem;
-  const u32 available = first_byte < ib->dataSize ? u32((ib->dataSize - first_byte) / elem) : 0;
+  const u32 available = GuestIndicesAvailable(*ib, first_byte, elem);
   const u32 quads = std::min(std::min(args.vertex_or_index_count, available) / 4,
                              gpu::Video::QuadlistMaxQuads());
   const auto* src = mgrn::mem::try_at<const u8>(ib->guestMirrorVa + u32(first_byte));
@@ -433,8 +475,11 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
                   args.vertex_or_index_count, args.start_index, args.base_vertex_index);
       return;
     }
-    cmd_list->drawIndexedInstanced(args.vertex_or_index_count, 1, args.start_index,
-                                   args.base_vertex_index, 0);
+    const u32 elem = s.index_view.format == plume::RenderFormat::R32_UINT ? 4u : 2u;
+    const u64 end_byte = (u64(args.start_index) + args.vertex_or_index_count) * elem;
+    if (end_byte <= s.index_view.size || !DrawIndexedFromGuest(s, cmd_list, args))
+      cmd_list->drawIndexedInstanced(args.vertex_or_index_count, 1, args.start_index,
+                                     args.base_vertex_index, 0);
   } else {
     cmd_list->drawInstanced(args.vertex_or_index_count, 1, args.start_vertex, 0);
   }
