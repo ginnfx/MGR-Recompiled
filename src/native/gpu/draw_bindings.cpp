@@ -17,6 +17,7 @@
 
 #include <plume_render_interface.h>
 
+#include "gpu/settings.h"
 #include "gpu/shaders/shader_constants.h"
 
 namespace mgrn::gpu {
@@ -170,12 +171,19 @@ float Video::AlphaThreshold() {
 void Video::SetAlphaTestMode(bool enable) {
   auto &s = state();
 
-  u32 specConstants = s.pipelineState.specConstants & ~kSpecConstantAlphaTest;
+  // The draw sets sampleCount and blending before the alpha test. Blended
+  // draws (HUD, glass, fog cards) keep the clip: coverage replaces the alpha
+  // their blend reads.
+  const bool coverage = enable && Settings::Get().TransparencyAA() &&
+                        !s.pipelineState.alphaBlendEnable &&
+                        s.pipelineState.sampleCount != plume::RenderSampleCount::COUNT_1;
+  u32 specConstants = s.pipelineState.specConstants &
+                      ~(kSpecConstantAlphaTest | kSpecConstantAlphaToCoverage);
   if (enable)
-    specConstants |= kSpecConstantAlphaTest;
+    specConstants |= coverage ? kSpecConstantAlphaToCoverage : kSpecConstantAlphaTest;
 
   SetDirtyValue<bool>(s.dirtyStates.pipelineState,
-                      s.pipelineState.enableAlphaToCoverage, false);
+                      s.pipelineState.enableAlphaToCoverage, coverage);
   SetDirtyValue<u32>(s.dirtyStates.pipelineState, s.pipelineState.specConstants,
                      specConstants);
 }

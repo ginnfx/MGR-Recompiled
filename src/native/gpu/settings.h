@@ -43,6 +43,8 @@ public:
   i32 ShadowDimension() const;
   // mgr_msaa: 0/2/4/8, latched when the device is created.
   i32 MSAA() const;
+  // mgr_transparency_aa: alpha-tested draws into MSAA targets use coverage.
+  bool TransparencyAA() const;
   // mgr_brightness: present gamma 1/brightness, 1 = the game's own output.
   f32 Brightness() const;
   bool PSOPrecache() const { return false; }

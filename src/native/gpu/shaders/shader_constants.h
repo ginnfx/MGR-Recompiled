@@ -27,4 +27,5 @@ inline constexpr u32 kSpecConstantR11G11B10Mask =
     kSpecConstantR11G11B10Normal | kSpecConstantR11G11B10Tangent |
     kSpecConstantR11G11B10Binormal;
 inline constexpr u32 kSpecConstantAlphaTest = SPEC_CONSTANT_ALPHA_TEST;
+inline constexpr u32 kSpecConstantAlphaToCoverage = SPEC_CONSTANT_ALPHA_TO_COVERAGE;
 } // namespace mgrn::gpu

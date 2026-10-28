@@ -102,10 +102,10 @@ index 754198c..24a33b5 100644
  
          StringBuffer f;
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index 63c37c9..779cad9 100644
+index 63c37c9..96dc0da 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
-@@ -3,6 +3,10 @@
+@@ -3,27 +3,41 @@
  
  #define SPEC_CONSTANT_R11G11B10_NORMAL  (1 << 0)
  #define SPEC_CONSTANT_ALPHA_TEST        (1 << 1)
@@ -113,10 +113,15 @@ index 63c37c9..779cad9 100644
 +// while its tangent is UBYTE4N, and decoding that tangent as packed garbles it.
 +#define SPEC_CONSTANT_R11G11B10_TANGENT  (1 << 5)
 +#define SPEC_CONSTANT_R11G11B10_BINORMAL (1 << 6)
++
++// Alpha-tested draws into a multisampled target: alpha becomes coverage.
++#define SPEC_CONSTANT_ALPHA_TO_COVERAGE (1 << 3)
  
  #ifdef UNLEASHED_RECOMP
      #define SPEC_CONSTANT_BICUBIC_GI_FILTER (1 << 2)
-@@ -12,18 +16,26 @@
+-    #define SPEC_CONSTANT_ALPHA_TO_COVERAGE (1 << 3)
+     #define SPEC_CONSTANT_REVERSE_Z         (1 << 4)
+ #endif
  
  // SPIR-V vertex input locations, shared with reblue's host input-layout
  // builder. A semantic missing here gets no location from the emitter.
@@ -154,7 +159,7 @@ index 63c37c9..779cad9 100644
  
  // SPEC_CONSTANTS_ONLY keeps the HLSL below out of host C++ TUs, which IntelliSense would otherwise parse.
  #if (!defined(__cplusplus) || defined(__INTELLISENSE__)) && !defined(SHADER_COMMON_SPEC_CONSTANTS_ONLY)
-@@ -33,6 +45,13 @@
+@@ -33,6 +47,13 @@
  
  #ifdef __spirv__
  
@@ -168,7 +173,7 @@ index 63c37c9..779cad9 100644
  struct PushConstants
  {
      uint64_t VertexShaderConstants;
-@@ -42,24 +61,49 @@ struct PushConstants
+@@ -42,24 +63,49 @@ struct PushConstants
  
  [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
  
@@ -234,7 +239,7 @@ index 63c37c9..779cad9 100644
  #endif
  
  [[vk::constant_id(0)]] const uint g_SpecConstants = 0;
-@@ -100,10 +144,17 @@ uint g_SpecConstants();
+@@ -100,10 +146,17 @@ uint g_SpecConstants();
  #define BOOL_BIT(n) ((g_Booleans((n) / 32u) & (1u << ((n) & 31u))) != 0)
  #endif
  
@@ -252,7 +257,7 @@ index 63c37c9..779cad9 100644
  
  uint2 getTexture2DDimensions(Texture2D<float4> texture)
  {
-@@ -112,10 +163,17 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+@@ -112,10 +165,17 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
      return dimensions;
  }
  
@@ -271,7 +276,7 @@ index 63c37c9..779cad9 100644
  }
  
  float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
-@@ -218,7 +276,7 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+@@ -218,7 +278,7 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
  
  float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
  {
@@ -280,7 +285,7 @@ index 63c37c9..779cad9 100644
  }
  
  struct CubeMapData
-@@ -236,14 +294,15 @@ struct CubeMapData
+@@ -236,14 +296,15 @@ struct CubeMapData
  
  float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
  {
@@ -299,7 +304,7 @@ index 63c37c9..779cad9 100644
      {
          uint v = asuint(value.x);
          return float4(
-@@ -303,11 +362,41 @@ float4 cube(float4 value, inout CubeMapData cubeMapData)
+@@ -303,11 +364,41 @@ float4 cube(float4 value, inout CubeMapData cubeMapData)
      return float4(0.0, 0.0, 0.0, index);
  }
  
@@ -343,7 +348,7 @@ index 63c37c9..779cad9 100644
      dest.w = src1.w;
      return dest;
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index feaa90b..7603bc0 100644
+index feaa90b..cf33ca2 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -133,6 +133,19 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
@@ -675,3 +680,30 @@ index feaa90b..7603bc0 100644
      if (isPixelShader)
      {
  #ifdef UNLEASHED_RECOMP
+@@ -2299,7 +2380,6 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     indent();
+                     out += "}";
+ 
+-                #ifdef UNLEASHED_RECOMP
+                     specConstantsMask |= SPEC_CONSTANT_ALPHA_TO_COVERAGE;
+ 
+                     indent();
+@@ -2307,14 +2387,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     indent();
+                     out += '{';
+ 
++                #ifdef UNLEASHED_RECOMP
+                     indent();
+                     out += "\toC0.w *= 1.0 + computeMipLevel(pixelCoord) * 0.25;\n";
++                #endif
++                    // Sharpen alpha around the threshold so coverage gives
++                    // an antialiased cutout edge.
+                     indent();
+                     out += "\toC0.w = 0.5 + (oC0.w - g_AlphaThreshold) / max(fwidth(oC0.w), 1e-6);\n";
+ 
+                     indent();
+                     out += '}';
+-                #endif
+                 }
+                 else
+                 {
