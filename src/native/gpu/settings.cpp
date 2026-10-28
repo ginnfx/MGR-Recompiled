@@ -19,6 +19,9 @@ REXCVAR_DEFINE_INT32(mgr_msaa, 0, "MGR/Graphics",
                      "Applies on the next launch.");
 REXCVAR_DEFINE_INT32(mgr_shadow_resolution, 0, "MGR/Graphics",
                      "Native renderer shadow map size in texels; 0 keeps the game's size.");
+REXCVAR_DEFINE_DOUBLE(mgr_brightness, 1.0, "MGR/Graphics",
+                      "Image brightness, 0.5 to 1.5. 1 keeps the game's own output; higher "
+                      "values lift dark and mid tones");
 
 namespace mgrn::gpu {
 
@@ -52,6 +55,11 @@ i32 Settings::AspectRatio() const {
 i32 Settings::ShadowDimension() const { return REXCVAR_GET(mgr_shadow_resolution); }
 
 i32 Settings::MSAA() const { return REXCVAR_GET(mgr_msaa); }
+
+f32 Settings::Brightness() const {
+  constexpr f64 kMinBrightness = 0.5, kMaxBrightness = 1.5;
+  return f32(std::clamp(REXCVAR_GET(mgr_brightness), kMinBrightness, kMaxBrightness));
+}
 
 namespace {
 f32 ReadSceneRenderScaleCvar() {

@@ -170,7 +170,8 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt,
     u32 descriptor_index_2;
     float gamma;
     float display_correction;
-  } pc{gamma_src_desc, 0, s.guest_gamma * kPresentGamma,
+  } pc{gamma_src_desc, 0,
+       s.guest_gamma * kPresentGamma / Settings::Get().Brightness(),
        kPresentDisplayCorrection};
   s.command_list->setGraphicsPushConstants(kCopyPushConstantRangeIndex, &pc,
                                            kCopyPushConstantByteOffset,
