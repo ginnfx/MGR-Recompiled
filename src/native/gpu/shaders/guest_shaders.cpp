@@ -35,7 +35,9 @@
 #include "gpu/shaders/shader_linker.h"
 #include <miniz.h>
 #else
+#include <span>
 #include <smolv.h>
+#include "gpu/shaders/float_controls.h"
 #endif
 
 namespace mgrn::gpu {
@@ -192,13 +194,18 @@ plume::RenderShader *GetOrLinkShader(GuestShader *gs, u32 specConstants) {
   if (!cache)
     return nullptr;
   const u8 *smol = cache + entry->spirvOffset;
-  std::vector<u8> spirv(smolv::GetDecodedBufferSize(smol, entry->spirvSize));
-  if (spirv.empty() ||
-      !smolv::Decode(smol, entry->spirvSize, spirv.data(), spirv.size())) {
+  const size_t decoded = smolv::GetDecodedBufferSize(smol, entry->spirvSize);
+  std::vector<u32> words(decoded / sizeof(u32));
+  if (words.empty() ||
+      !smolv::Decode(smol, entry->spirvSize, words.data(), decoded)) {
     MGRN_ERROR("GetOrLinkShader: SPIR-V decode failed (hash=0x{:016X})",
              entry->hash);
     return nullptr;
   }
+  // Xenos keeps Inf/NaN; without this MoltenVK compiles in fast math.
+  AddSignedZeroInfNanPreserve(words);
+  const std::span<const u8> spirv(reinterpret_cast<const u8 *>(words.data()),
+                                  words.size() * sizeof(u32));
   // MGR diagnostic: MGR_NATIVE_DUMP_SPIRV=<dir> writes every decoded module
   // as <dir>/<hash>.spv for spirv-val / spirv-cross.
   if (const char *dump = std::getenv("MGR_NATIVE_DUMP_SPIRV"); dump && *dump) {

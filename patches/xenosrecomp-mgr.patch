@@ -102,7 +102,7 @@ index 754198c..24a33b5 100644
  
          StringBuffer f;
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index 63c37c9..7bfc4e4 100644
+index 63c37c9..779cad9 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
 @@ -3,6 +3,10 @@
@@ -299,8 +299,51 @@ index 63c37c9..7bfc4e4 100644
      {
          uint v = asuint(value.x);
          return float4(
+@@ -303,11 +362,41 @@ float4 cube(float4 value, inout CubeMapData cubeMapData)
+     return float4(0.0, 0.0, 0.0, index);
+ }
+ 
++// Xenos (Shader Model 3) multiplication: +-0 times anything, Inf and NaN
++// included, is +0. IEEE gives NaN for 0 * Inf, which turns unused skinning
++// weights and degenerate effect segments into stray vertices.
++#define XE_MUL_TYPE(T) \
++    T xeMul(T a, T b) { return select(or(a == 0.0, b == 0.0), (T)0.0, a * b); }
++XE_MUL_TYPE(float)
++XE_MUL_TYPE(float2)
++XE_MUL_TYPE(float3)
++XE_MUL_TYPE(float4)
++#undef XE_MUL_TYPE
++
++// Dot products as Xenos sums them: zero-rule products, added in lane order.
++float xeDot(float2 a, float2 b)
++{
++    float2 p = xeMul(a, b);
++    return p.x + p.y;
++}
++
++float xeDot(float3 a, float3 b)
++{
++    float3 p = xeMul(a, b);
++    return (p.x + p.y) + p.z;
++}
++
++float xeDot(float4 a, float4 b)
++{
++    float4 p = xeMul(a, b);
++    return ((p.x + p.y) + p.z) + p.w;
++}
++
+ float4 dst(float4 src0, float4 src1)
+ {
+     float4 dest;
+     dest.x = 1.0;
+-    dest.y = src0.y * src1.y;
++    dest.y = xeMul(src0.y, src1.y);
+     dest.z = src0.z;
+     dest.w = src1.w;
+     return dest;
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index feaa90b..212e3be 100644
+index feaa90b..7603bc0 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -133,6 +133,19 @@ static constexpr std::pair<DeclUsage, size_t> INTERPOLATORS[] =
@@ -409,6 +452,62 @@ index feaa90b..212e3be 100644
                  break;
              }
              }
+@@ -836,7 +876,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             break;
+ 
+         case AluVectorOpcode::Mul:
+-            print("{} * {}", op(VECTOR_0), op(VECTOR_1));
++            print("xeMul({}, {})", op(VECTOR_0), op(VECTOR_1));
+             break;
+ 
+         case AluVectorOpcode::Max:
+@@ -877,7 +917,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             break;
+ 
+         case AluVectorOpcode::Mad:
+-            print("{} * {} + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
++            print("xeMul({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+             break;
+ 
+         case AluVectorOpcode::CndEq:
+@@ -894,11 +934,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ 
+         case AluVectorOpcode::Dp4:
+         case AluVectorOpcode::Dp3:
+-            print("dot({}, {})", op(VECTOR_0), op(VECTOR_1));
++            print("xeDot({}, {})", op(VECTOR_0), op(VECTOR_1));
+             break;
+ 
+         case AluVectorOpcode::Dp2Add:
+-            print("dot({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
++            print("xeDot({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
+             break;
+ 
+         case AluVectorOpcode::Cube:
+@@ -1025,12 +1065,12 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             break;
+ 
+         case AluScalarOpcode::Muls:
+-            print("{} * {}", op(SCALAR_0), op(SCALAR_1));
++            print("xeMul({}, {})", op(SCALAR_0), op(SCALAR_1));
+             break;
+ 
+         case AluScalarOpcode::MulsPrev:
+         case AluScalarOpcode::MulsPrev2:
+-            print("{} * ps", op(SCALAR_0));
++            print("xeMul({}, ps)", op(SCALAR_0));
+             break;
+ 
+         case AluScalarOpcode::Maxs:
+@@ -1154,7 +1194,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ 
+         case AluScalarOpcode::Mulsc0:
+         case AluScalarOpcode::Mulsc1:
+-            print("{} * {}", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
++            print("xeMul({}, {})", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
+             break;
+ 
+         case AluScalarOpcode::Addsc0:
 @@ -1280,6 +1320,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
      assert((shaderContainer->flags & 0xFFFFFF00) == 0x102A1100);
      assert(shaderContainer->constantTableOffset != NULL);
