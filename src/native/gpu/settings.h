@@ -41,7 +41,7 @@ public:
   i32 AspectRatio() const;
   // mgr_shadow_resolution: 0 keeps the game's shadow map size.
   i32 ShadowDimension() const;
-  // mgr_msaa: 0/2/4/8, latched when the device is created.
+  // mgr_msaa: 0/2/4/8; targets follow it from the next frame.
   i32 MSAA() const;
   // mgr_transparency_aa: alpha-tested draws into MSAA targets use coverage.
   bool TransparencyAA() const;
@@ -62,18 +62,21 @@ inline constexpr f32 kMaxSceneRenderScale = 3.0f;
 inline constexpr u32 kGameWidth = 1280;
 inline constexpr u32 kGameHeight = 720;
 inline constexpr u32 kMinScaledTargetWidth = 320;
-// Bumped whenever the scene scale changes; scaled targets built at an older
-// generation are resized before their next use.
-u32 SceneScaleGeneration();
-// Re-reads mgr_resolution_scale; call once per frame on the render thread.
-void RefreshSceneRenderScale();
+// Bumped whenever the scene scale, shadow scale or MSAA count changes; targets
+// built at an older generation are rebuilt before their next use.
+u32 RenderTargetGeneration();
+// Re-reads mgr_resolution_scale, mgr_shadow_resolution and mgr_msaa; call once
+// per frame on the render thread, so a frame's targets all agree.
+void RefreshRenderTargetSettings();
+// mgr_msaa as of the last refresh.
+i32 ActiveMSAA();
 // True for render targets of these guest dimensions that follow the scale.
 bool IsSceneShapedTarget(u32 width, u32 height);
 // The game's shadow caster surfaces (1024x1024) and the cascade atlas they
 // resolve into (1024x2048) render at ShadowRenderScale().
 inline constexpr u32 kShadowMapSize = 1024;
 bool IsShadowShapedTarget(u32 width, u32 height);
-// mgr_shadow_resolution / 1024, latched at first use; 1 keeps the original.
+// mgr_shadow_resolution / 1024 as of the last refresh; 1 keeps the original.
 f32 ShadowRenderScale();
 // A guest extent in host pixels, at least 1.
 u32 ScaleExtent(u32 extent, f32 scale);

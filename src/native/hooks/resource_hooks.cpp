@@ -120,18 +120,18 @@ gpu::GuestTexture* FindResolvedAlias(u32 texture_va) {
   return owner;
 }
 
-// Scene-shaped targets record their guest size and the scale they were built
-// at, so a later mgr_resolution_scale change can resize them in place.
+// Scaled targets record their guest size and the generation they were built
+// at, so a later resolution or shadow setting change can resize them in place.
 void MarkSceneScale(gpu::GuestTexture* texture, u32 guest_width, u32 guest_height,
                     bool eligible) {
   texture->followsSceneScale = eligible && gpu::IsSceneShapedTarget(guest_width, guest_height);
+  texture->followsShadowScale = eligible && gpu::IsShadowShapedTarget(guest_width, guest_height);
   texture->guestWidth = guest_width;
   texture->guestHeight = guest_height;
-  texture->sceneScaleGeneration = gpu::SceneScaleGeneration();
-  texture->renderScale = texture->followsSceneScale ? gpu::SceneRenderScale()
-                         : eligible && gpu::IsShadowShapedTarget(guest_width, guest_height)
-                             ? gpu::ShadowRenderScale()
-                             : 1.0f;
+  texture->targetGeneration = gpu::RenderTargetGeneration();
+  texture->renderScale = texture->followsSceneScale    ? gpu::SceneRenderScale()
+                         : texture->followsShadowScale ? gpu::ShadowRenderScale()
+                                                       : 1.0f;
 }
 
 // Scene targets follow mgr_resolution_scale; shadow targets mgr_shadow_resolution.
@@ -142,17 +142,21 @@ f32 SceneScaleFor(u32 guest_width, u32 guest_height, bool eligible) {
   return 1.0f;
 }
 
-// Rebuilds a scene-shaped target at the current scale when the setting has
+// Rebuilds a target at the current scale and sample count when a setting has
 // changed since it was built. The guest redraws it every frame.
-gpu::GuestTexture* EnsureSceneScale(gpu::GuestTexture* texture) {
-  if (!texture || !texture->followsSceneScale ||
-      texture->sceneScaleGeneration == gpu::SceneScaleGeneration())
+gpu::GuestTexture* EnsureTargetSettings(gpu::GuestTexture* texture) {
+  if (!texture || texture->targetGeneration == gpu::RenderTargetGeneration()) return texture;
+  texture->targetGeneration = gpu::RenderTargetGeneration();
+  if (!texture->followsSceneScale && !texture->followsShadowScale && !texture->followsMSAA)
     return texture;
-  const f32 scale = gpu::SceneRenderScale();
+  const f32 scale = texture->followsSceneScale    ? gpu::SceneRenderScale()
+                    : texture->followsShadowScale ? gpu::ShadowRenderScale()
+                                                  : texture->renderScale;
+  const auto samples =
+      texture->followsMSAA ? gpu::Video::CvarMSAASampleCount() : texture->sampleCount;
   gpu::Video::ResizeTexture(texture, gpu::ScaleExtent(texture->guestWidth, scale),
-                            gpu::ScaleExtent(texture->guestHeight, scale));
+                            gpu::ScaleExtent(texture->guestHeight, scale), samples);
   texture->renderScale = scale;
-  texture->sceneScaleGeneration = gpu::SceneScaleGeneration();
   return texture;
 }
 
@@ -170,6 +174,7 @@ gpu::GuestTexture* CreateSurfaceTexture(u32 surface_va, const SurfaceCreateArgs&
                                             u32(msaa));
   if (!surface) return nullptr;
   MarkSceneScale(surface, args.width, args.height, true);
+  surface->followsMSAA = args.multisample != 0 || scene_surface;
   // The registry recycles entries whose reference count reads 0, which in
   // re:Blue the guest maintained. Here the guest object is separate, so pin it.
   surface->x360.as_surface.resource.ReferenceCount = 1u;
@@ -244,7 +249,7 @@ gpu::GuestTexture* CreateRenderableTexture(u32 texture_va, const TextureCreateAr
 gpu::GuestTexture* ResolveSurface(u32 surface_va) {
   if (!surface_va) return nullptr;
   if (auto* host = gpu::HostResourceHeap::FromGuest<gpu::GuestTexture>(surface_va))
-    return EnsureSceneScale(host);
+    return EnsureTargetSettings(host);
   SurfaceCreateArgs args;
   {
     std::lock_guard lock(g_mutex);
@@ -263,7 +268,7 @@ gpu::GuestTexture* ResolveDestination(u32 texture_va) {
   if (auto* host = gpu::HostResourceHeap::FromGuest<gpu::GuestTexture>(texture_va)) {
     // The engine may have pointed the header at other memory since.
     RememberResolvedMemory(texture_va);
-    return EnsureSceneScale(host);
+    return EnsureTargetSettings(host);
   }
   TextureCreateArgs args;
   {
@@ -295,8 +300,8 @@ gpu::GuestTexture* LookupPresentTexture(u32 texture_va) {
 gpu::GuestTexture* ResolveTexture(u32 texture_va) {
   if (!texture_va) return nullptr;
   if (auto* host = gpu::HostResourceHeap::FromGuest<gpu::GuestTexture>(texture_va))
-    return EnsureSceneScale(host);
-  if (auto* alias = FindResolvedAlias(texture_va)) return EnsureSceneScale(alias);
+    return EnsureTargetSettings(host);
+  if (auto* alias = FindResolvedAlias(texture_va)) return EnsureTargetSettings(alias);
   const auto* guest = mgrn::mem::try_at<const gpu::D3DTexture>(texture_va);
   if (!guest) return nullptr;
   {

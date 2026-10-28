@@ -47,6 +47,14 @@ bool MgrNativeStart(rex::ui::Window* window) {
   return true;
 }
 
+int MgrNativeMaxMSAA() {
+  const auto mask = gpu::state().supported_sample_mask;
+  int samples = 1;
+  for (int count = 2; count <= 8; count *= 2)
+    if (mask & u32(count)) samples = count;
+  return samples;
+}
+
 bool MgrNativeCapture(rex::ui::RawImage& image) {
   gpu::CapturedFrame frame;
   if (!gpu::CaptureNextPresent(frame, kCaptureTimeoutMs)) return false;

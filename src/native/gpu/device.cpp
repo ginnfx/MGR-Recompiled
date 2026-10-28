@@ -118,7 +118,7 @@ bool BuildPresentSemaphores(VideoState &s) {
 plume::RenderSampleCounts Video::CvarMSAASampleCount() {
   auto &s = state();
   plume::RenderSampleCounts requested;
-  switch (Settings::Get().MSAA()) {
+  switch (ActiveMSAA()) {
   case 2:
     requested = plume::RenderSampleCount::COUNT_2;
     break;
@@ -132,8 +132,9 @@ plume::RenderSampleCounts Video::CvarMSAASampleCount() {
     return plume::RenderSampleCount::COUNT_1;
   }
   // Power-of-two bitmask: a level is supported iff its bit is set in the mask.
-  if ((s.supported_sample_mask & requested) == 0)
-    return plume::RenderSampleCount::COUNT_1;
+  while (requested > plume::RenderSampleCount::COUNT_1 &&
+         (s.supported_sample_mask & requested) == 0)
+    requested >>= 1;
   return requested;
 }
 
@@ -469,7 +470,7 @@ bool Video::CreateHostDevice(rex::ui::Window *window) {
   InitGPUProfiler(static_cast<plume::D3D12Device *>(s.device.get())->d3d,
                   static_cast<plume::D3D12CommandQueue *>(s.queue.get())->d3d);
 #endif
-  RefreshSceneRenderScale();
+  RefreshRenderTargetSettings();
   s.ready = true;
   MGRN_DEBUG("Plume backend ready: {}x{} ({} buffers, {} bindless slots)",
            static_cast<u32>(s.viewport.width),
@@ -516,8 +517,10 @@ void Video::SyncBackBufferSizeLocked() {
   MGRN_INFO("[output-res] back buffer -> {}x{}", w, h);
 }
 
-void Video::ResizeTexture(GuestTexture *tex, u32 width, u32 height) {
-  if (!tex || !tex->texture || (tex->width == width && tex->height == height))
+void Video::ResizeTexture(GuestTexture *tex, u32 width, u32 height,
+                          plume::RenderSampleCounts samples) {
+  if (!tex || !tex->texture ||
+      (tex->width == width && tex->height == height && tex->sampleCount == samples))
     return;
   if (tex->viewDimension != plume::RenderTextureViewDimension::TEXTURE_2D)
     return;
@@ -525,6 +528,8 @@ void Video::ResizeTexture(GuestTexture *tex, u32 width, u32 height) {
   if (!device)
     return;
 
+  // Depth targets the game samples (shadow atlases) had a view; keep one.
+  const bool sampled = tex->descriptorIndex != kInvalidDescriptorIndex;
   NotifyTextureDestroyed(tex);
   ParkTextureGPUObjects(tex);
 
@@ -544,7 +549,7 @@ void Video::ResizeTexture(GuestTexture *tex, u32 width, u32 height) {
   } else {
     desc.flags = plume::RenderTextureFlag::NONE;
   }
-  desc.multisampling.sampleCount = tex->sampleCount;
+  desc.multisampling.sampleCount = samples;
   desc.committed = false;
 
   tex->textureHolder = CreateHostTexture(device, desc, "resized-texture");
@@ -555,9 +560,10 @@ void Video::ResizeTexture(GuestTexture *tex, u32 width, u32 height) {
   }
   tex->width = width;
   tex->height = height;
+  tex->sampleCount = samples;
   tex->layout = plume::RenderTextureLayout::UNKNOWN;
   tex->framebufferAttached = false;
-  if (!is_depth)
+  if (!is_depth || sampled)
     BindTextureSRV(tex);
 }
 

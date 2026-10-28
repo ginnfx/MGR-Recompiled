@@ -15,8 +15,7 @@
 #include <rex/cvar.h>
 
 REXCVAR_DEFINE_INT32(mgr_msaa, 0, "MGR/Graphics",
-                     "Native renderer multisample count for scene render targets: 0, 2, 4 or 8. "
-                     "Applies on the next launch.");
+                     "Native renderer multisample count for scene render targets: 0, 2, 4 or 8");
 REXCVAR_DEFINE_INT32(mgr_shadow_resolution, 0, "MGR/Graphics",
                      "Native renderer shadow map size in texels; 0 keeps the game's size.");
 REXCVAR_DEFINE_BOOL(mgr_transparency_aa, true, "MGR/Graphics",
@@ -81,31 +80,35 @@ f32 ReadSceneRenderScaleCvar() {
     return 1.0f;
   }
 }
-// Render thread only: RefreshSceneRenderScale at device init and each present
-// (cvars are not loaded yet at static init).
+f32 ReadShadowRenderScale() {
+  const i32 dimension = Settings::Get().ShadowDimension();
+  return dimension > i32(kShadowMapSize) ? f32(dimension) / f32(kShadowMapSize) : 1.0f;
+}
+// Render thread only: RefreshRenderTargetSettings at device init and each
+// present (cvars are not loaded yet at static init).
 f32 g_scene_scale = 1.0f;
-u32 g_scene_scale_generation = 1;
+f32 g_shadow_scale = 1.0f;
+i32 g_msaa = 0;
+u32 g_target_generation = 1;
 } // namespace
 
 f32 SceneRenderScale() { return g_scene_scale; }
 
-u32 SceneScaleGeneration() { return g_scene_scale_generation; }
+f32 ShadowRenderScale() { return g_shadow_scale; }
 
-void RefreshSceneRenderScale() {
-  const f32 scale = ReadSceneRenderScaleCvar();
-  if (scale == g_scene_scale)
+i32 ActiveMSAA() { return g_msaa; }
+
+u32 RenderTargetGeneration() { return g_target_generation; }
+
+void RefreshRenderTargetSettings() {
+  const f32 scene = ReadSceneRenderScaleCvar(), shadow = ReadShadowRenderScale();
+  const i32 msaa = Settings::Get().MSAA();
+  if (scene == g_scene_scale && shadow == g_shadow_scale && msaa == g_msaa)
     return;
-  g_scene_scale = scale;
-  ++g_scene_scale_generation;
-}
-
-f32 ShadowRenderScale() {
-  // Latched: every shadow target of a session must share one size.
-  static const f32 scale = [] {
-    const i32 dimension = Settings::Get().ShadowDimension();
-    return dimension > i32(kShadowMapSize) ? f32(dimension) / f32(kShadowMapSize) : 1.0f;
-  }();
-  return scale;
+  g_scene_scale = scene;
+  g_shadow_scale = shadow;
+  g_msaa = msaa;
+  ++g_target_generation;
 }
 
 bool IsShadowShapedTarget(u32 width, u32 height) {

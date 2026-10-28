@@ -27,6 +27,10 @@ void MgrNativeConfigure(rex::RuntimeConfig& config);
 // False (logged) leaves the run without a renderer.
 bool MgrNativeStart(rex::ui::Window* window);
 
+// Highest MSAA sample count the device supports for the scene targets; 1
+// before the device is up.
+int MgrNativeMaxMSAA();
+
 // Test harness capture: the next presented frame as R8G8B8X8. False when no
 // frame was presented within the timeout.
 bool MgrNativeCapture(rex::ui::RawImage& image);

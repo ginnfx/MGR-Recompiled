@@ -87,7 +87,9 @@ public:
 
   static void SyncBackBufferSizeLocked();
 
-  static void ResizeTexture(GuestTexture *tex, u32 width, u32 height);
+  // Rebuilds a 2D target at a new size or sample count; contents are lost.
+  static void ResizeTexture(GuestTexture *tex, u32 width, u32 height,
+                            plume::RenderSampleCounts samples);
 
   static void NotifyTextureDestroyed(GuestTexture *dead);
 
@@ -178,8 +180,8 @@ public:
   // "D3D12 12_2" / "Vulkan 1.3.294". Empty until the device is up.
   static const std::string &GetBackendInfo();
 
-  // bd_msaa (0/2/4/8) clamped to supported_sample_mask, or COUNT_1 when off or
-  // unsupported. Boot-latched, so runtime writes apply on the next reboot.
+  // mgr_msaa (0/2/4/8) as of the last RefreshRenderTargetSettings, lowered to
+  // the highest count supported_sample_mask allows; COUNT_1 when off.
   static plume::RenderSampleCounts CvarMSAASampleCount();
 
   // Shared by every pipeline so descriptor set bindings survive pipeline

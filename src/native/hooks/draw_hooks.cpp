@@ -768,8 +768,8 @@ MGRN_HOOK_RAW(D3DDevice_Swap) {
     gpu::Video::Present(mgrn::native::LookupPresentTexture(ctx.r4.u32));
     const u32 next_present = g_present_count.fetch_add(1, std::memory_order_relaxed) + 1;
     WaitForExternalCapture(next_present);
-    // A new mgr_resolution_scale takes effect from the next frame's targets.
-    gpu::RefreshSceneRenderScale();
+    // Resolution, shadow and MSAA changes take effect from the next frame's targets.
+    gpu::RefreshRenderTargetSettings();
     gpu::Video::ArmNextPresent();
   }
   MGRN_IMP(D3DDevice_Swap)(ctx, base);

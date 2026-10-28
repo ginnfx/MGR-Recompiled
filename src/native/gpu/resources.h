@@ -61,12 +61,16 @@ struct GuestTexture {
   // Host pixels per guest pixel; not 1 only for scene-shaped render targets
   // under mgr_resolution_scale (see IsSceneShapedTarget).
   float renderScale = 1.0f;
-  // Scene-shaped targets: guest size and the scale generation the host
-  // texture was built at (native::EnsureSceneScale resizes stale ones).
+  // Targets that follow a setting: guest size and the RenderTargetGeneration
+  // the host texture was built at (native::EnsureTargetSettings rebuilds stale
+  // ones). Scene-shaped targets follow mgr_resolution_scale, shadow-shaped
+  // ones mgr_shadow_resolution, and the scene surfaces mgr_msaa.
   bool followsSceneScale = false;
+  bool followsShadowScale = false;
+  bool followsMSAA = false;
   u32 guestWidth = 0;
   u32 guestHeight = 0;
-  u32 sceneScaleGeneration = 0;
+  u32 targetGeneration = 0;
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
   u32 guestFormat = 0;
   u32 descriptorIndex = ~u32{0};
