@@ -107,6 +107,7 @@ const Option kVideo[] = {
   {"mgr_texture_filtering", "TEXTURE FILTERING", "Anisotropic filtering improves textures viewed at an angle.", kFilter},
   {"mgr_lod", "MODEL DETAIL", "Detail and draw distance of far away characters and objects. Higher settings cost frame rate.", kLod},
   {"mgr_render_target_precision", "RENDERING QUALITY", "High preserves the original gamma precision. Changing this setting requires a restart.", kPrecision},
+  {"mgr_bloom", "BLOOM", "The glow around lights, sparks and Blade Mode effects.", kBool},
   {"mgr_film_grain", "FILM GRAIN", "Enables the original film grain post processing effect.", kBool},
 };
 
