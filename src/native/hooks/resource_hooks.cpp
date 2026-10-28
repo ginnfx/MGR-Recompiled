@@ -128,13 +128,18 @@ void MarkSceneScale(gpu::GuestTexture* texture, u32 guest_width, u32 guest_heigh
   texture->guestWidth = guest_width;
   texture->guestHeight = guest_height;
   texture->sceneScaleGeneration = gpu::SceneScaleGeneration();
-  texture->renderScale = texture->followsSceneScale ? gpu::SceneRenderScale() : 1.0f;
+  texture->renderScale = texture->followsSceneScale ? gpu::SceneRenderScale()
+                         : eligible && gpu::IsShadowShapedTarget(guest_width, guest_height)
+                             ? gpu::ShadowRenderScale()
+                             : 1.0f;
 }
 
+// Scene targets follow mgr_resolution_scale; shadow targets mgr_shadow_resolution.
 f32 SceneScaleFor(u32 guest_width, u32 guest_height, bool eligible) {
-  return eligible && gpu::IsSceneShapedTarget(guest_width, guest_height)
-             ? gpu::SceneRenderScale()
-             : 1.0f;
+  if (!eligible) return 1.0f;
+  if (gpu::IsSceneShapedTarget(guest_width, guest_height)) return gpu::SceneRenderScale();
+  if (gpu::IsShadowShapedTarget(guest_width, guest_height)) return gpu::ShadowRenderScale();
+  return 1.0f;
 }
 
 // Rebuilds a scene-shaped target at the current scale when the setting has

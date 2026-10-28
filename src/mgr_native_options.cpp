@@ -87,6 +87,7 @@ constexpr Choice kPrecision[] = {{"HIGH (ACCURATE)", "high"}, {"FAST (RESTART RE
 constexpr Choice kOutput[] = {{"MATCH GAME", "source"}, {"MATCH DISPLAY", "display"}, {"1920X1080 OUTPUT", "1920x1080"}, {"2560X1440 OUTPUT", "2560x1440"}};
 constexpr Choice kLod[] = {{"GAME DEFAULT", "game"}, {"HIGH", "high"}, {"MAXIMUM", "max"}};
 constexpr Choice kMsaa[] = {{"OFF", "0"}, {"2X", "2"}, {"4X", "4"}, {"8X", "8"}};
+constexpr Choice kShadow[] = {{"ORIGINAL (1024)", "0"}, {"2048", "2048"}, {"4096", "4096"}};
 constexpr Choice kBrightness[] = {{"0.7", "0.7"}, {"0.8", "0.8"}, {"0.9", "0.9"}, {"1.0 (DEFAULT)", "1"},
                                   {"1.1", "1.1"}, {"1.2", "1.2"}, {"1.3", "1.3"}};
 const Option kInternalResolution = {"mgr_resolution_scale", "INTERNAL RESOLUTION", "Changes internal rendering detail. Applies after the GPU rebuilds its resources.", kScale};
@@ -97,6 +98,7 @@ const Option kVideo[] = {
   kInternalResolution,
   {"mgr_msaa", "ANTI-ALIASING", "Multisampling smooths jagged edges. Higher settings cost frame rate. Applies after a restart.", kMsaa},
   {"mgr_transparency_aa", "TRANSPARENCY AA", "Smooths the edges of hair, fences and foliage. Needs anti-aliasing.", kBool},
+  {"mgr_shadow_resolution", "SHADOW RESOLUTION", "Sharper, more detailed shadows. Higher settings use more video memory. Applies after a restart.", kShadow},
   {"present_letterbox", "PRESERVE ASPECT RATIO", "Preserves the original image proportions on wider or taller displays.", kBool},
   {"mgr_vsync", "VSYNC", "Syncs frames to the display refresh, preventing tearing. Frame rates above the refresh rate need it off.", kBool},
   {"mgr_frame_rate", "FRAME RATE", "60 FPS is the original timing. Higher rates are experimental.", kRate},

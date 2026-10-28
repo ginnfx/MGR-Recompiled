@@ -93,6 +93,19 @@ void RefreshSceneRenderScale() {
   ++g_scene_scale_generation;
 }
 
+f32 ShadowRenderScale() {
+  // Latched: every shadow target of a session must share one size.
+  static const f32 scale = [] {
+    const i32 dimension = Settings::Get().ShadowDimension();
+    return dimension > i32(kShadowMapSize) ? f32(dimension) / f32(kShadowMapSize) : 1.0f;
+  }();
+  return scale;
+}
+
+bool IsShadowShapedTarget(u32 width, u32 height) {
+  return width == kShadowMapSize && (height == kShadowMapSize || height == 2 * kShadowMapSize);
+}
+
 bool IsSceneShapedTarget(u32 width, u32 height) {
   // Screen-proportioned targets (1280x720 and its halves) follow the scene
   // scale; shadow maps, reduction targets and cubes keep their size.

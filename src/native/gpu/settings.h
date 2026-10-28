@@ -67,6 +67,12 @@ u32 SceneScaleGeneration();
 void RefreshSceneRenderScale();
 // True for render targets of these guest dimensions that follow the scale.
 bool IsSceneShapedTarget(u32 width, u32 height);
+// The game's shadow caster surfaces (1024x1024) and the cascade atlas they
+// resolve into (1024x2048) render at ShadowRenderScale().
+inline constexpr u32 kShadowMapSize = 1024;
+bool IsShadowShapedTarget(u32 width, u32 height);
+// mgr_shadow_resolution / 1024, latched at first use; 1 keeps the original.
+f32 ShadowRenderScale();
 // A guest extent in host pixels, at least 1.
 u32 ScaleExtent(u32 extent, f32 scale);
 // Shadow-distance multiplier the shadow PCF kernel compensates for. MGR does
