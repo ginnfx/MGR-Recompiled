@@ -3,6 +3,7 @@
 // No host UI rendering or host input polling is used by this menu.
 #include "mgr_native_options.h"
 #include "mgr_settings.h"
+#include "native/mgr_native.h"
 #include "generated/default/mgr_pch.h"
 
 #include <rex/cvar.h>
@@ -77,7 +78,12 @@ uint32_t Call(PPCContext& ctx, uint8_t* base, PPCFunc* fn,
 }
 
 struct Choice { const char* label; const char* value; };
-struct Option { const char* key; const char* label; const char* help; std::span<const Choice> choices; };
+// Renderer an option applies to; rows for the other renderer are hidden.
+enum class Renderer { Any, Native, Xenos };
+struct Option {
+  const char* key; const char* label; const char* help; std::span<const Choice> choices;
+  Renderer renderer = Renderer::Any;
+};
 constexpr Choice kScale[] = {{"1280X720", "1"}, {"1920X1080", "1.5"}, {"2560X1440", "2"}, {"3840X2160", "3"}};
 constexpr Choice kBool[] = {{"ON", "true"}, {"OFF", "false"}};
 constexpr Choice kRate[] = {{"60 FPS", "60"}, {"120 FPS (EXPERIMENTAL)", "120"}, {"UNLOCKED (EXPERIMENTAL)", "unlocked"}};
@@ -97,18 +103,18 @@ const Option kVideo[] = {
   {"fullscreen", "FULLSCREEN", "Uses the current display in fullscreen mode.", kBool},
   {"mgr_output_resolution", "OUTPUT RESOLUTION", "Resizes the completed image. Internal rendering detail is controlled separately.", kOutput},
   kInternalResolution,
-  {"mgr_msaa", "ANTI-ALIASING", "Multisampling smooths jagged edges. Higher settings cost frame rate. Applies after a restart.", kMsaa},
-  {"mgr_transparency_aa", "TRANSPARENCY AA", "Smooths the edges of hair, fences and foliage. Needs anti-aliasing.", kBool},
-  {"mgr_shadow_resolution", "SHADOW RESOLUTION", "Sharper, more detailed shadows. Higher settings use more video memory. Applies after a restart.", kShadow},
+  {"mgr_msaa", "ANTI-ALIASING", "Multisampling smooths jagged edges. Higher settings cost frame rate.", kMsaa, Renderer::Native},
+  {"mgr_transparency_aa", "TRANSPARENCY AA", "Smooths the edges of hair, fences and foliage. Needs anti-aliasing.", kBool, Renderer::Native},
+  {"mgr_shadow_resolution", "SHADOW RESOLUTION", "Sharper, more detailed shadows. Higher settings use more video memory.", kShadow, Renderer::Native},
   {"present_letterbox", "PRESERVE ASPECT RATIO", "Preserves the original image proportions on wider or taller displays.", kBool},
   {"mgr_vsync", "VSYNC", "Syncs frames to the display refresh, preventing tearing. Frame rates above the refresh rate need it off.", kBool},
   {"mgr_frame_rate", "FRAME RATE", "60 FPS is the original timing. Higher rates are experimental.", kRate},
-  {"vulkan_nonblocking_guest_present", "FRAME PACING", "Low latency avoids blocking the game while waiting for a display image.", kPacing},
-  {"mgr_brightness", "BRIGHTNESS", "Brightens or darkens the image. 1.0 is the original look.", kBrightness},
-  {"mgr_sharpening", "SHARPENING", "Restores fine detail softened by upscaling or anti-aliasing.", kSharpening},
+  {"vulkan_nonblocking_guest_present", "FRAME PACING", "Low latency avoids blocking the game while waiting for a display image.", kPacing, Renderer::Xenos},
+  {"mgr_brightness", "BRIGHTNESS", "Brightens or darkens the image. 1.0 is the original look.", kBrightness, Renderer::Native},
+  {"mgr_sharpening", "SHARPENING", "Restores fine detail softened by upscaling or anti-aliasing.", kSharpening, Renderer::Native},
   {"mgr_texture_filtering", "TEXTURE FILTERING", "Anisotropic filtering improves textures viewed at an angle.", kFilter},
   {"mgr_lod", "MODEL DETAIL", "Detail and draw distance of far away characters and objects. Higher settings cost frame rate.", kLod},
-  {"mgr_render_target_precision", "RENDERING QUALITY", "High preserves the original gamma precision. Changing this setting requires a restart.", kPrecision},
+  {"mgr_render_target_precision", "RENDERING QUALITY", "High preserves the original gamma precision. Changing this setting requires a restart.", kPrecision, Renderer::Xenos},
   {"mgr_bloom", "BLOOM", "The glow around lights, sparks and Blade Mode effects.", kBool},
   {"mgr_film_grain", "FILM GRAIN", "Enables the original film grain post processing effect.", kBool},
 };
@@ -312,10 +318,32 @@ void PlaceCursor(PPCContext& ctx, uint8_t* base) {
 void Highlight(PPCContext& ctx, uint8_t* base, int row, bool selected) {
   Call(ctx, base, sub_82C40DD8, menu.object + 28, uint32_t(row), selected);
 }
+// MSAA levels the GPU cannot run are left out.
+std::span<const Choice> SupportedMsaa() {
+  static const std::vector<Choice> shown = [] {
+    std::vector<Choice> levels;
+    std::copy_if(std::begin(kMsaa), std::end(kMsaa), std::back_inserter(levels),
+                 [](const Choice& c) { return std::atoi(c.value) <= mgrn::MgrNativeMaxMSAA(); });
+    return levels;
+  }();
+  return shown;
+}
+// The rows of a page that apply to this run's renderer (fixed at launch).
+std::vector<Option> ForRenderer(std::span<const Option> all) {
+  const Renderer active = mgrn::NativeRendererActive() ? Renderer::Native : Renderer::Xenos;
+  std::vector<Option> shown;
+  for (Option option : all) {
+    if (option.renderer != Renderer::Any && option.renderer != active) continue;
+    if (std::string_view(option.key) == "mgr_msaa") option.choices = SupportedMsaa();
+    shown.push_back(option);
+  }
+  return shown;
+}
 std::span<const Option> Options() {
+  static const std::vector<Option> video = ForRenderer(kVideo), misc = ForRenderer(kMisc);
   switch (menu.page) {
-    case Page::Video: return kVideo;
-    case Page::Misc: return kMisc;
+    case Page::Video: return video;
+    case Page::Misc: return misc;
     default: return {};
   }
 }
@@ -386,8 +414,12 @@ void Labels(uint8_t* base) {
     const uint32_t id = U32(base, group + kSliderSegmentIds + k * 4);
     if (id) Visible(base, group, id, false);
   }
-  SetText(base, group, 5, PageTitle(), 8);
-  SetText(base, group, 6, PageTitle(), 8);
+  // Pages longer than the slots show the selected row's position.
+  std::string title = PageTitle();
+  if (RowCount() > kVisibleRows)
+    title += "  " + std::to_string(menu.row + 1) + "/" + std::to_string(RowCount());
+  SetText(base, group, 5, title, 8);
+  SetText(base, group, 6, title, 8);
   const char* help = menu.page == Page::Categories ? "SELECT AN OPTIONS CATEGORY." :
       menu.row < int(Options().size()) ? Options()[menu.row].help : "";
   std::string wrapped(help);
@@ -407,6 +439,8 @@ void Labels(uint8_t* base) {
   if (OnRow("mgr_render_target_precision") &&
       rex::cvar::GetFlagByName("mgr_render_target_precision") != MgrActiveRenderTargetPrecision())
     wrapped = "Restart the game to apply this rendering quality.";
+  if (OnRow("mgr_transparency_aa") && rex::cvar::GetFlagByName("mgr_msaa") == "0")
+    wrapped += " Turn on anti-aliasing to use it.";
   size_t start = 0;
   while (wrapped.size() - start > 52) {
     const size_t at = wrapped.rfind(' ', start + 52);
