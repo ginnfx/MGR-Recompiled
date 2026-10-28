@@ -62,6 +62,8 @@ inline constexpr f32 kMaxSceneRenderScale = 3.0f;
 inline constexpr u32 kGameWidth = 1280;
 inline constexpr u32 kGameHeight = 720;
 inline constexpr u32 kMinScaledTargetWidth = 320;
+// MGR draws its 3D scene at 1152x720 and composites it into 1280x720.
+inline constexpr u32 kSceneWidth = 1152;
 // Bumped whenever the scene scale, shadow scale or MSAA count changes; targets
 // built at an older generation are rebuilt before their next use.
 u32 RenderTargetGeneration();

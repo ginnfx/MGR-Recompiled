@@ -213,6 +213,18 @@ void ClearLocked(VideoState &s, u32 flags, plume::RenderColor color,
   BeginCommandList(s);
   if (!s.command_list_open)
     return;
+  // ResolveEffectiveTargets drops a depth whose sample count differs from the
+  // colour target's; clear it on its own (the frame's scene depth clear is
+  // issued with the 256x256 environment target bound).
+  GuestTexture *const bound_rt = s.render_target;
+  if ((flags & (kClearZBuffer | kClearStencil)) && bound_rt && bound_rt->texture &&
+      s.depth_stencil && s.depth_stencil->texture &&
+      bound_rt->sampleCount != s.depth_stencil->sampleCount) {
+    s.render_target = nullptr;
+    ClearLocked(s, flags & ~kClearTarget, color, depth, stencil, guest_rects);
+    s.render_target = bound_rt;
+    flags &= ~(kClearZBuffer | kClearStencil);
+  }
   GuestTexture *rt = nullptr;
   GuestTexture *ds = nullptr;
   ResolveEffectiveTargets(s, rt, ds);

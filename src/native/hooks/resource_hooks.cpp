@@ -162,8 +162,10 @@ gpu::GuestTexture* EnsureTargetSettings(gpu::GuestTexture* texture) {
 
 gpu::GuestTexture* CreateSurfaceTexture(u32 surface_va, const SurfaceCreateArgs& args) {
   // MGR renders without MSAA. The setting multisamples the full-size scene
-  // colour and depth surfaces, so the pairs drawn together always match.
-  const bool scene_surface = args.width == gpu::kGameWidth && args.height == gpu::kGameHeight;
+  // surfaces (the 1152x720 3D colour targets, the 1280x720 composite and the
+  // depth both share), so the pairs drawn together match.
+  const bool scene_surface =
+      args.height == gpu::kGameHeight && gpu::IsSceneShapedTarget(args.width, args.height);
   const auto msaa = (args.multisample != 0 || scene_surface)
                         ? gpu::Video::CvarMSAASampleCount()
                         : plume::RenderSampleCounts(plume::RenderSampleCount::COUNT_1);

@@ -69,6 +69,12 @@ void ResolveEffectiveTargets(VideoState &s, GuestTexture *&rt,
   if (!rt && !ds && s.back_buffer_surface && s.back_buffer_surface->texture) {
     rt = s.back_buffer_surface;
   }
+  // Under MSAA the small passes (256x256 environment, 320x176 glare) keep the
+  // multisampled scene depth bound to a single-sample colour target; one
+  // framebuffer cannot hold both. They draw without it (it was just cleared,
+  // so their depth tests all passed). ClearLocked clears such a depth alone.
+  if (rt && ds && rt->sampleCount != ds->sampleCount)
+    ds = nullptr;
 }
 
 namespace {

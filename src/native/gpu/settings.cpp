@@ -116,9 +116,11 @@ bool IsShadowShapedTarget(u32 width, u32 height) {
 }
 
 bool IsSceneShapedTarget(u32 width, u32 height) {
-  // Screen-proportioned targets (1280x720 and its halves) follow the scene
-  // scale; shadow maps, reduction targets and cubes keep their size.
-  return u64(width) * kGameHeight == u64(height) * kGameWidth &&
+  // Screen-proportioned targets follow the scene scale: the 1280x720
+  // composite, the 1152x720 3D scene, and their halves. Shadow maps,
+  // reduction targets and cubes keep their size.
+  const auto shaped = [width, height](u32 w, u32 h) { return u64(width) * h == u64(height) * w; };
+  return (shaped(kGameWidth, kGameHeight) || shaped(kSceneWidth, kGameHeight)) &&
          width >= kMinScaledTargetWidth;
 }
 

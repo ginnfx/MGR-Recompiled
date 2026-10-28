@@ -178,7 +178,7 @@ void DumpDraw(u32 device_guest, const gpu::VideoState& s, u32 primitive_type,
     }
   }
   MGRN_WARN("[draw-dump] #{} prim={} {}={} vs={:016X} ps={:016X} decl={:016X}{} "
-            "rt={}x{}/{} ds={}/{}@{} z={}{}f{} bias={}/{:.3f} cull={} blend={} cw=0x{:X} "
+            "rt={}x{}/{}s{} ds={}/{}s{}@{} z={}{}f{} bias={}/{:.3f} cull={} blend={} cw=0x{:X} "
             "vp={:.0f},{:.0f} {:.0f}x{:.0f} z{:.2f}-{:.2f} "
             "primReset={} reset=0x{:06X} ibElem={} ibBlock={} vbBlocks=0x{:04X}",
             draw_index, primitive_type,
@@ -186,8 +186,9 @@ void DumpDraw(u32 device_guest, const gpu::VideoState& s, u32 primitive_type,
             ShaderHash(ps.vertexShader), ShaderHash(ps.pixelShader),
             ps.vertexDeclaration ? ps.vertexDeclaration->hash : 0,
             gpu::IsSkinnedDeclaration(ps.vertexDeclaration) ? " SKINNED" : "", rt ? rt->width : 0,
-            rt ? rt->height : 0, rt ? u32(rt->format) : 0, ds ? ds->width : 0,
-            ds ? u32(ds->format) : 0, static_cast<const void*>(ds), ps.zEnable ? 1 : 0, ps.zWriteEnable ? "w" : "",
+            rt ? rt->height : 0, rt ? u32(rt->format) : 0, rt ? u32(rt->sampleCount) : 0,
+            ds ? ds->width : 0, ds ? u32(ds->format) : 0, ds ? u32(ds->sampleCount) : 0,
+            static_cast<const void*>(ds), ps.zEnable ? 1 : 0, ps.zWriteEnable ? "w" : "",
             u32(ps.zFunc), ps.depthBias, ps.slopeScaledDepthBias, u32(ps.cullMode), ps.alphaBlendEnable ? 1 : 0,
             ps.colorWriteEnable, vp.x, vp.y, vp.width, vp.height, vp.minDepth,
             vp.maxDepth, (mode_control >> 21) & 1, reset_index & 0xFFFFFF,
