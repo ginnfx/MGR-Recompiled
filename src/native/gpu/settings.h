@@ -47,6 +47,8 @@ public:
   bool TransparencyAA() const;
   // mgr_brightness: present gamma 1/brightness, 1 = the game's own output.
   f32 Brightness() const;
+  // mgr_sharpening: contrast adaptive sharpening in the present pass, 0..1.
+  f32 Sharpness() const;
   bool PSOPrecache() const { return false; }
   bool GeometryGPUUpload() const { return false; }
   bool SceneColorR11G11B10() const { return false; }

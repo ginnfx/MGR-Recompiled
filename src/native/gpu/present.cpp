@@ -161,18 +161,16 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt,
       plume::RenderRect(off_x, off_y, off_x + static_cast<i32>(fit_w),
                         off_y + static_cast<i32>(fit_h)));
   constexpr float kPresentGamma = 1.0f;
-  // Match Xenos' uncorrected front-buffer scanout. The re:Blue TV LUT
-  // reshaping is game-specific and is not part of MGR's native contract.
-  constexpr float kPresentDisplayCorrection = 0.0f;
+  // Scanout matches Xenos' uncorrected front buffer (no TV LUT reshaping).
   s.command_list->setPipeline(s.gamma_correction_pipeline.get());
   struct PresentPushConstants {
     u32 descriptor_index;
     u32 descriptor_index_2;
     float gamma;
-    float display_correction;
+    float sharpness;
   } pc{gamma_src_desc, 0,
        s.guest_gamma * kPresentGamma / Settings::Get().Brightness(),
-       kPresentDisplayCorrection};
+       Settings::Get().Sharpness()};
   s.command_list->setGraphicsPushConstants(kCopyPushConstantRangeIndex, &pc,
                                            kCopyPushConstantByteOffset,
                                            sizeof(pc));

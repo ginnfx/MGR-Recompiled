@@ -22,6 +22,8 @@ REXCVAR_DEFINE_INT32(mgr_shadow_resolution, 0, "MGR/Graphics",
 REXCVAR_DEFINE_BOOL(mgr_transparency_aa, true, "MGR/Graphics",
                     "Smooth the edges of alpha-tested surfaces (hair, fences, foliage) with "
                     "alpha to coverage. Needs MSAA");
+REXCVAR_DEFINE_DOUBLE(mgr_sharpening, 0.0, "MGR/Graphics",
+                      "Contrast adaptive sharpening of the final image, 0 (off) to 1");
 REXCVAR_DEFINE_DOUBLE(mgr_brightness, 1.0, "MGR/Graphics",
                       "Image brightness, 0.5 to 1.5. 1 keeps the game's own output; higher "
                       "values lift dark and mid tones");
@@ -64,6 +66,10 @@ bool Settings::TransparencyAA() const { return REXCVAR_GET(mgr_transparency_aa);
 f32 Settings::Brightness() const {
   constexpr f64 kMinBrightness = 0.5, kMaxBrightness = 1.5;
   return f32(std::clamp(REXCVAR_GET(mgr_brightness), kMinBrightness, kMaxBrightness));
+}
+
+f32 Settings::Sharpness() const {
+  return f32(std::clamp(REXCVAR_GET(mgr_sharpening), 0.0, 1.0));
 }
 
 namespace {
