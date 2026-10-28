@@ -7,6 +7,8 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <fstream>
+#include <string>
 #include <memory>
 #include <mutex>
 
@@ -34,12 +36,15 @@ struct CaptureState {
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
   std::unique_ptr<plume::RenderBuffer> readback;
   u64 readback_size = 0;
+  std::string path;
 };
 
 CaptureState &capture() {
   static CaptureState c;
   return c;
 }
+
+std::vector<std::unique_ptr<CaptureState>> draw_captures;
 
 u32 BytesPerPixel(plume::RenderFormat format) {
   switch (format) {
@@ -125,9 +130,7 @@ bool CaptureNextPresent(CapturedFrame &out, u32 timeout_ms) {
   return out.width != 0;
 }
 
-void RecordCaptureCopy(VideoState &s, GuestTexture *source) {
-  auto &c = capture();
-  std::lock_guard lock(c.mutex);
+static void RecordCopy(VideoState &s, GuestTexture *source, CaptureState &c) {
   if (!c.requested || c.recorded || !source || !source->texture)
     return;
   const u32 bpp = BytesPerPixel(source->format);
@@ -165,9 +168,45 @@ void RecordCaptureCopy(VideoState &s, GuestTexture *source) {
   c.recorded = true;
 }
 
+void RecordCaptureCopy(VideoState &s, GuestTexture *source) {
+  auto &c = capture();
+  std::lock_guard lock(c.mutex);
+  RecordCopy(s, source, c);
+}
+
+void RecordDrawCapture(VideoState &s, GuestTexture *source, const std::string &path) {
+  // One selected frame only; bound memory use even if the range is too broad.
+  if (draw_captures.size() >= 32) return;
+  auto c = std::make_unique<CaptureState>();
+  c->requested = true;
+  c->path = path;
+  RecordCopy(s, source, *c);
+  if (c->recorded) draw_captures.push_back(std::move(c));
+}
+
 void FinishCapture(VideoState &s, u32 frame_slot) {
   auto &c = capture();
   std::lock_guard lock(c.mutex);
+  if (!draw_captures.empty()) {
+    if (s.command_list_submitted[frame_slot])
+      s.queue->waitForCommandFence(s.fences[frame_slot].get());
+    s.command_list_submitted[frame_slot] = false;
+    for (auto &d : draw_captures) {
+      const auto *mapped = static_cast<const u8 *>(d->readback->map());
+      if (!mapped) continue;
+      std::ofstream file(d->path, std::ios::binary);
+      file << "P6\n" << d->frame.width << " " << d->frame.height << "\n255\n";
+      std::vector<u8> row(size_t(d->frame.width) * 4);
+      for (u32 y = 0; y < d->frame.height; ++y) {
+        ConvertRow(d->format, mapped + size_t(y) * d->row_bytes, row.data(), d->frame.width);
+        for (u32 x = 0; x < d->frame.width; ++x)
+          file.write(reinterpret_cast<const char *>(row.data() + x * 4), 3);
+      }
+      d->readback->unmap();
+      MGRN_WARN("[draw-capture] {}", d->path);
+    }
+    draw_captures.clear();
+  }
   if (!c.recorded)
     return;
   c.recorded = false;

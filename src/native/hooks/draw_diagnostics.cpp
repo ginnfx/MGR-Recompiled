@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstring>
 #include <format>
+#include <fstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -508,3 +509,38 @@ std::string mgrn::native::CheckSkinReferences(u32 device_guest,
                      i32(first_bad_vertex), first_bad_bone, max_pos);
 }
 
+
+// Opt-in selected-draw inputs. These are CPU snapshots at dispatch time; they
+// do not prove the same bytes remained visible to the GPU during execution.
+void mgrn::native::DumpDrawInputs(u32 device_guest, const std::string& prefix,
+                                  bool indexed, u32 start, u32 count, i32 base_vertex) {
+  auto write = [&](const std::string& suffix, const void* data, size_t size) {
+    if (!data || !size) return;
+    std::ofstream file(prefix + suffix, std::ios::binary);
+    file.write(static_cast<const char*>(data), std::streamsize(size));
+  };
+  std::ofstream meta(prefix + "-inputs.txt");
+  meta << "indexed=" << indexed << " start=" << start << " count=" << count
+       << " base=" << base_vertex << "\n";
+  auto dump = [&](const std::string& tag, const gpu::GuestBuffer* b, u32 offset, u32 stride) {
+    if (!b || !b->guestMirrorVa || !b->dataSize) return;
+    meta << tag << " va=" << std::hex << b->guestMirrorVa << std::dec
+         << " size=" << b->dataSize << " offset=" << offset << " stride=" << stride
+         << " element=" << b->elementSize << " blockOffset=" << b->blockOffset << "\n";
+    write("-" + tag + "-guest.bin", mgrn::mem::try_at<const u8>(b->guestMirrorVa), b->dataSize);
+    auto* buffer = b->blockBuffer ? b->blockBuffer : b->buffer.get();
+    if (!buffer) return;
+    const auto* mapped = static_cast<const u8*>(buffer->map());
+    if (mapped) {
+      write("-" + tag + "-host.bin", mapped + b->blockOffset, b->dataSize);
+      buffer->unmap();
+    }
+  };
+  for (u32 i = 0; i < kBoundStreamCount; ++i) {
+    const auto b = BoundStreamAt(i);
+    if (b.buffer) dump(std::format("s{}", i), b.buffer, b.offset, b.stride);
+  }
+  if (indexed) dump("ib", BoundIndexBuffer(), 0, 0);
+  const auto* dev = mgrn::mem::at<const gpu::D3DDevice>(device_guest);
+  if (dev) write("-vs-guest.bin", &dev->vsFloatConstants, sizeof(dev->vsFloatConstants));
+}

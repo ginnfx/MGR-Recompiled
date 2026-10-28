@@ -9,10 +9,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <format>
+#include <fstream>
 #include <string>
+#include <string_view>
 #include <mutex>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -23,8 +28,9 @@
 
 #include "core/logging.h"
 #include "core/memory_helpers.h"
-#include "gpu/byte_swap.h"
 #include "gpu/constant_buffers.h"
+#include "gpu/byte_swap.h"
+#include "gpu/capture.h"
 #include "gpu/d3d.h"
 #include "gpu/depth_probe.h"
 #include "gpu/device.h"
@@ -81,11 +87,68 @@ std::atomic<u32> g_present_count{0};
 // Dev: MGR_NATIVE_DRAW_DUMP=<present> logs every draw of that frame that got
 // past framebuffer bind and state flush (dropped draws log as [draw-diag]).
 u32 DrawDumpFrame() {
-  static const u32 frame = [] {
+  static const u32 configured_frame = [] {
     const char* value = std::getenv("MGR_NATIVE_DRAW_DUMP");
     return (mgrn::DevMode() && value) ? u32(std::strtoul(value, nullptr, 10)) : 0u;
   }();
-  return frame;
+  // Optional live capture: write a new positive request ID to this file.
+  // Poll once per present, only when explicitly enabled in dev mode. This
+  // captures the next complete draw sequence without relaunching the game.
+  static const char* trigger = mgrn::DevMode() ? std::getenv("MGR_NATIVE_DRAW_TRIGGER") : nullptr;
+  if (!trigger || !*trigger) return configured_frame;
+  static u32 polled_present = ~0u;
+  static u32 requested_frame = 0;
+  static u64 last_request = 0;
+  const u32 present = g_present_count.load(std::memory_order_relaxed);
+  if (polled_present != present) {
+    polled_present = present;
+    u64 request = 0;
+    std::ifstream file(trigger);
+    if (file >> request; request > last_request) {
+      last_request = request;
+      requested_frame = present;
+      MGRN_WARN("[draw-trigger] request {} present {}", request, present);
+    }
+  }
+  return requested_frame ? requested_frame : configured_frame;
+}
+
+// Optional external GPU-capture handshake. Format:
+// MGR_NATIVE_CAPTURE_GATE="<next-present>|<ready-file>|<release-file>".
+// After the selected present has been submitted and the present counter moves
+// to next-present, notify the controller. If release-file is nonempty, wait
+// before guest execution starts the next frame. This adds no GPU commands or
+// render-pass splits.
+void WaitForExternalCapture(u32 next_present) {
+  static bool handled = false;
+  if (handled || !mgrn::DevMode()) return;
+  const char* spec = std::getenv("MGR_NATIVE_CAPTURE_GATE");
+  if (!spec || !*spec) return;
+  const char* first_sep = std::strchr(spec, '|');
+  if (!first_sep) return;
+  const char* second_sep = std::strchr(first_sep + 1, '|');
+  if (!second_sep) return;
+  char* end = nullptr;
+  const u32 target = u32(std::strtoul(spec, &end, 10));
+  if (end != first_sep || target != next_present) return;
+  handled = true;
+  const std::string ready_path(first_sep + 1, second_sep);
+  const std::string release_path(second_sep + 1);
+  {
+    std::ofstream ready(ready_path, std::ios::trunc);
+    ready << next_present << '\n';
+  }
+  if (release_path.empty()) {
+    MGRN_WARN("[gpu-capture-gate] present {} notified", next_present);
+    return;
+  }
+  MGRN_WARN("[gpu-capture-gate] present {} paused for external capture", next_present);
+  for (;;) {
+    std::ifstream release(release_path);
+    if (release.good()) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  MGRN_WARN("[gpu-capture-gate] present {} resumed", next_present);
 }
 
 u64 ShaderHash(const gpu::GuestShader* shader) {
@@ -94,8 +157,7 @@ u64 ShaderHash(const gpu::GuestShader* shader) {
 
 
 void DumpDraw(u32 device_guest, const gpu::VideoState& s, u32 primitive_type,
-              const DrawArgs& args) {
-  static std::atomic<u32> draw_index{0};
+              const DrawArgs& args, u32 draw_index) {
   const auto& ps = s.pipelineState;
   const auto* rt = s.render_target;
   const auto* ds = s.depth_stencil;
@@ -119,7 +181,7 @@ void DumpDraw(u32 device_guest, const gpu::VideoState& s, u32 primitive_type,
             "rt={}x{}/{} ds={}/{}@{} z={}{}f{} bias={}/{:.3f} cull={} blend={} cw=0x{:X} "
             "vp={:.0f},{:.0f} {:.0f}x{:.0f} z{:.2f}-{:.2f} "
             "primReset={} reset=0x{:06X} ibElem={} ibBlock={} vbBlocks=0x{:04X}",
-            draw_index.fetch_add(1, std::memory_order_relaxed), primitive_type,
+            draw_index, primitive_type,
             args.indexed ? "idx" : "vtx", args.vertex_or_index_count,
             ShaderHash(ps.vertexShader), ShaderHash(ps.pixelShader),
             ps.vertexDeclaration ? ps.vertexDeclaration->hash : 0,
@@ -202,13 +264,35 @@ char SkipPrepassMode() {
 
 // Dev bisection: MGR_NATIVE_SKIP_DRAWS=skinned-colour | static-colour |
 // <vs hash>[,<vs hash>...] drops those colour draws.
-bool SkipBisectedDraw(const gpu::PipelineState& ps) {
+// draw:<first>-<last> drops an inclusive range of successfully flushed draws
+// each present (zero based, before filtering), including depth-only draws.
+// Comma-separated ranges/single ordinals are supported, e.g. draw:1-2,432,452.
+bool SkipBisectedDraw(const gpu::PipelineState& ps, u32 draw) {
   static const std::string spec = [] {
     const char* value = std::getenv("MGR_NATIVE_SKIP_DRAWS");
     return (mgrn::DevMode() && value) ? std::string(value) : std::string();
   }();
   if (spec.empty())
     return false;
+  if (spec.starts_with("draw:")) {
+    const char* at = spec.c_str() + 5;
+    bool selected = false;
+    for (;;) {
+      char* end = nullptr;
+      const auto first = std::strtoul(at, &end, 10);
+      if (end == at) return false;
+      auto last = first;
+      if (*end == '-') {
+        at = end + 1;
+        last = std::strtoul(at, &end, 10);
+        if (end == at) return false;
+      }
+      selected |= draw >= first && draw <= last;
+      if (*end == '\0') return selected;
+      if (*end != ',') return false;
+      at = end + 1;
+    }
+  }
   // vb:<hex base VA> drops every draw (depth-only included) reading that buffer.
   static const u32 skip_buffer_va = [] {
     const size_t at = spec.find("vb:");
@@ -409,7 +493,18 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
 
   auto* cmd_list = s.command_list;
   if (!cmd_list) return;
-  if (SkipPrepassDraw(s.pipelineState) || SkipBisectedDraw(s.pipelineState))
+  // Stable ordinals include suppressed draws, so logs, captures and bisection
+  // refer to the same draws when a filter is enabled.
+  static u32 ordinal_present = ~0u;
+  static u32 next_ordinal = 0;
+  const u32 present = g_present_count.load(std::memory_order_relaxed);
+  if (present != ordinal_present) {
+    ordinal_present = present;
+    next_ordinal = 0;
+  }
+  const u32 draw_ordinal = next_ordinal++;
+  const bool skip_bisected = SkipBisectedDraw(s.pipelineState, draw_ordinal);
+  if (SkipPrepassDraw(s.pipelineState) || skip_bisected)
     return;
   if (mgrn::DevMode())
     NoteRareShaderPair(s, g_present_count.load(std::memory_order_relaxed), primitive_type, args);
@@ -434,9 +529,8 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
   const u32 dump_frame = DrawDumpFrame();
   if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame) {
     ProbeDepthBeforeDraw(s);
-    static u32 noted_draws = 0;
-    mgrn::native::NoteDrawGeometry(noted_draws++);
-    DumpDraw(device_guest, s, primitive_type, args);
+    mgrn::native::NoteDrawGeometry(draw_ordinal);
+    DumpDraw(device_guest, s, primitive_type, args, draw_ordinal);
     if (gpu::IsSkinnedDeclaration(s.pipelineState.vertexDeclaration) ||
         s.pipelineState.colorWriteEnable == 0) {
       DumpBonePalette(device_guest);
@@ -454,6 +548,34 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
                       kBonePaletteFirstReg, kBonePaletteRegs));
     }
   }
+
+  // Selected draw range in the dump frame, copied without a per-draw CPU wait.
+  auto capture_draw_target = [&] {
+    const char* range = std::getenv("MGR_NATIVE_DRAW_CAPTURE");
+    const char* dir = std::getenv("MGR_CAPTURE_DIR");
+    if (!mgrn::DevMode() || !dump_frame || present != dump_frame || !range || !dir) return;
+    char* end = nullptr;
+    const u32 first = u32(std::strtoul(range, &end, 10));
+    if (end == range) return;
+    const u32 last = *end == '-' ? u32(std::strtoul(end + 1, &end, 10)) : first;
+    const u32 step = *end == ':' ? std::max(1u, u32(std::strtoul(end + 1, nullptr, 10))) : 1u;
+    if (draw_ordinal >= first && draw_ordinal <= last && (draw_ordinal - first) % step == 0) {
+      const auto prefix = std::format("{}/draw-{}-{}", dir, dump_frame, draw_ordinal);
+      gpu::RecordDrawCapture(s, s.render_target, prefix + ".ppm");
+      const char* geometry = std::getenv("MGR_NATIVE_DRAW_GEOMETRY");
+      if (geometry && std::string_view(geometry) == "1")
+        mgrn::native::DumpDrawInputs(device_guest, prefix, args.indexed,
+            args.indexed ? args.start_index : args.start_vertex,
+            args.vertex_or_index_count, args.base_vertex_index);
+      const char* dump_decl = std::getenv("MGR_NATIVE_DRAW_DECL");
+      if (dump_decl && std::string_view(dump_decl) == "1") {
+        std::ofstream decl_file(prefix + "-decl.txt");
+        decl_file << "hash=" << std::format("{:016X}",
+            s.pipelineState.vertexDeclaration ? s.pipelineState.vertexDeclaration->hash : 0)
+                  << " elements=" << DescribeDecl(s.pipelineState.vertexDeclaration) << '\n';
+      }
+    }
+  };
 
   if (static_cast<xe::PrimitiveType>(primitive_type) == xe::PrimitiveType::kQuadList &&
       args.indexed) {
@@ -483,6 +605,7 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
   } else {
     cmd_list->drawInstanced(args.vertex_or_index_count, 1, args.start_vertex, 0);
   }
+  capture_draw_target();
 }
 
 }  // namespace
@@ -635,7 +758,8 @@ MGRN_HOOK_RAW(D3DDevice_Swap) {
     if (dump_frame && g_present_count.load(std::memory_order_relaxed) == dump_frame)
       mgrn::native::ReportLateGeometryWrites();
     gpu::Video::Present(mgrn::native::LookupPresentTexture(ctx.r4.u32));
-    g_present_count.fetch_add(1, std::memory_order_relaxed);
+    const u32 next_present = g_present_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    WaitForExternalCapture(next_present);
     // A new mgr_resolution_scale takes effect from the next frame's targets.
     gpu::RefreshSceneRenderScale();
     gpu::Video::ArmNextPresent();

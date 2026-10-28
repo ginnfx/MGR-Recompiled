@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <string>
 
 #include <rex/types.h>
 
@@ -35,6 +36,8 @@ bool CaptureNextPresent(CapturedFrame &out, u32 timeout_ms);
 void RecordCaptureCopy(VideoState &s, GuestTexture *source);
 // Present, after submitting the list that holds the copy: waits for it and
 // hands the pixels to the waiting harness thread.
+// Dev: queue a per-draw colour target copy, completed after submission.
+void RecordDrawCapture(VideoState &s, GuestTexture *source, const std::string &path);
 void FinishCapture(VideoState &s, u32 frame_slot);
 
 } // namespace mgrn::gpu

@@ -75,6 +75,8 @@ void CheckIndexStability(bool indexed, u32 start, u32 count, u32 present);
 // draw #draw_index; ReportLateGeometryWrites (at Swap) rehashes them and logs
 // every range the guest rewrote after the draw was issued.
 void NoteDrawGeometry(u32 draw_index);
+void DumpDrawInputs(u32 device_guest, const std::string& prefix, bool indexed,
+                    u32 start, u32 count, i32 base_vertex);
 void ReportLateGeometryWrites();
 
 // Dev: for a skinned draw, walks the vertices its indices reach in the guest
