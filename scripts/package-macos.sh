@@ -18,7 +18,7 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 BUILD="$ROOT/build-release"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
-RUNTIME="$ROOT/build-tools/rexruntime/librexruntimerd.dylib"
+RUNTIME="$BUILD/rexruntime/librexruntimerd.dylib"
 SDK_LIB="$ROOT/tools/sdk/mac-arm64/lib"
 
 die() { echo "package-macos: $*" >&2; exit 1; }
@@ -30,17 +30,23 @@ if ! [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]; then die "MGR_BUILD_JOBS must be a positive
   echo "package-macos: warning: working tree has uncommitted changes" >&2
 
 # --- Build -------------------------------------------------------------------
-# The runtime already targets macOS 13.3 (runtime/CMakeLists.txt) and is shared
-# with the dev build, exactly as scripts/build-optimized.sh builds it.
-cmake -S "$ROOT/runtime" -B "$ROOT/build-tools/rexruntime" -G Ninja \
+# Source paths in __FILE__ and debug info become repo-relative, so the shipped
+# binaries don't carry this machine's home folder. The runtime gets its own
+# copy for that reason (it already targets macOS 13.3, runtime/CMakeLists.txt).
+[[ "$ROOT" != *" "* ]] || die "the repo path must not contain spaces"
+NO_PATHS="-ffile-prefix-map=$ROOT/="
+PATH_FLAGS=(-DCMAKE_C_FLAGS="$NO_PATHS" -DCMAKE_CXX_FLAGS="$NO_PATHS"
+            -DCMAKE_OBJC_FLAGS="$NO_PATHS" -DCMAKE_OBJCXX_FLAGS="$NO_PATHS")
+cmake -S "$ROOT/runtime" -B "$BUILD/rexruntime" -G Ninja \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo \
   -DCMAKE_C_COMPILER=/usr/bin/clang -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
   -DCMAKE_OBJC_COMPILER=/usr/bin/clang -DCMAKE_OBJCXX_COMPILER=/usr/bin/clang++ \
-  -DMGR_PGO_MODE=OFF
-cmake --build "$ROOT/build-tools/rexruntime" --target rexruntime --parallel "$JOBS"
+  -DMGR_PGO_MODE=OFF "${PATH_FLAGS[@]}"
+cmake --build "$BUILD/rexruntime" --target rexruntime --parallel "$JOBS"
 cmake -S "$ROOT" -B "$BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$ROOT/tools/sdk/mac-arm64" \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN_MACOS" -DMGR_CPU_TUNE= -DMGR_PGO_MODE=OFF "$@"
+  -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN_MACOS" -DMGR_CPU_TUNE= -DMGR_PGO_MODE=OFF \
+  -DMGR_RUNTIME_LIB="$RUNTIME" "${PATH_FLAGS[@]}" "$@"
 cmake --build "$BUILD" --target mgr --parallel "$JOBS"
 cmake -E copy_if_different "$RUNTIME" "$BUILD/"
 
@@ -56,7 +62,8 @@ for f in mgr librexruntimerd.dylib libTracyClientrd.dylib \
 done
 cp -R "$BUILD/vulkan" "$APP/Contents/Resources/vulkan"
 find "$APP/Contents/Resources/vulkan" -name .DS_Store -delete
-cp "$BUILD/mgr_native_shaders.xrnb" "$ROOT/THIRD_PARTY_NOTICES" "$APP/Contents/Resources/"
+cp "$BUILD/mgr_native_shaders.xrnb" "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES" \
+   "$APP/Contents/Resources/"
 if [[ -f "$ROOT/cmake/macos/AppIcon.icns" ]]; then
   cp "$ROOT/cmake/macos/AppIcon.icns" "$APP/Contents/Resources/"
 fi
@@ -90,6 +97,9 @@ for f in "${MACHO[@]}"; do
   version_le "$minos" "$MIN_MACOS" || die "$name requires macOS $minos (> $MIN_MACOS)"
   if otool -l "$f" | grep -E '^ +(path|name) ' | grep -Eq '/Users/|/opt/|/usr/local/'; then
     die "$name has a machine-specific rpath or load path"
+  fi
+  if LC_ALL=C grep -aqF -e "$ROOT" -e "$HOME/" "$f"; then
+    die "$name contains a path from this machine"
   fi
   otool -L "$f" | tail -n +2 | awk '{print $1}' |
     grep -Ev '^(@rpath|@loader_path|@executable_path|/System/|/usr/lib/)' &&
