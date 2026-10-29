@@ -1,6 +1,7 @@
 MGR Recompiled - third-party notices
 
-MGR Recompiled contains no game code or assets from Metal Gear Rising:
+MGR Recompiled is licensed under the GNU General Public License v3.0 (see
+LICENSE). It contains no game code or assets from Metal Gear Rising:
 Revengeance. Players install the game files from their own copy. The app is
 built with the components below. Each one keeps its own license; full texts
 are in the linked source trees.

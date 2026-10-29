@@ -126,4 +126,7 @@ If the supported disc's files ever change, regenerate the install manifest:
 python3 tools/release/hash_game_files.py private/game src/mgr_game_manifest.inc
 ```
 
+## License
+
+MGR Recompiled is licensed under the GNU General Public License v3.0, see `LICENSE`
 Third-party licenses are listed in `THIRD_PARTY_NOTICES`
