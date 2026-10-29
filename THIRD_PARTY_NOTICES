@@ -1,0 +1,61 @@
+MGR Recompiled - third-party notices
+
+MGR Recompiled contains no game code or assets from Metal Gear Rising:
+Revengeance. Players install the game files from their own copy. The app is
+built with the components below. Each one keeps its own license; full texts
+are in the linked source trees.
+
+ReXGlue SDK (runtime, GPU plugin, disc image reader)
+  BSD 3-Clause. Copyright (c) 2026 Tom Clay. Portions derived from Xenia,
+  Copyright (c) 2022 Ben Vanik and Xenia project contributors.
+  https://github.com/rexglue/rexglue-sdk
+
+re:Blue renderer components (vendor/reblue)
+  BSD 3-Clause. Copyright (c) 2026 rexglue.
+  plume: MIT, Copyright (c) 2024 renderbag and contributors.
+  zstd decoder: BSD, Copyright (c) Meta Platforms, Inc. and affiliates.
+  volk: MIT, Copyright (c) Arseny Kapoulkine.
+
+MoltenVK and the Vulkan Loader
+  Apache License 2.0. Copyright (c) The Brenwill Workshop Ltd. and
+  The Khronos Group Inc.
+  https://github.com/KhronosGroup/MoltenVK
+  https://github.com/KhronosGroup/Vulkan-Loader
+
+SDL 3
+  zlib License. Copyright (c) Sam Lantinga.  https://libsdl.org
+
+FFmpeg (libavcodec, libavutil: XMA/WMA audio decoding)
+  GNU LGPL 2.1 or later. Copyright (c) the FFmpeg developers.
+  https://ffmpeg.org - source as pinned by the ReXGlue SDK submodule
+  thirdparty/FFmpeg.
+
+libmspack
+  GNU LGPL 2.1. Copyright (c) Stuart Caie.
+  https://www.cabextract.org.uk/libmspack/
+
+  FFmpeg and libmspack are linked into librexruntimerd.dylib, a shared
+  library inside the app (Contents/MacOS). Its complete source and build
+  instructions are in this repository (runtime/, README.md), so it can be
+  rebuilt against modified versions of these libraries and replaced.
+
+glslang (BSD 3-Clause and others) and SPIRV-Tools (Apache License 2.0)
+  Copyright (c) The Khronos Group Inc. and contributors.
+
+Dear ImGui - MIT, Copyright (c) 2014-2025 Omar Cornut
+{fmt} - MIT, Copyright (c) 2012-present Victor Zverovich
+spdlog - MIT, Copyright (c) 2016 Gabi Melman
+toml++ - MIT, Copyright (c) Mark Gillard
+CLI11 - BSD 3-Clause, Copyright (c) 2017-2025 University of Cincinnati
+xxHash - BSD 2-Clause, Copyright (c) Yann Collet
+Tracy - BSD 3-Clause, Copyright (c) Bartosz Taudul
+Vulkan Memory Allocator - MIT, Copyright (c) Advanced Micro Devices, Inc.
+SIMDe - MIT, Copyright (c) Evan Nemerson and contributors
+o1heap - MIT, Copyright (c) Pavel Kirienko
+disruptorplus - MIT, Copyright (c) Lewis Baker
+UTF8-CPP - Boost Software License 1.0, Copyright (c) Nemanja Trifunovic
+aes_128 - MIT, Copyright (c) 2017 LuoPeng
+
+Metal Gear Rising: Revengeance is a trademark of Konami Digital
+Entertainment. This project is not affiliated with or endorsed by Konami or
+PlatinumGames.

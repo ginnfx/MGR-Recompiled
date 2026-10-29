@@ -56,7 +56,7 @@ for f in mgr librexruntimerd.dylib libTracyClientrd.dylib \
 done
 cp -R "$BUILD/vulkan" "$APP/Contents/Resources/vulkan"
 find "$APP/Contents/Resources/vulkan" -name .DS_Store -delete
-cp "$BUILD/mgr_native_shaders.xrnb" "$APP/Contents/Resources/"
+cp "$BUILD/mgr_native_shaders.xrnb" "$ROOT/THIRD_PARTY_NOTICES" "$APP/Contents/Resources/"
 if [[ -f "$ROOT/cmake/macos/AppIcon.icns" ]]; then
   cp "$ROOT/cmake/macos/AppIcon.icns" "$APP/Contents/Resources/"
 fi
