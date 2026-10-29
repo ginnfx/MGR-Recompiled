@@ -1,0 +1,90 @@
+// Verified install of the player's game files into the app's data folder.
+// Checks the disc's default.xex, then copies every manifest file (default.xex
+// and media/) through a hash check into game.partial/, renaming it to game/
+// only when all files match. No UI code; the setup window drives it.
+#pragma once
+
+#include <atomic>
+#include <cstdint>
+#include <filesystem>
+#include <functional>
+#include <span>
+#include <string>
+#include <string_view>
+
+namespace mgr_install {
+
+struct ManifestEntry {
+  const char* path;  // relative to the game root, '/'-separated
+  uint64_t size;
+  uint64_t xxh3;
+};
+
+using ManifestView = std::span<const ManifestEntry>;
+// The supported disc's files (src/mgr_game_manifest.inc). Tests pass their own.
+ManifestView Manifest();
+uint64_t TotalBytes(ManifestView manifest);
+
+// Where the supported xex identifies itself (XEX2 execution info).
+inline constexpr uint32_t kTitleId = 0x4B4E080A;
+inline constexpr uint32_t kMediaId = 0x6CC18291;
+inline constexpr uint32_t kVersion = 4;
+
+enum class XexCheck {
+  kOk,
+  kNotXex,        // not an Xbox 360 executable
+  kOtherGame,     // a different title ID
+  kOtherVersion,  // MGR:R, but another region, disc or version
+  kModified,      // right IDs, different bytes (patched or damaged)
+};
+// expected_xxh3 is the manifest hash of default.xex.
+XexCheck CheckXex(std::span<const uint8_t> xex, uint64_t expected_xxh3);
+const char* Describe(XexCheck check);
+
+// A place to read the game files from: an extracted folder or a disc image.
+class GameSource {
+ public:
+  virtual ~GameSource() = default;
+  // Size of the file at a manifest path, or -1 if it is missing.
+  virtual int64_t Size(std::string_view path) = 0;
+  // Passes the file's bytes to sink in order; false on a read error or when
+  // sink returns false.
+  virtual bool Read(std::string_view path,
+                    const std::function<bool(std::span<const uint8_t>)>& sink) = 0;
+};
+
+class FolderSource final : public GameSource {
+ public:
+  explicit FolderSource(std::filesystem::path root) : root_(std::move(root)) {}
+  int64_t Size(std::string_view path) override;
+  bool Read(std::string_view path,
+            const std::function<bool(std::span<const uint8_t>)>& sink) override;
+
+ private:
+  std::filesystem::path root_;
+};
+
+// Reads the source's default.xex fully and checks it.
+XexCheck CheckSourceXex(GameSource& source, ManifestView manifest = Manifest());
+
+struct InstallResult {
+  bool ok = false;
+  bool cancelled = false;
+  std::string error;  // shown to the player when !ok && !cancelled
+};
+
+using Progress = std::function<void(uint64_t done, uint64_t total)>;
+
+// Installs into data_root/game. Leaves an existing game/ in place until the new
+// copy is complete; on failure or cancel only data_root/game.partial is removed.
+InstallResult InstallFrom(GameSource& source, const std::filesystem::path& data_root,
+                          const Progress& progress, const std::atomic<bool>& cancel,
+                          ManifestView manifest = Manifest());
+
+// Quick check on launch: the install marker matches this build's manifest and
+// every file has its expected size.
+bool IsInstalled(const std::filesystem::path& game_dir, ManifestView manifest = Manifest());
+
+inline constexpr const char* kMarkerName = ".mgr-install";
+
+}  // namespace mgr_install
