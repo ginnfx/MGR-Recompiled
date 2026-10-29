@@ -20,3 +20,7 @@ tools/rexglue-sdk.zip
 # Local experiment harnesses and their measurement notes.
 experiments/
 __pycache__/
+
+# Release packaging output (scripts/package-macos.sh)
+build-release/
+dist/

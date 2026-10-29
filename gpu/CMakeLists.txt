@@ -43,6 +43,10 @@ set_target_properties(rexgpu-xenos PROPERTIES
     # Build straight into the exe dir: the SDK's POST_BUILD staging only runs
     # when mgr relinks, which left a stale plugin after plugin-only rebuilds.
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    # Runtime dylibs sit beside the plugin (build/ or the .app's Contents/MacOS);
+    # the default build rpath is the absolute SDK lib dir, which breaks packaging.
+    BUILD_WITH_INSTALL_RPATH ON
+    INSTALL_RPATH "@loader_path"
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
 )
@@ -78,6 +82,8 @@ set_target_properties(rexgpu-mgrnull PROPERTIES
     OUTPUT_NAME_RELWITHDEBINFO rexgpu-mgrnullrd
     OUTPUT_NAME_RELEASE rexgpu-mgrnull
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    BUILD_WITH_INSTALL_RPATH ON
+    INSTALL_RPATH "@loader_path"
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON
 )
