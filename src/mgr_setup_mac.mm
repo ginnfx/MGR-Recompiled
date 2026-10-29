@@ -45,7 +45,7 @@ void ShowError(NSString* title, NSString* detail) {
 
 struct SetupFlow : std::enable_shared_from_this<SetupFlow> {
   fs::path data_root;
-  bool reinstall = false;
+  MgrSetupReason reason = MgrSetupReason::kFirstRun;
   std::function<void(bool)> done;
 
   std::unique_ptr<mgr_install::GameSource> source;
@@ -64,19 +64,21 @@ struct SetupFlow : std::enable_shared_from_this<SetupFlow> {
 
   void Welcome() {
     NSAlert* alert = [[NSAlert alloc] init];
-    alert.messageText = reinstall ? @"Reinstall the game files" : @"Welcome to MGR Recompiled";
+    alert.messageText = reason == MgrSetupReason::kFirstRun ? @"Welcome to MGR Recompiled"
+                                                            : @"Reinstall the game files";
     alert.informativeText =
         [NSString stringWithFormat:
                       @"%@MGR Recompiled plays your own copy of Metal Gear Rising: Revengeance "
                       @"for Xbox 360 (USA/Europe disc).\n\nChoose its disc image (.iso) or a "
                       @"folder with the extracted files. About %.1f GB will be copied to:\n%@",
-                      reinstall ? @"The installed game files are missing, damaged or from an "
-                                  @"older version.\n\n"
-                                : @"",
+                      reason == MgrSetupReason::kDamaged
+                          ? @"The installed game files are missing, damaged or from an "
+                            @"older version.\n\n"
+                          : @"",
                       double(mgr_install::TotalBytes(mgr_install::Manifest())) / 1e9,
                       ToNS(data_root.string())];
     [alert addButtonWithTitle:@"Choose Game…"];
-    [alert addButtonWithTitle:@"Quit"];
+    [alert addButtonWithTitle:reason == MgrSetupReason::kRequested ? @"Play" : @"Quit"];
     if ([alert runModal] != NSAlertFirstButtonReturn) {
       done(false);
       return;
@@ -201,10 +203,11 @@ struct SetupFlow : std::enable_shared_from_this<SetupFlow> {
 
 bool MgrSetupRequested() { return ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0; }
 
-void MgrRunSetup(const fs::path& data_root, bool reinstall, std::function<void(bool)> done) {
+void MgrRunSetup(const fs::path& data_root, MgrSetupReason reason,
+                 std::function<void(bool)> done) {
   auto flow = std::make_shared<SetupFlow>();
   flow->data_root = data_root;
-  flow->reinstall = reinstall;
+  flow->reason = reason;
   flow->done = std::move(done);
   flow->Next(&SetupFlow::Welcome);
 }

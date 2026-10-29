@@ -88,10 +88,13 @@ class MgrApp : public rex::ReXApp {
     if (!bundle_layout_ || defaults.game_data_root != bundle_layout_->game) return defaults;
     const bool installed = mgr_install::IsInstalled(defaults.game_data_root);
     if (installed && !MgrSetupRequested()) return defaults;
-    const bool damaged = !installed && std::filesystem::exists(defaults.game_data_root);
-    MgrRunSetup(defaults.game_data_root.parent_path(), damaged,
-                [this, defaults, resume = std::move(resume)](bool ok) {
-                  if (ok)
+    const auto reason = installed ? MgrSetupReason::kRequested
+                        : std::filesystem::exists(defaults.game_data_root)
+                            ? MgrSetupReason::kDamaged
+                            : MgrSetupReason::kFirstRun;
+    MgrRunSetup(defaults.game_data_root.parent_path(), reason,
+                [this, defaults, resume = std::move(resume)](bool installed_now) {
+                  if (installed_now || mgr_install::IsInstalled(defaults.game_data_root))
                     resume(defaults);
                   else
                     app_context().QuitFromUIThread();
