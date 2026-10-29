@@ -147,10 +147,24 @@ target_compile_definitions(mgr PRIVATE MGR_BUILD_ID="${MGR_GIT_REV}")
 # First-run install of the player's game files (packaged app only).
 enable_language(OBJCXX)
 target_sources(mgr PRIVATE src/mgr_game_install.cpp src/mgr_disc_source.cpp src/mgr_dlc.cpp
-    src/mgr_dlc_package.cpp
+    src/mgr_dlc_package.cpp src/mgr_setup_ui.cpp src/mgr_setup_wizard.cpp
     src/mgr_setup_mac.mm)
 set_source_files_properties(src/mgr_setup_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
-target_link_libraries(mgr PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers")
+target_link_libraries(mgr PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers"
+                      "-framework ImageIO")
+# Setup screen fonts (OFL) and key art. private/setup_background.jpg is a
+# local-only override; the shipped default is the app icon art.
+set(MGR_SETUP_BACKGROUND "${CMAKE_SOURCE_DIR}/cmake/macos/AppIcon-source.jpg")
+if(EXISTS "${CMAKE_SOURCE_DIR}/private/setup_background.jpg")
+    set(MGR_SETUP_BACKGROUND "${CMAKE_SOURCE_DIR}/private/setup_background.jpg")
+endif()
+add_custom_target(mgr_setup_assets
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/assets/setup"
+        "${CMAKE_BINARY_DIR}/setup"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different "${MGR_SETUP_BACKGROUND}"
+        "${CMAKE_BINARY_DIR}/setup/background.jpg"
+    VERBATIM)
+add_dependencies(mgr mgr_setup_assets)
 if(NOT MGR_NATIVE_RENDERER)  # cmake/native_renderer.cmake links it otherwise
     target_link_libraries(mgr PRIVATE rex::xxhash)
 endif()

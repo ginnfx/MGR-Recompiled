@@ -5,6 +5,7 @@
 #
 #   scripts/package-macos.sh                 # ad-hoc signed
 #   SIGN_IDENTITY="Developer ID Application: ..." scripts/package-macos.sh
+#   MGR_SETUP_BACKGROUND=art.jpg scripts/package-macos.sh   # setup screen art
 #
 # Game files are never packaged: the app installs them from the player's own
 # disc image on first launch. Extra arguments are passed to the game's CMake.
@@ -64,6 +65,11 @@ cp -R "$BUILD/vulkan" "$APP/Contents/Resources/vulkan"
 find "$APP/Contents/Resources/vulkan" -name .DS_Store -delete
 cp "$BUILD/mgr_native_shaders.xrnb" "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES" \
    "$APP/Contents/Resources/"
+# Setup screen fonts and art. The art is the icon artwork unless one is given
+# explicitly: a local private/setup_background.jpg never ships by accident.
+cp -R "$BUILD/setup" "$APP/Contents/Resources/setup"
+cp "${MGR_SETUP_BACKGROUND:-$ROOT/cmake/macos/AppIcon-source.jpg}" \
+   "$APP/Contents/Resources/setup/background.jpg"
 if [[ -f "$ROOT/cmake/macos/AppIcon.icns" ]]; then
   cp "$ROOT/cmake/macos/AppIcon.icns" "$APP/Contents/Resources/"
 fi

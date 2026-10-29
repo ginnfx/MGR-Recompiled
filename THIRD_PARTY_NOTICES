@@ -11,7 +11,8 @@ ReXGlue SDK (runtime, GPU plugin, disc image reader)
   Copyright (c) 2022 Ben Vanik and Xenia project contributors.
   https://github.com/rexglue/rexglue-sdk
 
-re:Blue renderer components (vendor/reblue)
+re:Blue renderer components (vendor/reblue, including the setup screen's
+ImGui drawer in src/native/gpu/imgui_overlay_drawer.*)
   BSD 3-Clause. Copyright (c) 2026 rexglue.
   plume: MIT, Copyright (c) 2024 renderbag and contributors.
   zstd decoder: BSD, Copyright (c) Meta Platforms, Inc. and affiliates.
@@ -42,6 +43,10 @@ libmspack
 
 glslang (BSD 3-Clause and others) and SPIRV-Tools (Apache License 2.0)
   Copyright (c) The Khronos Group Inc. and contributors.
+
+Setup screen fonts (Contents/Resources/setup/fonts), SIL Open Font License 1.1:
+  Josefin Sans - Copyright 2010 The Josefin Sans Project Authors
+  IBM Plex Sans Condensed, IBM Plex Mono - Copyright 2017 IBM Corp.
 
 Dear ImGui - MIT, Copyright (c) 2014-2025 Omar Cornut
 {fmt} - MIT, Copyright (c) 2012-present Victor Zverovich

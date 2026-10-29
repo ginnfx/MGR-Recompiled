@@ -201,6 +201,34 @@ struct SetupFlow : std::enable_shared_from_this<SetupFlow> {
 
 }  // namespace
 
+std::optional<fs::path> MgrPickGameCopy(bool folder) {
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.message = folder ? @"Pick the folder that has default.xex and media"
+                         : @"Pick your Metal Gear Rising: Revengeance disc image";
+  panel.prompt = @"Pick";
+  panel.canChooseFiles = !folder;
+  panel.canChooseDirectories = folder;
+  panel.allowsMultipleSelection = NO;
+  if (!folder) {
+    if (UTType* iso = [UTType typeWithFilenameExtension:@"iso"]) panel.allowedContentTypes = @[ iso ];
+  }
+  if ([panel runModal] != NSModalResponseOK || !panel.URL) return std::nullopt;
+  return fs::path(panel.URL.path.fileSystemRepresentation);
+}
+
+std::vector<fs::path> MgrPickDlcPackages() {
+  NSOpenPanel* panel = [NSOpenPanel openPanel];
+  panel.message = @"Pick your DLC packages (files with long hex names, usually in a 00000002 folder)";
+  panel.prompt = @"Add";
+  panel.canChooseFiles = YES;
+  panel.canChooseDirectories = NO;
+  panel.allowsMultipleSelection = YES;
+  std::vector<fs::path> picked;
+  if ([panel runModal] != NSModalResponseOK) return picked;
+  for (NSURL* url in panel.URLs) picked.emplace_back(url.path.fileSystemRepresentation);
+  return picked;
+}
+
 bool MgrSetupRequested() { return ([NSEvent modifierFlags] & NSEventModifierFlagOption) != 0; }
 
 void MgrRunSetup(const fs::path& data_root, MgrSetupReason reason,

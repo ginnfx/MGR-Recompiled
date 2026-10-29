@@ -10,6 +10,8 @@
 #include <rex/system/interfaces/graphics.h>
 #include <rex/input/input_system.h>
 #include <rex/ui/keybinds.h>
+#include <rex/ui/imgui_drawer.h>
+#include <rex/ui/immediate_drawer.h>
 #include <rex/ui/presenter.h>
 
 #include "mgr_bundle_paths.h"
@@ -18,6 +20,8 @@
 #include "mgr_options_dialog.h"
 #include "mgr_settings.h"
 #include "mgr_setup.h"
+#include "mgr_setup_ui.h"
+#include "mgr_setup_wizard.h"
 #include "mgr_game_options.h"
 #include "mgr_native_options.h"
 #include "mgr_menu_fonts.h"
@@ -53,6 +57,13 @@ class MgrApp : public rex::ReXApp {
  protected:
   // MGR options feed the GPU/runtime cvars before the plugin loads.
   void OnPreSetup(rex::RuntimeConfig& config) override {
+    // A fresh .app has no mgr.toml or run.sh flags: use the renderer the
+    // project ships (native) and the Xenos plugin for the Xenos option.
+    if (bundle_layout_) {
+      if (rex::cvar::GetFlagSource("mgr_renderer") == rex::cvar::Source::kDefault)
+        rex::cvar::SetFlagByName("mgr_renderer", "native");
+      if (config.gpu_plugin.empty()) config.gpu_plugin = "xenos";
+    }
 #if MGR_NATIVE_RENDERER
     mgrn::MgrNativeConfigure(config);
 #else
@@ -69,8 +80,13 @@ class MgrApp : public rex::ReXApp {
   }
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
-    if (mgr_bundle::IsAppBundle(rex::filesystem::GetExecutableFolder()))
-      ApplyBundlePaths(paths);
+    // MGR_SETUP_DATA_ROOT=<dir> gives a dev build the packaged app's data
+    // layout (and setup) under <dir>, for testing the first-run flow.
+    if (const char* root = std::getenv("MGR_SETUP_DATA_ROOT"); root && *root)
+      ApplyBundlePaths(paths, root);
+    else if (mgr_bundle::IsAppBundle(rex::filesystem::GetExecutableFolder()))
+      ApplyBundlePaths(paths, mgr_bundle::DataRoot(mgr_bundle::HomeDir()));
+    setup_reason_ = SetupReasonFor(paths);
     // Diagnostic: MGR_CONFIG_PATH=<file> replaces <exe dir>/mgr.toml, so test
     // runs never read or save the user's configuration.
     if (const char* config = std::getenv("MGR_CONFIG_PATH"); config && *config)
@@ -86,23 +102,34 @@ class MgrApp : public rex::ReXApp {
 
   // The packaged app installs the player's game files on first launch, when
   // they fail the quick check, or when Option is held. Dev runs and an
-  // explicit --game_data_root never see setup.
+  // explicit --game_data_root never see setup. The native renderer draws the
+  // full-window ImGui setup; the Xenos renderer falls back to AppKit dialogs.
   std::optional<rex::PathConfig> OnFinalizePaths(
       const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) override {
-    if (!bundle_layout_ || defaults.game_data_root != bundle_layout_->game) return defaults;
-    const bool installed = mgr_install::IsInstalled(defaults.game_data_root);
-    if (installed && !MgrSetupRequested()) return defaults;
-    const auto reason = installed ? MgrSetupReason::kRequested
-                        : std::filesystem::exists(defaults.game_data_root)
-                            ? MgrSetupReason::kDamaged
-                            : MgrSetupReason::kFirstRun;
-    MgrRunSetup(defaults.game_data_root.parent_path(), reason,
-                [this, defaults, resume = std::move(resume)](bool installed_now) {
-                  if (installed_now || mgr_install::IsInstalled(defaults.game_data_root))
-                    resume(defaults);
-                  else
-                    app_context().QuitFromUIThread();
-                });
+    if (!setup_reason_) return defaults;
+    const auto data_root = defaults.game_data_root.parent_path();
+    auto finish = [this, defaults, resume = std::move(resume)](bool installed) {
+      if (installed || mgr_install::IsInstalled(defaults.game_data_root))
+        resume(defaults);
+      else
+        app_context().QuitFromUIThread();
+    };
+#if MGR_NATIVE_RENDERER
+    if (StartSetupOverlay()) {
+      MgrShowSetupWizard(setup_imgui_.get(), setup_immediate_.get(), data_root, *setup_reason_,
+                         [this, finish](bool installed) {
+                           // Called mid-draw: leave the overlay path first.
+                           app_context().CallInUIThreadDeferred([this, finish, installed] {
+                             mgrn::MgrNativeStopOverlayOnly();
+                             setup_imgui_.reset();
+                             setup_immediate_.reset();
+                             finish(installed);
+                           });
+                         });
+      return std::nullopt;
+    }
+#endif
+    MgrRunSetup(data_root, *setup_reason_, std::move(finish));
     return std::nullopt;
   }
 
@@ -134,10 +161,39 @@ class MgrApp : public rex::ReXApp {
     return bundle_layout_ ? bundle_layout_->dlc : std::filesystem::path{};
   }
 
+#if MGR_NATIVE_RENDERER
+  // The native renderer loads a GPU plugin without a presenter, so the SDK
+  // makes no ImGui drawer; setup brings its own on the plume device and drops
+  // it once the game takes over.
+  bool StartSetupOverlay() {
+    if (!mgrn::NativeRendererActive()) return false;
+    setup_immediate_ = mgrn::MgrNativeCreateOverlayDrawer();
+    setup_imgui_ = std::make_unique<rex::ui::ImGuiDrawer>(
+        window(), 64, [](ImFontAtlas* atlas) { mgr_setup_ui::LoadFonts(atlas); });
+    setup_imgui_->SetPresenterAndImmediateDrawer(nullptr, setup_immediate_.get());
+    if (mgrn::MgrNativeStartOverlayOnly(window(), setup_imgui_.get(), app_context())) return true;
+    setup_imgui_.reset();
+    setup_immediate_.reset();
+    return false;
+  }
+#endif
+
+  // Setup shows when the bundle's game folder fails the quick check, or when
+  // Option is held. Not for dev runs or an explicit --game_data_root.
+  std::optional<MgrSetupReason> SetupReasonFor(const rex::PathConfig& paths) const {
+    if (!bundle_layout_ || paths.game_data_root != bundle_layout_->game) return std::nullopt;
+    const bool installed = mgr_install::IsInstalled(paths.game_data_root);
+    if (installed) {
+      if (!MgrSetupRequested()) return std::nullopt;
+      return MgrSetupReason::kRequested;
+    }
+    return std::filesystem::exists(paths.game_data_root) ? MgrSetupReason::kDamaged
+                                                         : MgrSetupReason::kFirstRun;
+  }
+
   // The .app bundle is read-only: defaults move to Application Support, while
   // an explicit --flag or REX_* value still wins (#383: mgr.toml loads later).
-  void ApplyBundlePaths(rex::PathConfig& paths) {
-    const auto root = mgr_bundle::DataRoot(mgr_bundle::HomeDir());
+  void ApplyBundlePaths(rex::PathConfig& paths, const std::filesystem::path& root) {
     bundle_layout_ = mgr_bundle::Layout(root);
     const auto is_default = [](const char* name) {
       return rex::cvar::GetFlagSource(name) == rex::cvar::Source::kDefault;
@@ -326,6 +382,9 @@ class MgrApp : public rex::ReXApp {
   std::filesystem::path config_path_;
   std::filesystem::path game_root_;
   std::optional<mgr_bundle::DataLayout> bundle_layout_;
+  std::optional<MgrSetupReason> setup_reason_;
+  std::unique_ptr<rex::ui::ImmediateDrawer> setup_immediate_;
+  std::unique_ptr<rex::ui::ImGuiDrawer> setup_imgui_;
   std::unique_ptr<MgrOptionsDialog> options_dialog_;
   std::unique_ptr<MgrOptionsDialog> game_options_dialog_;
   std::shared_ptr<uint8_t> settings_callbacks_alive_ = std::make_shared<uint8_t>(0);

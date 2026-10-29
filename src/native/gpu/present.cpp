@@ -465,6 +465,14 @@ void Video::PresentOverlayFrame() {
     g_overlay_draw_hook(s.command_list, back_fb, swap_w, swap_h);
   }
   s.command_list->setFramebuffer(nullptr);
+  // Harness capture of the setup screen (no guest render target exists yet).
+  GuestTexture scanout;
+  scanout.texture = back;
+  scanout.format = plume::RenderFormat::B8G8R8A8_UNORM;
+  scanout.width = swap_w;
+  scanout.height = swap_h;
+  scanout.layout = plume::RenderTextureLayout::COLOR_WRITE;
+  RecordCaptureCopy(s, &scanout);
   s.command_list->barriers(
       plume::RenderBarrierStage::GRAPHICS,
       plume::RenderTextureBarrier(back, plume::RenderTextureLayout::PRESENT));
@@ -478,6 +486,7 @@ void Video::PresentOverlayFrame() {
   s.queue->executeCommandLists(lists, 1, waits, 1, signals, 1,
                                s.fences[cur].get());
   s.command_list_submitted[cur] = true;
+  FinishCapture(s, cur);
   ApplyVsync(s);
   if (!s.swap_chain->present(texture_index, signals, 1)) {
     CheckDeviceRemoved("swapchain present (overlay)");

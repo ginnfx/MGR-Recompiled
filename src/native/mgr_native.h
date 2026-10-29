@@ -5,11 +5,16 @@
 // interrupts), and the hooks in src/native/hooks draw through plume.
 #pragma once
 
+#include <memory>
+
 namespace rex {
 struct RuntimeConfig;
 }
 namespace rex::ui {
+class ImGuiDrawer;
+class ImmediateDrawer;
 class Window;
+class WindowedAppContext;
 struct RawImage;
 }
 
@@ -24,8 +29,19 @@ bool NativeRendererActive();
 void MgrNativeConfigure(rex::RuntimeConfig& config);
 
 // OnPreLaunchModule: creates the plume device and swapchain on the window.
-// False (logged) leaves the run without a renderer.
+// False (logged) leaves the run without a renderer. Safe to call again once
+// the first-run setup has already brought the device up.
 bool MgrNativeStart(rex::ui::Window* window);
+
+// ImGui drawer on the plume device, for the SDK's detached overlay mode. It
+// binds to the device lazily, so it can be made before MgrNativeStart.
+std::unique_ptr<rex::ui::ImmediateDrawer> MgrNativeCreateOverlayDrawer();
+
+// First-run setup before the runtime exists: starts the device and presents
+// frames that only draw the ImGui dialogs, until MgrNativeStopOverlayOnly.
+bool MgrNativeStartOverlayOnly(rex::ui::Window* window, rex::ui::ImGuiDrawer* drawer,
+                               rex::ui::WindowedAppContext& context);
+void MgrNativeStopOverlayOnly();
 
 // Highest MSAA sample count the device supports for the scene targets; 1
 // before the device is up.
