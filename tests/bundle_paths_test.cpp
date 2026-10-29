@@ -26,6 +26,7 @@ int main() {
   assert(layout.cache == root / "cache");
   assert(layout.logs == root / "logs");
   assert(layout.config == root / "mgr.toml");
+  assert(layout.dlc == root / "dlc");
 
   std::cout << "bundle_paths: all checks passed\n";
   return 0;

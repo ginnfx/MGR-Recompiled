@@ -87,4 +87,28 @@ bool IsInstalled(const std::filesystem::path& game_dir, ManifestView manifest = 
 
 inline constexpr const char* kMarkerName = ".mgr-install";
 
+// Xbox Live DLC packages (STFS "LIVE"/"PIRS"). The check reads the header and
+// SHA-1 checks every data block, so a damaged copy is refused before the SDK
+// ever unpacks it.
+enum class DlcCheck {
+  kOk,
+  kNotPackage,   // not an Xbox 360 content package
+  kOtherGame,    // a package for another title
+  kNotDlc,       // a save, theme or other non-DLC content for this title
+  kUnsupported,  // a package layout the checker doesn't handle
+  kDamaged,      // blocks fail their hashes (bad copy or download)
+};
+struct DlcPackage {
+  DlcCheck check = DlcCheck::kNotPackage;
+  std::string name;      // English display name from the package header
+  uint64_t size = 0;
+};
+DlcPackage CheckDlcPackage(const std::filesystem::path& package);
+const char* Describe(DlcCheck check);
+
+// Copies a checked package into data_root/dlc (unpacked on the next boot by
+// MgrInstallPendingDlc).
+InstallResult QueueDlcPackage(const std::filesystem::path& package,
+                              const std::filesystem::path& data_root);
+
 }  // namespace mgr_install

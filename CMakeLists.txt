@@ -146,7 +146,8 @@ target_compile_definitions(mgr PRIVATE MGR_BUILD_ID="${MGR_GIT_REV}")
 
 # First-run install of the player's game files (packaged app only).
 enable_language(OBJCXX)
-target_sources(mgr PRIVATE src/mgr_game_install.cpp src/mgr_disc_source.cpp
+target_sources(mgr PRIVATE src/mgr_game_install.cpp src/mgr_disc_source.cpp src/mgr_dlc.cpp
+    src/mgr_dlc_package.cpp
     src/mgr_setup_mac.mm)
 set_source_files_properties(src/mgr_setup_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 target_link_libraries(mgr PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers")
@@ -239,6 +240,10 @@ add_executable(mgr_game_install_checks EXCLUDE_FROM_ALL tests/game_install_test.
 target_include_directories(mgr_game_install_checks PRIVATE src)
 target_link_libraries(mgr_game_install_checks PRIVATE rex::xxhash)
 target_compile_options(mgr_game_install_checks PRIVATE -UNDEBUG)
+add_executable(mgr_dlc_package_checks EXCLUDE_FROM_ALL tests/dlc_package_test.cpp
+    src/mgr_dlc_package.cpp)
+target_include_directories(mgr_dlc_package_checks PRIVATE src)
+target_compile_options(mgr_dlc_package_checks PRIVATE -UNDEBUG)
 
 # GPU check of the resolution-scaled resolve and texture load SPIR-V on MoltenVK
 # (Homebrew vulkan-headers and molten-vk); ctest reports it skipped without a
@@ -257,6 +262,7 @@ enable_testing()
 set(MGR_TEST_TARGETS mgr_resolve_arena_checks mgr_scale_ratio_checks mgr_scaled_viewport_checks
     mgr_scaled_texture_address_checks
     mgr_ot_key_checks mgr_lod_bias_checks mgr_bundle_paths_checks mgr_game_install_checks
+    mgr_dlc_package_checks
     mgr_timing_checks
     mgr_native_math_checks mgr_native_memory_checks)
 if(TARGET mgr_rational_shader_gpu_checks)
@@ -275,6 +281,7 @@ add_test(NAME ot_key COMMAND mgr_ot_key_checks)
 add_test(NAME lod_bias COMMAND mgr_lod_bias_checks)
 add_test(NAME bundle_paths COMMAND mgr_bundle_paths_checks)
 add_test(NAME game_install COMMAND mgr_game_install_checks)
+add_test(NAME dlc_package COMMAND mgr_dlc_package_checks)
 foreach(_mode enabled disabled forced)
     add_test(NAME timing_${_mode} COMMAND mgr_timing_checks ${_mode})
 endforeach()

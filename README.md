@@ -89,6 +89,7 @@ git clone https://github.com/rexglue/rexglue-sdk.git vendor/rexglue-sdk
 git -C vendor/rexglue-sdk checkout bd833a2
 git -C vendor/rexglue-sdk apply ../../patches/xenos-gpu-mgr.patch
 git -C vendor/rexglue-sdk apply ../../patches/rexglue-macos-message-box.patch
+git -C vendor/rexglue-sdk apply ../../patches/rexglue-stfs-damaged-package.patch
 git -C vendor/rexglue-sdk submodule update --init --depth 1 thirdparty/cli11 thirdparty/imgui thirdparty/FFmpeg thirdparty/libmspack
 git clone https://github.com/KhronosGroup/glslang.git vendor/glslang
 git -C vendor/glslang checkout f4f1d8a

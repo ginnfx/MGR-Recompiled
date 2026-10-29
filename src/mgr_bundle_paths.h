@@ -46,10 +46,11 @@ struct DataLayout {
   std::filesystem::path cache;
   std::filesystem::path logs;
   std::filesystem::path config;
+  std::filesystem::path dlc;  // DLC packages waiting to be unpacked
 };
 
 inline DataLayout Layout(const std::filesystem::path& root) {
-  return {root / "game", root / "user", root / "cache", root / "logs", root / "mgr.toml"};
+  return {root / "game", root / "user", root / "cache", root / "logs", root / "mgr.toml", root / "dlc"};
 }
 
 }  // namespace mgr_bundle

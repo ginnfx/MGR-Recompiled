@@ -13,6 +13,7 @@
 #include <rex/ui/presenter.h>
 
 #include "mgr_bundle_paths.h"
+#include "mgr_dlc.h"
 #include "mgr_game_install.h"
 #include "mgr_options_dialog.h"
 #include "mgr_settings.h"
@@ -61,6 +62,9 @@ class MgrApp : public rex::ReXApp {
     rex::cvar::SetFlagByName("imgui_guest_paced", "false");
     if (rex::cvar::GetFlagSource("mnk_mode") == rex::cvar::Source::kDefault)
       rex::cvar::SetFlagByName("mnk_mode", "true");
+    // DLC the player installed counts as owned (the SDK default grants none).
+    if (rex::cvar::GetFlagSource("license_mask") == rex::cvar::Source::kDefault)
+      rex::cvar::SetFlagByName("license_mask", "4294967295");
     MgrApplySettings();
   }
 
@@ -124,6 +128,12 @@ class MgrApp : public rex::ReXApp {
 #endif
 
  private:
+  // Packages setup collected (the app's data folder), or MGR_DLC_DIR for dev runs.
+  std::filesystem::path DlcPendingDir() const {
+    if (const char* dir = std::getenv("MGR_DLC_DIR"); dir && *dir) return dir;
+    return bundle_layout_ ? bundle_layout_->dlc : std::filesystem::path{};
+  }
+
   // The .app bundle is read-only: defaults move to Application Support, while
   // an explicit --flag or REX_* value still wins (#383: mgr.toml loads later).
   void ApplyBundlePaths(rex::PathConfig& paths) {
@@ -203,6 +213,7 @@ class MgrApp : public rex::ReXApp {
         rex::cvar::GetFlagByName("mgr_render_target_precision").c_str(),
         rex::cvar::GetFlagByName("vulkan_output_resolution").c_str());
     DumpGuestImageIfRequested();
+    MgrInstallPendingDlc(DlcPendingDir());
     MgrPromptDeviceInstall();
     const char* perf_log = std::getenv("MGR_PERF_LOG");
     if (perf_log && perf_log[0] == '1') MgrStartSessionLog(MGR_BUILD_ID);

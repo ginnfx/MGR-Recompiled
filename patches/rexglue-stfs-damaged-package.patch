@@ -1,0 +1,26 @@
+diff --git a/src/filesystem/devices/stfs_container_device.cpp b/src/filesystem/devices/stfs_container_device.cpp
+index 7062520..1ab7595 100644
+--- a/src/filesystem/devices/stfs_container_device.cpp
++++ b/src/filesystem/devices/stfs_container_device.cpp
+@@ -609,6 +609,11 @@ StfsContainerDevice::Error StfsContainerDevice::ReadSTFS() {
+           entry->block_list_.push_back({0, offset, block_size});
+           remaining_size -= block_size;
+           auto block_hash = GetBlockHash(block_index);
++          if (!block_hash) {
++            // A damaged package (bad copy or download) breaks the chain.
++            REXFS_ERROR("STFS file {}: block chain points outside the package", name);
++            return Error::kErrorReadError;
++          }
+           block_index = block_hash->level0_next_block();
+         }
+ 
+@@ -637,6 +642,9 @@ StfsContainerDevice::Error StfsContainerDevice::ReadSTFS() {
+     }
+ 
+     auto block_hash = GetBlockHash(table_block_index);
++    if (!block_hash) {
++      return Error::kErrorReadError;
++    }
+     table_block_index = block_hash->level0_next_block();
+     if (table_block_index == kEndOfChain) {
+       break;
