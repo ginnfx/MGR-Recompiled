@@ -1,0 +1,67 @@
+diff --git a/src/core/system_posix.cpp b/src/core/system_posix.cpp
+index 1655695..e9946f5 100644
+--- a/src/core/system_posix.cpp
++++ b/src/core/system_posix.cpp
+@@ -7,27 +7,62 @@
+  */
+ 
+ #include <cstdio>
++#include <string>
+ 
+ #include <rex/system.h>
+ 
++#if defined(__APPLE__)
++#include <CoreFoundation/CoreFoundation.h>
++#endif
++
+ namespace rex {
+ 
+ // TODO(tomc): add linux support for showing a native message box
+ void ShowSimpleMessageBox(SimpleMessageBoxType type, std::string_view message) {
+   const char* level = "INFO";
++#if defined(__APPLE__)
++  CFOptionFlags alert_level = kCFUserNotificationNoteAlertLevel;
++#endif
+   switch (type) {
+     case SimpleMessageBoxType::Help:
+       level = "INFO";
+       break;
+     case SimpleMessageBoxType::Warning:
+       level = "WARNING";
++#if defined(__APPLE__)
++      alert_level = kCFUserNotificationCautionAlertLevel;
++#endif
+       break;
+     case SimpleMessageBoxType::Error:
+       level = "ERROR";
++#if defined(__APPLE__)
++      alert_level = kCFUserNotificationStopAlertLevel;
++#endif
+       break;
+   }
+   std::fprintf(stderr, "[%s] %.*s\n", level, static_cast<int>(message.size()), message.data());
+   std::fflush(stderr);
++#if defined(__APPLE__)
++  // A Finder launch has no terminal, so stderr alone leaves fatal errors silent.
++  // Only a real .app (it has a bundle identifier) shows the alert; terminal and
++  // scripted runs of a bare executable must never block on a modal dialog.
++  CFBundleRef bundle = CFBundleGetMainBundle();
++  if (!bundle || !CFBundleGetIdentifier(bundle))
++    return;
++  const std::string text(message);
++  CFStringRef body =
++      CFStringCreateWithCString(kCFAllocatorDefault, text.c_str(), kCFStringEncodingUTF8);
++  if (!body)
++    return;
++  CFTypeRef bundle_name = CFBundleGetValueForInfoDictionaryKey(bundle, kCFBundleNameKey);
++  CFStringRef title = bundle_name && CFGetTypeID(bundle_name) == CFStringGetTypeID()
++                          ? static_cast<CFStringRef>(bundle_name)
++                          : CFSTR("Error");
++  CFOptionFlags response = 0;
++  CFUserNotificationDisplayAlert(0, alert_level, nullptr, nullptr, nullptr, title, body, nullptr,
++                                 nullptr, nullptr, &response);
++  CFRelease(body);
++#endif
+ }
+ 
+ }  // namespace rex

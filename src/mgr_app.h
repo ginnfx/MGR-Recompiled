@@ -6,11 +6,13 @@
 
 #include <rex/rex_app.h>
 #include <rex/cvar.h>
+#include <rex/filesystem.h>
 #include <rex/system/interfaces/graphics.h>
 #include <rex/input/input_system.h>
 #include <rex/ui/keybinds.h>
 #include <rex/ui/presenter.h>
 
+#include "mgr_bundle_paths.h"
 #include "mgr_options_dialog.h"
 #include "mgr_settings.h"
 #include "mgr_game_options.h"
@@ -24,6 +26,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <thread>
@@ -60,6 +63,8 @@ class MgrApp : public rex::ReXApp {
   }
 
   void OnConfigurePaths(rex::PathConfig& paths) override {
+    if (mgr_bundle::IsAppBundle(rex::filesystem::GetExecutableFolder()))
+      ApplyBundlePaths(paths);
     // Diagnostic: MGR_CONFIG_PATH=<file> replaces <exe dir>/mgr.toml, so test
     // runs never read or save the user's configuration.
     if (const char* config = std::getenv("MGR_CONFIG_PATH"); config && *config)
@@ -67,6 +72,10 @@ class MgrApp : public rex::ReXApp {
     config_path_ = paths.config_path;
     MgrTestScriptSetSaveHandler([path = config_path_] { MgrSaveConfig(path); });
     game_root_ = paths.game_data_root;
+  }
+
+  void OnConfigureLogging(rex::LogConfig& config) override {
+    if (bundle_layout_) config.log_dir = bundle_layout_->logs;
   }
 
   void OnConfigureFonts(ImFontAtlas* atlas) override {
@@ -91,6 +100,24 @@ class MgrApp : public rex::ReXApp {
 #endif
 
  private:
+  // The .app bundle is read-only: defaults move to Application Support, while
+  // an explicit --flag or REX_* value still wins (#383: mgr.toml loads later).
+  void ApplyBundlePaths(rex::PathConfig& paths) {
+    const auto root = mgr_bundle::DataRoot(mgr_bundle::HomeDir());
+    bundle_layout_ = mgr_bundle::Layout(root);
+    const auto is_default = [](const char* name) {
+      return rex::cvar::GetFlagSource(name) == rex::cvar::Source::kDefault;
+    };
+    if (is_default("game_data_root")) paths.game_data_root = bundle_layout_->game;
+    if (is_default("user_data_root")) paths.user_data_root = bundle_layout_->user;
+    if (is_default("cache_root")) paths.cache_root = bundle_layout_->cache;
+    paths.config_path = bundle_layout_->config;
+    std::error_code error;
+    std::filesystem::create_directories(root, error);
+    if (error)
+      std::fprintf(stderr, "[mgr] cannot create %s: %s\n", root.c_str(), error.message().c_str());
+  }
+
   // drawer is null without SDK overlays (native renderer): no F2 dialog then.
   void InstallGameUi(rex::ui::ImGuiDrawer* drawer) {
     MgrTestScriptAttachWindow();  // the window has just opened
@@ -263,6 +290,7 @@ class MgrApp : public rex::ReXApp {
   std::jthread capture_thread_;
   std::filesystem::path config_path_;
   std::filesystem::path game_root_;
+  std::optional<mgr_bundle::DataLayout> bundle_layout_;
   std::unique_ptr<MgrOptionsDialog> options_dialog_;
   std::unique_ptr<MgrOptionsDialog> game_options_dialog_;
   std::shared_ptr<uint8_t> settings_callbacks_alive_ = std::make_shared<uint8_t>(0);

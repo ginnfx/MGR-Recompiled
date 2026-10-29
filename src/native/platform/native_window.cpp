@@ -16,6 +16,7 @@
 #include <SDL3/SDL_video.h>
 #include <dlfcn.h>
 #include <mach-o/dyld.h>
+#include <sys/stat.h>
 
 #include <cstdint>
 #include <cstdlib>
@@ -56,7 +57,10 @@ bool PrepareVulkanLoader() {
   SetenvIfUnset("MVK_CONFIG_SEMAPHORE_SUPPORT_STYLE", "3");
   SetenvIfUnset("MVK_CONFIG_PRESENT_WITH_COMMAND_BUFFER", "1");
 
-  const std::string dir = ExecutableDir() + "/vulkan";
+  // build/vulkan, or Contents/Resources/vulkan in the .app (as the SDK finder).
+  std::string dir = ExecutableDir() + "/vulkan";
+  if (struct stat info; stat(dir.c_str(), &info) != 0)
+    dir = ExecutableDir() + "/../Resources/vulkan";
   const std::string icd = dir + "/share/vulkan/icd.d/MoltenVK_icd.json";
   SetenvIfUnset("VK_DRIVER_FILES", icd);
   SetenvIfUnset("VK_ICD_FILENAMES", icd);

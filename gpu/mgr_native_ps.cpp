@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 
 namespace rex::graphics::vulkan::mgr_native {
@@ -66,6 +67,18 @@ bool ParseInputLocations(PixelShader& shader) {
   return true;
 }
 
+// Next to the executable in build/, Contents/Resources in the .app (codesign
+// rejects data files in Contents/MacOS).
+std::string DefaultBundlePath() {
+  constexpr const char* kName = "mgr_native_shaders.xrnb";
+  const auto exe_dir = rex::filesystem::GetExecutableFolder();
+  const auto beside = exe_dir / kName;
+  const auto resources = exe_dir.parent_path() / "Resources" / kName;
+  if (!std::filesystem::exists(beside) && std::filesystem::exists(resources))
+    return resources.string();
+  return beside.string();
+}
+
 }  // namespace
 
 bool NativePixelShaders::Initialize(const ui::vulkan::VulkanDevice* device) {
@@ -76,9 +89,7 @@ bool NativePixelShaders::Initialize(const ui::vulkan::VulkanDevice* device) {
     return true;
   }
   const char* override_path = std::getenv("MGR_NATIVE_SHADERS");
-  const std::string path = override_path && *override_path
-      ? override_path
-      : (rex::filesystem::GetExecutableFolder() / "mgr_native_shaders.xrnb").string();
+  const std::string path = override_path && *override_path ? override_path : DefaultBundlePath();
   if (!LoadBundle(path)) {
     REXGPU_WARN("MGR native PS: no shader bundle at {}; using Xenia shaders", path);
     return true;
