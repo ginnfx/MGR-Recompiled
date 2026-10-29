@@ -21,9 +21,8 @@ constexpr float kOptionHeight = 40.0f;
 constexpr float kFooterHeight = 46.0f;
 constexpr float kArtLeft = 0.14f;       // key art starts 14% in, behind the panel
 constexpr ImWchar kGlyphRanges[] = {0x0020, 0x00FF, 0x2010, 0x2027, 0x2190, 0x2193, 0};
-// The two display sizes only ever draw these, which keeps the atlas (uploaded
+// The percentage size only ever draws these, which keeps the atlas (uploaded
 // in one piece) inside the renderer's 16 MB upload chunk.
-constexpr ImWchar kTitleGlyphs[] = {'.', '.', 'G', 'G', 'M', 'M', 'R', 'R', 0};
 constexpr ImWchar kPercentGlyphs[] = {'%', '%', '0', '9', 0};
 constexpr int kMaxBackdropWidth = 1920;
 
@@ -127,7 +126,6 @@ fs::path AssetDir() {
 }
 
 void LoadFonts(ImFontAtlas* atlas) {
-  g_fonts.title = AddFont(atlas, "JosefinSans.ttf", 110.0f, kTitleGlyphs);
   g_fonts.big = AddFont(atlas, "JosefinSans.ttf", 84.0f, kPercentGlyphs);
   g_fonts.heading = AddFont(atlas, "JosefinSans.ttf", 40.0f);
   g_fonts.mark = AddFont(atlas, "JosefinSans.ttf", 22.0f);
@@ -221,14 +219,13 @@ void Panel::Begin(ImDrawList* dl, float x, float y, float width, bool measure) {
   option_count_ = 0;
 }
 
-std::string Panel::Draw(ImDrawList* dl, ImVec2 screen, int step,
-                        const std::vector<std::string>& steps, const Content& content, int& focus,
-                        bool confirm, bool mouse_enabled) {
+std::string Panel::Draw(ImDrawList* dl, ImVec2 screen, std::string_view header_text,
+                        const Content& content, int& focus, bool confirm, bool mouse_enabled) {
   const auto& f = GetFonts();
   const float width = std::min(kMaxPanelWidth, screen.x - 32.0f);
   const float x = std::max(16.0f, screen.x * 0.05f);
   const float inner = width - 2 * kPad;
-  const float header = 18 + 22 + 16 + 26;  // mark + rail
+  const float header = 18 + 22 + 16;  // wordmark row
 
   focus_ = &focus;
   confirm_ = false;
@@ -249,26 +246,12 @@ std::string Panel::Draw(ImDrawList* dl, ImVec2 screen, int step,
   dl->AddPolyline(poly, 6, kLine, ImDrawFlags_Closed, 1.0f);
   dl->AddRectFilled(a, {a.x + 64, a.y + 2}, kRed);
 
-  // Wordmark and step rail.
+  // Wordmark and page header.
   float y = top + 18;
   SpacedText(dl, f.mark, {x + kPad, y}, kRedHot, "MGR.R.", 6.0f);
   SpacedText(dl, f.mono_small, {x + kPad + SpacedWidth(f.mark, "MGR.R.", 6.0f) + 12, y + 8}, kAsh,
-             "RECOMPILED · MACOS", 2.8f);
-  y += 22 + 16;
-  const float seg = (inner - 4.0f * float(steps.size() - 1)) / float(steps.size());
-  for (size_t i = 0; i < steps.size(); ++i) {
-    const float sx = x + kPad + float(i) * (seg + 4);
-    const bool now = int(i) == step, done = int(i) < step;
-    dl->AddRectFilled({sx, y}, {sx + seg, y + 2}, now ? kRed : done ? kAsh : kLine);
-    char label[48];
-    std::snprintf(label, sizeof(label), "%02zu %s", i + 1, steps[i].c_str());
-    std::string upper = label;
-    for (auto& c : upper) c = char(std::toupper(static_cast<unsigned char>(c)));
-    dl->PushClipRect({sx, y}, {sx + seg, y + 24}, true);
-    SpacedText(dl, f.mono_small, {sx, y + 8}, now ? kBone : kAsh, upper, 1.5f);
-    dl->PopClipRect();
-  }
-  y += 26 + 20;
+             header_text, 2.8f);
+  y += 22 + 16 + 20;
 
   // Content, then the footer prompts.
   focus_ = &focus;

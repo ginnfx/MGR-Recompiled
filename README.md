@@ -121,7 +121,7 @@ scripts/package-macos.sh
 
 To try the first-run setup from a dev build, run `build/mgr` (not `scripts/run.sh`, which passes the game folder) with `MGR_SETUP_DATA_ROOT` set to an empty folder: it uses the app's data layout there
 
-This builds `build-release/` for macOS 14 and writes `MGR Recompiled.app`, the `.dmg` and its SHA-256 to `dist/`, with debug symbols in `dist/symbols-<version>/`. Set `MGR_VERSION` for the version number, `SIGN_IDENTITY` to sign with a Developer ID instead of ad-hoc, and `MGR_SETUP_BACKGROUND` for the setup screen art (the icon art by default)
+This builds `build-release/` for macOS 14 and writes `MGR Recompiled.app`, the `.dmg` and its SHA-256 to `dist/`, with debug symbols in `dist/symbols-<version>/`. Set `MGR_VERSION` for the version number, `SIGN_IDENTITY` to sign with a Developer ID instead of ad-hoc, and `MGR_SETUP_BACKGROUND` for the setup screen art (`private/setup_background.jpg` by default; it isn't in git, and packaging stops without it)
 
 If the supported disc's files ever change, regenerate the install manifest:
 

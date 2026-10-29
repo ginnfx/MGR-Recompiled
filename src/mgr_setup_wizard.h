@@ -1,6 +1,6 @@
 // Full-window first-run setup drawn with Dear ImGui over the game window
-// (native renderer). Same flow as the HTML prototype: title card, pick the
-// game copy, check it, optional DLC, install, play.
+// (native renderer). Same pages as Unleashed Recompiled's installer: intro,
+// game, optional DLC, space check, install, done.
 #pragma once
 
 #include <filesystem>

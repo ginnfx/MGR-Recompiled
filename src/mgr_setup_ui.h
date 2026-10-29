@@ -31,7 +31,6 @@ inline constexpr ImU32 kPanel = IM_COL32(8, 13, 17, 205);
 inline constexpr ImU32 kLine = IM_COL32(235, 232, 227, 41);
 
 struct Fonts {
-  ImFont* title = nullptr;    // display, title card
   ImFont* big = nullptr;      // display, install percentage
   ImFont* heading = nullptr;  // display, screen heading
   ImFont* mark = nullptr;     // display, MGR.R. wordmark
@@ -96,10 +95,10 @@ class Panel {
  public:
   using Content = std::function<void(Panel&)>;
 
-  // Draws the panel with the given step rail position and returns the id of
-  // the option activated this frame (empty if none).
-  std::string Draw(ImDrawList* dl, ImVec2 screen, int step, const std::vector<std::string>& steps,
-                   const Content& content, int& focus, bool confirm, bool mouse_enabled);
+  // Draws the panel under the wordmark and header ("INSTALLER") and returns
+  // the id of the option activated this frame (empty if none).
+  std::string Draw(ImDrawList* dl, ImVec2 screen, std::string_view header, const Content& content,
+                   int& focus, bool confirm, bool mouse_enabled);
 
   void Eyebrow(std::string_view text);
   void Heading(std::string_view text);

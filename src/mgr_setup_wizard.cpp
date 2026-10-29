@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <atomic>
-#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -28,12 +27,12 @@ namespace ui = mgr_setup_ui;
 using mgr_install::DlcCheck;
 using mgr_install::XexCheck;
 
-constexpr float kCheckRowSeconds = 0.26f;
-const std::vector<std::string> kSteps = {"Your copy", "Check", "DLC", "Install", "Play"};
+constexpr double kGiB = 1024.0 * 1024.0 * 1024.0;
+constexpr uint64_t kSpaceMargin = 256ull << 20;  // logs, cache and the install marker
 
-std::string Gb(uint64_t bytes) {
+std::string GiB(uint64_t bytes) {
   char text[32];
-  std::snprintf(text, sizeof(text), "%.2f GB", double(bytes) / 1e9);
+  std::snprintf(text, sizeof(text), "%.2f GiB", double(bytes) / kGiB);
   return text;
 }
 
@@ -50,18 +49,6 @@ std::string Shorten(const std::string& text, size_t max) {
   return text.size() <= max ? text : text.substr(0, max - 1) + "…";
 }
 
-// Row of the copy check where each verdict stops.
-int FailedRow(XexCheck check) {
-  switch (check) {
-    case XexCheck::kNotXex: return 0;
-    case XexCheck::kOtherGame: return 1;
-    case XexCheck::kOtherVersion: return 2;
-    case XexCheck::kModified: return 4;
-    case XexCheck::kOk: return -1;
-  }
-  return 0;
-}
-
 // Controller buttons, latched by an SDL event watch and consumed per frame.
 enum PadBits : uint32_t { kPadUp = 1, kPadDown = 2, kPadA = 4, kPadB = 8, kPadAny = 16 };
 
@@ -71,7 +58,7 @@ class SetupWizard final : public rex::ui::ImGuiDialog {
               MgrSetupReason reason, std::function<void(bool)> done)
       : ImGuiDialog(drawer), immediate_(immediate), data_root_(std::move(data_root)),
         reason_(reason), done_(std::move(done)),
-        screen_(reason == MgrSetupReason::kFirstRun ? Screen::kTitle : Screen::kWelcome) {
+        screen_(Screen::kIntro) {
     SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     SDL_AddEventWatch(WatchPad, this);
   }
@@ -88,7 +75,8 @@ class SetupWizard final : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override;
 
  private:
-  enum class Screen { kTitle, kWelcome, kCheck, kDlc, kInstall, kFailed, kDone };
+  // Same pages as Unleashed Recompiled's installer.
+  enum class Screen { kIntro, kGame, kDlc, kSpace, kInstall, kFailed, kDone };
 
   struct Dlc {
     fs::path path;
@@ -96,30 +84,27 @@ class SetupWizard final : public rex::ui::ImGuiDialog {
   };
 
   static bool SDLCALL WatchPad(void* self, SDL_Event* event);
-  void Go(Screen screen, std::string notice = {});
+  void Go(Screen screen);
   void Finish(bool installed);
   void Pick(bool folder);
   void PickDlc();
   void StartInstall();
   void Content(ui::Panel& panel);
-  void DrawTitle(ImDrawList* dl, ImVec2 size);
+  uint64_t RequiredBytes();
   std::string DrawScreen(ImDrawList* dl, ImVec2 size, uint32_t pad, bool confirm);
   void Act(const std::string& id);
   void Back();
-  float Since() const;
 
   rex::ui::ImmediateDrawer* immediate_;
   fs::path data_root_;
   MgrSetupReason reason_;
   std::function<void(bool)> done_;
   Screen screen_;
-  std::string notice_;
   int focus_ = 0;
   bool pad_mode_ = false;
   bool finished_ = false;
   ui::Backdrop backdrop_;
   ui::Panel panel_;
-  std::chrono::steady_clock::time_point screen_start_ = std::chrono::steady_clock::now();
 
   std::atomic<uint32_t> pad_edges_{0};
   std::vector<SDL_Gamepad*> pads_;
@@ -128,7 +113,7 @@ class SetupWizard final : public rex::ui::ImGuiDialog {
   std::unique_ptr<mgr_install::GameSource> source_;
   std::string copy_name_;
   XexCheck xex_ = XexCheck::kNotXex;
-  bool copy_is_folder_ = false;
+  bool picked_ = false;
 
   std::mutex dlc_mutex_;
   std::vector<Dlc> dlc_;
@@ -143,7 +128,6 @@ class SetupWizard final : public rex::ui::ImGuiDialog {
   std::atomic<bool> worker_done_{false};
   mgr_install::InstallResult result_;
   uint64_t total_bytes_ = 0;
-  std::chrono::steady_clock::time_point install_start_;
 };
 
 bool SDLCALL SetupWizard::WatchPad(void* self, SDL_Event* event) {
@@ -164,15 +148,9 @@ bool SDLCALL SetupWizard::WatchPad(void* self, SDL_Event* event) {
   return true;
 }
 
-float SetupWizard::Since() const {
-  return std::chrono::duration<float>(std::chrono::steady_clock::now() - screen_start_).count();
-}
-
-void SetupWizard::Go(Screen screen, std::string notice) {
+void SetupWizard::Go(Screen screen) {
   screen_ = screen;
-  notice_ = std::move(notice);
   focus_ = 0;
-  screen_start_ = std::chrono::steady_clock::now();
 }
 
 void SetupWizard::Finish(bool installed) {
@@ -187,7 +165,7 @@ void SetupWizard::Finish(bool installed) {
 void SetupWizard::Pick(bool folder) {
   const auto chosen = MgrPickGameCopy(folder);
   if (!chosen) return;
-  copy_is_folder_ = folder;
+  picked_ = true;
   copy_name_ = chosen->filename().string();
   if (folder) {
     std::error_code ec;
@@ -199,7 +177,7 @@ void SetupWizard::Pick(bool folder) {
   }
   xex_ = source_ ? mgr_install::CheckSourceXex(*source_) : XexCheck::kNotXex;
   REXLOG_INFO("Setup: {} -> {}", chosen->string(), mgr_install::Describe(xex_));
-  Go(Screen::kCheck);
+  Go(Screen::kGame);  // focus lands on Next when the copy is good
 }
 
 void SetupWizard::PickDlc() {
@@ -227,6 +205,13 @@ void SetupWizard::PickDlc() {
   });
 }
 
+uint64_t SetupWizard::RequiredBytes() {
+  uint64_t total = mgr_install::TotalBytes(mgr_install::Manifest());
+  std::lock_guard lock(dlc_mutex_);
+  for (const auto& d : dlc_) total += d.info.size;
+  return total;
+}
+
 void SetupWizard::StartInstall() {
   if (worker_.joinable()) worker_.join();
   std::vector<Dlc> dlc;
@@ -234,13 +219,11 @@ void SetupWizard::StartInstall() {
     std::lock_guard lock(dlc_mutex_);
     dlc = dlc_;
   }
-  total_bytes_ = mgr_install::TotalBytes(mgr_install::Manifest());
-  for (const auto& d : dlc) total_bytes_ += d.info.size;
+  total_bytes_ = RequiredBytes();
   cancel_ = false;
   confirm_cancel_ = false;
   done_bytes_ = 0;
   worker_done_ = false;
-  install_start_ = std::chrono::steady_clock::now();
   Go(Screen::kInstall);
   worker_ = std::thread([this, dlc = std::move(dlc)] {
     auto result = mgr_install::InstallFrom(
@@ -256,13 +239,14 @@ void SetupWizard::StartInstall() {
 }
 
 void SetupWizard::Act(const std::string& id) {
-  if (id == "start") Go(Screen::kWelcome);
-  else if (id == "pick-disc") Pick(false);
-  else if (id == "pick-folder") Pick(true);
-  else if (id == "back") Go(Screen::kWelcome);
-  else if (id == "next") Go(Screen::kDlc);
-  else if (id == "pick-dlc") PickDlc();
+  if (id == "intro-next") Go(Screen::kGame);
+  else if (id == "add-files") Pick(false);
+  else if (id == "add-folder") Pick(true);
+  else if (id == "game-next") Go(Screen::kDlc);
+  else if (id == "add-dlc") PickDlc();
+  else if (id == "dlc-next") Go(Screen::kSpace);
   else if (id == "install") StartInstall();
+  else if (id == "retry") Go(Screen::kGame);
   else if (id == "cancel") { confirm_cancel_ = true; focus_ = 0; }
   else if (id == "keep") { confirm_cancel_ = false; focus_ = 0; }
   else if (id == "stop") { cancel_ = true; confirm_cancel_ = false; }
@@ -272,8 +256,9 @@ void SetupWizard::Act(const std::string& id) {
 
 void SetupWizard::Back() {
   switch (screen_) {
-    case Screen::kCheck:
-    case Screen::kDlc: Go(Screen::kWelcome); break;
+    case Screen::kGame: Go(Screen::kIntro); break;
+    case Screen::kDlc: Go(Screen::kGame); break;
+    case Screen::kSpace: Go(Screen::kDlc); break;
     case Screen::kInstall:
       confirm_cancel_ = !confirm_cancel_;
       focus_ = 0;
@@ -282,177 +267,94 @@ void SetupWizard::Back() {
   }
 }
 
-void SetupWizard::DrawTitle(ImDrawList* dl, ImVec2 size) {
-  const auto& f = ui::GetFonts();
-  const float spacing = f.title ? f.title->LegacySize * 0.32f : 20;
-  const float w = ui::SpacedWidth(f.title, "MGR.R.", spacing) - spacing;
-  const float y = size.y * 0.40f;
-  ui::SpacedText(dl, f.title, {(size.x - w) / 2, y - 60}, ui::kRed, "MGR.R.", spacing);
-  const char* sub = "METAL GEAR RISING: REVENGEANCE · RECOMPILED";
-  const float sw = ui::SpacedWidth(f.mono_small, sub, 3.3f);
-  ui::SpacedText(dl, f.mono_small, {(size.x - sw) / 2, y + 70}, ui::kAsh, sub, 3.3f);
-  const char* press = pad_mode_ ? "PRESS ANY BUTTON" : "PRESS ENTER OR CLICK";
-  const float pw = ui::SpacedWidth(f.option, press, 4.2f);
-  const float pulse = 0.25f + 0.75f * (0.5f + 0.5f * std::cos(Since() * 3.9f));
-  ui::SpacedText(dl, f.option, {(size.x - pw) / 2, size.y * 0.72f},
-                 IM_COL32(235, 232, 227, int(255 * pulse)), press, 4.2f);
-}
-
 void SetupWizard::Content(ui::Panel& p) {
-  using F = ui::Fact;
-  const std::string goes_to = Tilde(data_root_ / "game");
   switch (screen_) {
-    case Screen::kTitle:
-      break;
-    case Screen::kWelcome: {
+    case Screen::kIntro:
+      p.Heading("Kept you waiting, huh?");
       if (reason_ == MgrSetupReason::kDamaged) {
-        p.Eyebrow("SOMETHING'S OFF");
-        p.Heading("Your game files took a hit");
-        p.Paragraph("They didn't pass the launch check. Pick your copy again and they'll get "
-                    "patched up. Saves and settings stay put.");
+        p.Paragraph("Your game files didn't pass the launch check. Add your copy again to repair "
+                    "them.");
       } else if (reason_ == MgrSetupReason::kRequested) {
-        p.Eyebrow("OPTION HELD");
-        p.Heading("Fresh install?");
-        p.Paragraph("Your files look fine. Want to reinstall anyway, or just play?");
+        p.Paragraph("The game is already installed.");
+        p.Option("play", "Play");
+        p.Option("intro-next", "Reinstall", {}, true);
+        break;
       } else {
-        p.Eyebrow("FIRST LAUNCH");
-        p.Heading("Kept you waiting, huh?");
-        p.Paragraph("Before you start cutting, the game needs your copy. Pick your Xbox 360 disc "
-                    "image or the folder you dumped it to. The files get copied and checked "
-                    "once, then you're in.");
+        p.Paragraph("You'll need an Xbox 360 copy of Metal Gear Rising: Revengeance in order to "
+                    "proceed with the installation.");
       }
-      p.Facts({{"WORKS WITH", "Xbox 360 disc, USA/Europe · 4B4E080A · 6CC18291 · v4"},
-               {"NEEDS", Gb(mgr_install::TotalBytes(mgr_install::Manifest()) + (256ull << 20)) + " free"},
-               {"GOES TO", goes_to, true}});
-      if (!notice_.empty()) p.Alert(notice_, ui::kIce);
-      if (reason_ == MgrSetupReason::kRequested) p.Option("play", "Play", "Jump in");
-      p.Option("pick-disc", "Pick disc image…", ".iso");
-      p.Option("pick-folder", "Pick game folder…", "has default.xex");
-      if (reason_ != MgrSetupReason::kRequested) p.Option("quit", "Quit", {}, true);
+      p.Option("intro-next", "Next");
+      p.Option("quit", "Quit", {}, true);
       break;
-    }
-    case Screen::kCheck: {
-      p.Eyebrow("CHECKING YOUR COPY");
-      p.Heading(copy_is_folder_ ? "Game folder" : "Disc image");
-      p.Paragraph(Shorten(copy_name_, 70), ui::kAsh, ui::GetFonts().mono);
-      const int failed = FailedRow(xex_);
-      const int revealed = std::min(5, int(Since() / kCheckRowSeconds));
-      std::vector<ui::CheckRow> rows = {{"Xbox 360 executable", "XEX2"},
-                                        {"Game", "4B4E080A · MGR:R"},
-                                        {"Disc", "media 6CC18291"},
-                                        {"Version", "4 · no title update"},
-                                        {"default.xex fingerprint", "XXH3 c2e4869d5db4fbc6"}};
-      if (!source_ && copy_is_folder_) rows[0].value = "no default.xex";
-      const int last = failed < 0 ? 4 : failed;
-      for (int i = 0; i < int(rows.size()); ++i) {
-        if (i >= revealed || i > last) continue;
-        rows[i].state = i == failed ? 2 : 1;
-        if (i == failed && i == 1) rows[i].value = "another game";
-        if (i == failed && i == 2) rows[i].value = "another release";
-        if (i == failed && i == 4) rows[i].value = "modified";
-      }
-      p.Checks(rows);
-      if (revealed <= last) break;
-      if (failed >= 0) {
-        p.Alert(!source_ && copy_is_folder_
-                    ? "No default.xex in here. Pick the folder that has default.xex and media/."
-                    : mgr_install::Describe(xex_));
-        p.Option("pick-disc", "Pick a different copy");
-        p.Option("back", "Back", {}, true);
-      } else {
-        p.Paragraph("Legit copy. Nice.");
-        std::error_code ec;
-        const auto space = fs::space(data_root_.parent_path(), ec);
-        p.Facts({{"FILES", std::to_string(mgr_install::Manifest().size()) + " · " +
-                               Gb(mgr_install::TotalBytes(mgr_install::Manifest()))},
-                 {"FREE", ec ? "unknown" : Gb(space.available)}});
-        p.Option("next", "Next", "DLC, if you have it");
-        p.Option("pick-disc", "Pick a different copy", {}, true);
-      }
+    case Screen::kGame: {
+      p.Paragraph("Add the source for the game.");
+      const bool ok = picked_ && xex_ == XexCheck::kOk;
+      p.Checks({{"Game", picked_ ? Shorten(copy_name_, 40) : "", !picked_ ? 0 : ok ? 1 : 2}});
+      if (picked_ && !ok) p.Alert(mgr_install::Describe(xex_));
+      if (ok) p.Option("game-next", "Next");
+      p.Option("add-files", "Add Files", ".iso", ok);
+      p.Option("add-folder", "Add Folder", {}, ok);
       break;
     }
     case Screen::kDlc: {
-      p.Eyebrow("OPTIONAL");
-      p.Heading("Got any DLC?");
-      p.Paragraph("Jetstream, Blade Wolf and VR Missions came as separate Xbox Live downloads. "
-                  "If you've got those packages, toss them in. No DLC? No problem.");
+      p.Paragraph("Add the sources for the DLC.");
       std::lock_guard lock(dlc_mutex_);
       std::vector<ui::CheckRow> rows;
-      for (const auto& d : dlc_) rows.push_back({Shorten(d.info.name, 40), Gb(d.info.size), 1});
-      if (dlc_checking_ > 0) rows.push_back({"Checking package…", "SHA-1", 0});
+      for (const auto& d : dlc_) rows.push_back({Shorten(d.info.name, 40), GiB(d.info.size), 1});
+      if (dlc_checking_ > 0) rows.push_back({"Checking…", {}, 0});
       if (!rows.empty()) p.Checks(rows);
       if (!dlc_notice_.empty()) p.Alert(dlc_notice_);
       if (dlc_checking_ > 0) break;
       if (dlc_.empty()) {
-        p.Option("pick-dlc", "Add DLC…", "Xbox Live packages");
-        p.Option("install", "Skip, just install", "about 30 s", true);
+        p.Option("add-dlc", "Add Files");
+        p.Option("dlc-next", "Skip", {}, true);
       } else {
-        p.Option("install", "Install", "about 30 s");
-        p.Option("pick-dlc", "Add more DLC…", {}, true);
+        p.Option("dlc-next", "Next");
+        p.Option("add-dlc", "Add Files", {}, true);
       }
       break;
     }
+    case Screen::kSpace: {
+      p.Paragraph("The content will be installed to:");
+      p.Paragraph(Tilde(data_root_), ui::kAsh, ui::GetFonts().mono);
+      const uint64_t required = RequiredBytes() + kSpaceMargin;
+      std::error_code ec;
+      const auto space = fs::space(data_root_.parent_path(), ec);
+      p.Paragraph("Required space: " + GiB(required) + "\nAvailable space: " +
+                  (ec ? std::string("unknown") : GiB(space.available)));
+      if (!ec && space.available < required) {
+        p.Alert("There isn't enough free space.");
+        break;
+      }
+      p.Option("install", "Next");
+      break;
+    }
     case Screen::kInstall: {
-      p.Eyebrow("INSTALLING");
-      p.Heading("Hang tight");
+      p.Paragraph("Please wait while the content is being installed...");
       const uint64_t done = std::min<uint64_t>(done_bytes_, total_bytes_);
       const float fraction = total_bytes_ ? float(double(done) / double(total_bytes_)) : 0;
-      // Which manifest file the byte count is in, for the log.
-      const auto manifest = mgr_install::Manifest();
-      size_t file = 0;
-      for (uint64_t sum = 0; file < manifest.size() && sum + manifest[file].size <= done; ++file)
-        sum += manifest[file].size;
-      char pct[16], caption[48];
+      char pct[16];
       std::snprintf(pct, sizeof(pct), "%d%%", int(fraction * 100));
-      std::snprintf(caption, sizeof(caption), "FILE %zu OF %zu",
-                    std::min(file + 1, manifest.size()), manifest.size());
-      p.Progress(fraction, pct, caption);
-      const float seconds = std::chrono::duration<float>(std::chrono::steady_clock::now() -
-                                                         install_start_).count();
-      const double rate = seconds > 0.5f ? double(done) / seconds : 0;
-      char speed[32] = "—", left[32] = "—";
-      if (rate > 0) {
-        std::snprintf(speed, sizeof(speed), "%.0f MB/s", rate / 1e6);
-        std::snprintf(left, sizeof(left), "%.0f s", double(total_bytes_ - done) / rate);
-      }
-      p.Stats({{"COPIED", Gb(done) + " / " + Gb(total_bytes_)}, {"SPEED", speed}, {"LEFT", left}});
-      std::vector<std::pair<std::string, bool>> log;
-      for (size_t i = file >= 3 ? file - 3 : 0; i <= file && i < manifest.size(); ++i)
-        log.emplace_back(manifest[i].path, i == file);
-      p.Log(log);
+      p.Progress(fraction, pct, {});
       if (confirm_cancel_) {
-        p.Alert("Stop now? Whatever's been copied gets thrown out. Nothing else changes.");
-        p.Option("keep", "Keep going");
-        p.Option("stop", "Stop", {}, true);
+        p.Alert("Are you sure you want to cancel the installation?");
+        p.Option("keep", "No");
+        p.Option("stop", "Yes", {}, true);
       } else {
-        p.Option("cancel", "Cancel", "Tosses what's copied so far", true);
+        p.Option("cancel", "Cancel", {}, true);
       }
       break;
     }
     case Screen::kFailed:
-      p.Eyebrow("INSTALL STOPPED");
-      p.Heading("This copy's busted");
+      p.Paragraph("Installation failed.");
       p.Alert(result_.error);
-      p.Paragraph("Nothing got installed and the half-done copy is gone. Grab a fresh dump and "
-                  "try again.");
-      p.Option("pick-disc", "Pick a different copy");
+      p.Option("retry", "Retry");
       p.Option("quit", "Quit", {}, true);
       break;
-    case Screen::kDone: {
-      p.Eyebrow("ALL SET");
-      p.Heading("Ready when you are");
-      std::string text = std::to_string(mgr_install::Manifest().size()) + " files copied and checked";
-      {
-        std::lock_guard lock(dlc_mutex_);
-        if (!dlc_.empty()) text += ", plus " + std::to_string(dlc_.size()) + " DLC (unpacked on first launch)";
-      }
-      p.Paragraph(text + ". You won't see this again unless something breaks or you hold Option "
-                  "while opening the app.");
-      p.Facts({{"SAVES", Tilde(data_root_ / "user"), true},
-               {"SETTINGS", "Options → Video, in game"}});
+    case Screen::kDone:
+      p.Paragraph("Installation complete!");
       p.Option("play", "Play");
       break;
-    }
   }
 }
 
@@ -463,7 +365,7 @@ void SetupWizard::OnDraw(ImGuiIO& io) {
     worker_.join();
     worker_done_ = false;
     if (result_.ok) Go(Screen::kDone);
-    else if (result_.cancelled) Go(Screen::kWelcome, "Install stopped. The half-done copy's been cleaned up.");
+    else if (result_.cancelled) Go(Screen::kSpace);
     else Go(Screen::kFailed);
   }
 
@@ -509,25 +411,19 @@ void SetupWizard::OnDraw(ImGuiIO& io) {
 
 std::string SetupWizard::DrawScreen(ImDrawList* dl, ImVec2 size, uint32_t pad, bool confirm) {
   backdrop_.Draw(dl, size, immediate_);
-  if (screen_ == Screen::kTitle) {
-    DrawTitle(dl, size);
-    if (confirm || (pad & kPadAny) || ImGui::IsMouseClicked(ImGuiMouseButton_Left)) return "start";
-    return {};
-  }
-
-  const int step = screen_ == Screen::kWelcome ? 0
-                   : screen_ == Screen::kCheck ? 1
-                   : screen_ == Screen::kDlc   ? 2
-                   : screen_ == Screen::kDone  ? 4
-                                               : 3;
+  const char* header = screen_ == Screen::kInstall ? "INSTALLING"
+                       : screen_ == Screen::kDone  ? "COMPLETE"
+                                                   : "INSTALLER";
   std::string activated =
-      panel_.Draw(dl, size, step, kSteps, [this](ui::Panel& p) { Content(p); }, focus_, confirm, true);
+      panel_.Draw(dl, size, header, [this](ui::Panel& p) { Content(p); }, focus_, confirm, true);
   const int count = panel_.option_count();
   if (count > 0) {
     if (pad & kPadDown || ImGui::IsKeyPressed(ImGuiKey_DownArrow)) focus_ = (focus_ + 1) % count;
     if (pad & kPadUp || ImGui::IsKeyPressed(ImGuiKey_UpArrow)) focus_ = (focus_ + count - 1) % count;
   }
-  ui::Prompts(dl, panel_.FooterAnchor(), pad_mode_, screen_ != Screen::kWelcome && screen_ != Screen::kDone);
+  const bool with_back = screen_ != Screen::kIntro && screen_ != Screen::kDone &&
+                         screen_ != Screen::kFailed;
+  ui::Prompts(dl, panel_.FooterAnchor(), pad_mode_, with_back);
   return activated;
 }
 
