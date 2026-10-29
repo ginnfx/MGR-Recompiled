@@ -144,6 +144,16 @@ execute_process(COMMAND git describe --always --dirty WORKING_DIRECTORY ${CMAKE_
                 OUTPUT_VARIABLE MGR_GIT_REV OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
 target_compile_definitions(mgr PRIVATE MGR_BUILD_ID="${MGR_GIT_REV}")
 
+# First-run install of the player's game files (packaged app only).
+enable_language(OBJCXX)
+target_sources(mgr PRIVATE src/mgr_game_install.cpp src/mgr_disc_source.cpp
+    src/mgr_setup_mac.mm)
+set_source_files_properties(src/mgr_setup_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+target_link_libraries(mgr PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers")
+if(NOT MGR_NATIVE_RENDERER)  # cmake/native_renderer.cmake links it otherwise
+    target_link_libraries(mgr PRIVATE rex::xxhash)
+endif()
+
 # Explicit target for the opt-in timing hook checks; excluded from normal builds.
 add_executable(mgr_timing_checks EXCLUDE_FROM_ALL
     tests/mgr_timing_checks.cpp src/mgr_timing.cpp)

@@ -13,8 +13,10 @@
 #include <rex/ui/presenter.h>
 
 #include "mgr_bundle_paths.h"
+#include "mgr_game_install.h"
 #include "mgr_options_dialog.h"
 #include "mgr_settings.h"
+#include "mgr_setup.h"
 #include "mgr_game_options.h"
 #include "mgr_native_options.h"
 #include "mgr_menu_fonts.h"
@@ -76,6 +78,25 @@ class MgrApp : public rex::ReXApp {
 
   void OnConfigureLogging(rex::LogConfig& config) override {
     if (bundle_layout_) config.log_dir = bundle_layout_->logs;
+  }
+
+  // The packaged app installs the player's game files on first launch, when
+  // they fail the quick check, or when Option is held. Dev runs and an
+  // explicit --game_data_root never see setup.
+  std::optional<rex::PathConfig> OnFinalizePaths(
+      const rex::PathConfig& defaults, std::function<void(rex::PathConfig)> resume) override {
+    if (!bundle_layout_ || defaults.game_data_root != bundle_layout_->game) return defaults;
+    const bool installed = mgr_install::IsInstalled(defaults.game_data_root);
+    if (installed && !MgrSetupRequested()) return defaults;
+    const bool damaged = !installed && std::filesystem::exists(defaults.game_data_root);
+    MgrRunSetup(defaults.game_data_root.parent_path(), damaged,
+                [this, defaults, resume = std::move(resume)](bool ok) {
+                  if (ok)
+                    resume(defaults);
+                  else
+                    app_context().QuitFromUIThread();
+                });
+    return std::nullopt;
   }
 
   void OnConfigureFonts(ImFontAtlas* atlas) override {
