@@ -355,19 +355,13 @@ void Video::Present(GuestTexture *frontBuffer) {
   }
 
   const u32 cur = s.frame.load(std::memory_order_relaxed);
-  s.command_lists[cur]->end();
-  s.command_list_open = false;
-
-  const plume::RenderCommandList *lists[] = {s.command_lists[cur].get()};
   plume::RenderCommandSemaphore *waits[] = {s.acquire_semaphores[cur].get()};
   plume::RenderCommandSemaphore *signals[] = {
       s.render_semaphores[texture_index].get()};
   {
     MGRN_CPU_ZONE("Submit");
-    s.queue->executeCommandLists(lists, 1, waits, 1, signals, 1,
-                                 s.fences[cur].get());
+    SubmitFrameListLocked(s, waits, 1, signals, 1);
   }
-  s.command_list_submitted[cur] = true;
   FinishDepthProbes(s, cur);  // MGR dev: draw-dump depth readback
   FinishCapture(s, cur);
   ApplyVsync(s);
@@ -477,15 +471,10 @@ void Video::PresentOverlayFrame() {
       plume::RenderBarrierStage::GRAPHICS,
       plume::RenderTextureBarrier(back, plume::RenderTextureLayout::PRESENT));
 
-  s.command_lists[cur]->end();
-  s.command_list_open = false;
-  const plume::RenderCommandList *lists[] = {s.command_lists[cur].get()};
   plume::RenderCommandSemaphore *waits[] = {s.acquire_semaphores[cur].get()};
   plume::RenderCommandSemaphore *signals[] = {
       s.render_semaphores[texture_index].get()};
-  s.queue->executeCommandLists(lists, 1, waits, 1, signals, 1,
-                               s.fences[cur].get());
-  s.command_list_submitted[cur] = true;
+  SubmitFrameListLocked(s, waits, 1, signals, 1);
   FinishCapture(s, cur);
   ApplyVsync(s);
   if (!s.swap_chain->present(texture_index, signals, 1)) {

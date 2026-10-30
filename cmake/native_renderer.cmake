@@ -60,6 +60,10 @@ endforeach()
 
 file(GLOB_RECURSE MGR_NATIVE_SOURCES CONFIGURE_DEPENDS
     ${CMAKE_SOURCE_DIR}/src/native/*.cpp ${CMAKE_SOURCE_DIR}/src/native/*.h)
+# Objective-C++ (the MetalFX upscaler), compiled with ARC.
+file(GLOB_RECURSE MGR_NATIVE_OBJC_SOURCES CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/src/native/*.mm)
+set_source_files_properties(${MGR_NATIVE_OBJC_SOURCES} PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+list(APPEND MGR_NATIVE_SOURCES ${MGR_NATIVE_OBJC_SOURCES})
 # OBJECT, not STATIC: a static archive drops the REX_HOOK override symbols
 # because nothing references them by name.
 add_library(mgr_native OBJECT ${MGR_NATIVE_SOURCES} ${MGR_NATIVE_HOST_SHADER_HEADERS}
@@ -86,5 +90,6 @@ mgr_apply_compiler_options(mgr_native)
 
 target_sources(mgr PRIVATE $<TARGET_OBJECTS:mgr_native>)
 target_link_libraries(mgr PRIVATE plume rex::xxhash "-framework Cocoa" "-framework QuartzCore"
-    "-framework Metal" "-framework Foundation" "-framework IOKit" "-framework IOSurface")
+    "-framework Metal" "-framework MetalFX" "-framework Foundation" "-framework IOKit"
+    "-framework IOSurface")
 target_compile_definitions(mgr PRIVATE MGR_NATIVE_RENDERER=1)

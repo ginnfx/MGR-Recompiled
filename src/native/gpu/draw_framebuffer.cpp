@@ -75,6 +75,17 @@ void ResolveEffectiveTargets(VideoState &s, GuestTexture *&rt,
   // so their depth tests all passed). ClearLocked clears such a depth alone.
   if (rt && ds && rt->sampleCount != ds->sampleCount)
     ds = nullptr;
+  // While upscaling, the composite renders at the output size over the depth
+  // the scene drew at the input size. It draws with depth testing off.
+  if (rt && ds && (rt->width > ds->width || rt->height > ds->height)) {
+    if (s.pipelineState.zEnable) {
+      u32 n;
+      if (DiagShouldLog(7, rt, &n))
+        MGRN_DEV_WARN("[upscale] #{} depth {}x{} dropped from a depth-tested draw into {}x{}",
+                      n, ds->width, ds->height, rt->width, rt->height);
+    }
+    ds = nullptr;
+  }
 }
 
 namespace {

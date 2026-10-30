@@ -123,23 +123,35 @@ gpu::GuestTexture* FindResolvedAlias(u32 texture_va) {
 // Scaled targets record their guest size and the generation they were built
 // at, so a later resolution or shadow setting change can resize them in place.
 void MarkSceneScale(gpu::GuestTexture* texture, u32 guest_width, u32 guest_height,
-                    bool eligible) {
+                    bool eligible, bool depth, bool surface) {
   texture->followsSceneScale = eligible && gpu::IsSceneShapedTarget(guest_width, guest_height);
   texture->followsShadowScale = eligible && gpu::IsShadowShapedTarget(guest_width, guest_height);
   texture->guestWidth = guest_width;
   texture->guestHeight = guest_height;
   texture->targetGeneration = gpu::RenderTargetGeneration();
-  texture->renderScale = texture->followsSceneScale    ? gpu::SceneRenderScale()
+  texture->renderScale = texture->followsSceneScale
+                             ? gpu::SceneTargetScale(guest_width, guest_height, depth, surface)
                          : texture->followsShadowScale ? gpu::ShadowRenderScale()
                                                        : 1.0f;
 }
 
-// Scene targets follow mgr_resolution_scale; shadow targets mgr_shadow_resolution.
-f32 SceneScaleFor(u32 guest_width, u32 guest_height, bool eligible) {
+// Scene targets follow mgr_resolution_scale (and mgr_upscaler); shadow targets
+// mgr_shadow_resolution.
+f32 SceneScaleFor(u32 guest_width, u32 guest_height, bool eligible, bool depth, bool surface) {
   if (!eligible) return 1.0f;
-  if (gpu::IsSceneShapedTarget(guest_width, guest_height)) return gpu::SceneRenderScale();
+  if (gpu::IsSceneShapedTarget(guest_width, guest_height))
+    return gpu::SceneTargetScale(guest_width, guest_height, depth, surface);
   if (gpu::IsShadowShapedTarget(guest_width, guest_height)) return gpu::ShadowRenderScale();
   return 1.0f;
+}
+
+bool IsDepthGuestFormat(u32 guest_format) {
+  return gpu::IsDepthFormat(gpu::ConvertGuestFormat(guest_format));
+}
+
+bool IsSurface(const gpu::GuestTexture* texture) {
+  return texture->type == gpu::ResourceType::RenderTarget ||
+         texture->type == gpu::ResourceType::DepthStencil;
 }
 
 // Rebuilds a target at the current scale and sample count when a setting has
@@ -149,7 +161,10 @@ gpu::GuestTexture* EnsureTargetSettings(gpu::GuestTexture* texture) {
   texture->targetGeneration = gpu::RenderTargetGeneration();
   if (!texture->followsSceneScale && !texture->followsShadowScale && !texture->followsMSAA)
     return texture;
-  const f32 scale = texture->followsSceneScale    ? gpu::SceneRenderScale()
+  const f32 scale = texture->followsSceneScale
+                        ? gpu::SceneTargetScale(texture->guestWidth, texture->guestHeight,
+                                                gpu::IsDepthFormat(texture->format),
+                                                IsSurface(texture))
                     : texture->followsShadowScale ? gpu::ShadowRenderScale()
                                                   : texture->renderScale;
   const auto samples =
@@ -170,12 +185,13 @@ gpu::GuestTexture* CreateSurfaceTexture(u32 surface_va, const SurfaceCreateArgs&
                         ? gpu::Video::CvarMSAASampleCount()
                         : plume::RenderSampleCounts(plume::RenderSampleCount::COUNT_1);
   if (gpu::ConvertGuestFormat(args.format) == plume::RenderFormat::UNKNOWN) return nullptr;
-  const f32 scale = SceneScaleFor(args.width, args.height, true);
+  const bool depth = IsDepthGuestFormat(args.format);
+  const f32 scale = SceneScaleFor(args.width, args.height, true, depth, true);
   auto* surface = gpu::SurfaceRegistry::Get(gpu::ScaleExtent(args.width, scale),
                                             gpu::ScaleExtent(args.height, scale), args.format,
                                             u32(msaa));
   if (!surface) return nullptr;
-  MarkSceneScale(surface, args.width, args.height, true);
+  MarkSceneScale(surface, args.width, args.height, true, depth, true);
   surface->followsMSAA = args.multisample != 0 || scene_surface;
   // The registry recycles entries whose reference count reads 0, which in
   // re:Blue the guest maintained. Here the guest object is separate, so pin it.
@@ -198,7 +214,8 @@ gpu::GuestTexture* CreateRenderableTexture(u32 texture_va, const TextureCreateAr
 
   // Resolve destinations of scaled screen targets are scaled with them.
   const bool scalable = !is_volume && !is_cube;
-  const f32 scale = SceneScaleFor(args.width, args.height, scalable);
+  const f32 scale =
+      SceneScaleFor(args.width, args.height, scalable, gpu::IsDepthFormat(format), false);
   auto* texture = gpu::HostResourceHeap::Alloc<gpu::GuestTexture>(rtype);
   plume::RenderTextureDesc desc;
   desc.dimension = is_volume ? plume::RenderTextureDimension::TEXTURE_3D
@@ -237,7 +254,7 @@ gpu::GuestTexture* CreateRenderableTexture(u32 texture_va, const TextureCreateAr
   }
   texture->width = desc.width;
   texture->height = desc.height;
-  MarkSceneScale(texture, args.width, args.height, scalable);
+  MarkSceneScale(texture, args.width, args.height, scalable, gpu::IsDepthFormat(format), false);
   texture->depth = args.depth;
   texture->mipLevels = desc.mipLevels;
   texture->format = format;

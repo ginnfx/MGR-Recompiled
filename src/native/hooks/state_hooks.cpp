@@ -26,6 +26,7 @@
 #include "gpu/host_resource_heap.h"
 #include "gpu/physical_buffers.h"
 #include "gpu/shaders/shader_constants.h"
+#include "gpu/upscale.h"
 #include "hooks/hook_macros.h"
 #include "hooks/resources.h"
 
@@ -44,7 +45,10 @@ void NoteExtraRenderTarget(u32 index, u32 surface_va) {
 void MirrorRenderTarget(u32 device_va, u32 index, u32 surface_va) {
   // MRT is not modeled: only RT0 drives the framebuffer.
   if (index != 0) return NoteExtraRenderTarget(index, surface_va);
-  gpu::GuestTexture* surface = mgrn::native::ResolveSurface(surface_va);
+  // While the upscaler redirects the composite, its target binds the
+  // output-size stand-in.
+  gpu::GuestTexture* surface =
+      gpu::upscale::RedirectTarget(mgrn::native::ResolveSurface(surface_va));
   auto& s = gpu::state();
   if (s.render_target != surface) s.draw_framebuffer_bound = false;
   gpu::Video::SetDirtyValue<gpu::GuestTexture*>(s.dirtyStates.renderTargetAndDepthStencil,

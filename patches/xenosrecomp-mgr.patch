@@ -102,7 +102,7 @@ index 754198c..24a33b5 100644
  
          StringBuffer f;
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index 63c37c9..96dc0da 100644
+index 63c37c9..6a01d34 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
 @@ -3,27 +3,41 @@
@@ -257,13 +257,18 @@ index 63c37c9..96dc0da 100644
  
  uint2 getTexture2DDimensions(Texture2D<float4> texture)
  {
-@@ -112,10 +165,17 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
+@@ -112,10 +165,22 @@ uint2 getTexture2DDimensions(Texture2D<float4> texture)
      return dimensions;
  }
  
-+// MGR: implicit-LOD sampling is illegal outside pixel/compute stages.
++// MGR: implicit-LOD sampling is illegal outside pixel/compute stages. Pixel
++// shaders take the upscaler's mip bias (g_MipBias, 0 unless upscaling), which
++// Metal samplers can't carry on every GPU.
 +#ifdef XENOS_VERTEX_SHADER
 +#define XENOS_SAMPLE(tex, smp, uv) (tex).SampleLevel((smp), (uv), 0)
++#elif defined(__spirv__) && defined(MGR_NATIVE_PIPELINE)
++#define g_MipBias XR_SHARED_CONST(float, 600)
++#define XENOS_SAMPLE(tex, smp, uv) (tex).SampleBias((smp), (uv), g_MipBias)
 +#else
 +#define XENOS_SAMPLE(tex, smp, uv) (tex).Sample((smp), (uv))
 +#endif
@@ -276,7 +281,7 @@ index 63c37c9..96dc0da 100644
  }
  
  float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
-@@ -218,7 +278,7 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+@@ -218,7 +283,7 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
  
  float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
  {
@@ -285,7 +290,7 @@ index 63c37c9..96dc0da 100644
  }
  
  struct CubeMapData
-@@ -236,14 +296,15 @@ struct CubeMapData
+@@ -236,14 +301,15 @@ struct CubeMapData
  
  float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
  {
@@ -304,7 +309,7 @@ index 63c37c9..96dc0da 100644
      {
          uint v = asuint(value.x);
          return float4(
-@@ -303,11 +364,41 @@ float4 cube(float4 value, inout CubeMapData cubeMapData)
+@@ -303,11 +369,41 @@ float4 cube(float4 value, inout CubeMapData cubeMapData)
      return float4(0.0, 0.0, 0.0, index);
  }
  

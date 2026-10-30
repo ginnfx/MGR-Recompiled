@@ -111,6 +111,8 @@ constexpr Choice kPrecision[] = {{"HIGH (ACCURATE)", "high"}, {"FAST (RESTART RE
 constexpr Choice kOutput[] = {{"MATCH GAME", "source"}, {"MATCH DISPLAY", "display"}, {"1920X1080 OUTPUT", "1920x1080"}, {"2560X1440 OUTPUT", "2560x1440"}};
 constexpr Choice kLod[] = {{"GAME DEFAULT", "game"}, {"HIGH", "high"}, {"MAXIMUM", "max"}};
 constexpr Choice kMsaa[] = {{"OFF", "0"}, {"2X", "2"}, {"4X", "4"}, {"8X", "8"}};
+constexpr Choice kUpscaler[] = {{"OFF", "off"}, {"METALFX QUALITY", "metalfx_quality"}, {"METALFX BALANCED", "metalfx_balanced"},
+                                {"METALFX PERFORMANCE", "metalfx_performance"}};
 constexpr Choice kShadow[] = {{"ORIGINAL (1024)", "0"}, {"2048", "2048"}, {"4096", "4096"}};
 constexpr Choice kSharpening[] = {{"OFF", "0"}, {"LOW", "0.3"}, {"MEDIUM", "0.6"}, {"HIGH", "1"}};
 constexpr Choice kBrightness[] = {{"0.7", "0.7"}, {"0.8", "0.8"}, {"0.9", "0.9"}, {"1.0 (DEFAULT)", "1"},
@@ -121,6 +123,7 @@ const Option kVideo[] = {
   {"fullscreen", "FULLSCREEN", "Uses the current display in fullscreen mode.", kBool},
   {"mgr_output_resolution", "OUTPUT RESOLUTION", "Resizes the completed image. Internal rendering detail is controlled separately.", kOutput},
   kInternalResolution,
+  {"mgr_upscaler", "UPSCALING", "Renders below the internal resolution and rebuilds the detail with MetalFX. Turns anti-aliasing off.", kUpscaler, Renderer::Native},
   {"mgr_msaa", "ANTI-ALIASING", "Multisampling smooths jagged edges. Higher settings cost frame rate.", kMsaa, Renderer::Native},
   {"mgr_transparency_aa", "TRANSPARENCY AA", "Smooths the edges of hair, fences and foliage. Needs anti-aliasing.", kBool, Renderer::Native},
   {"mgr_shadow_resolution", "SHADOW RESOLUTION", "Sharper, more detailed shadows. Higher settings use more video memory.", kShadow, Renderer::Native},
@@ -167,13 +170,13 @@ struct Menu {
   // first slot (raw float bits of its original Y saved), and the cursor targets
   // are offset by the same amount.
   uint32_t lifted_node = 0, lifted_y = 0;
-  float cursor_bias = 0;
-  std::unordered_map<uint32_t, uint32_t> visibility;
-  std::unordered_map<uint32_t, NativeText> text;
   // Nodes whose Y offset (+868) a custom page changed, with the original bits.
   std::unordered_map<uint32_t, uint32_t> moved;
   // Groups whose row count (+260) a custom page raised, with the original.
   std::unordered_map<uint32_t, uint8_t> row_counts;
+  float cursor_bias = 0;
+  std::unordered_map<uint32_t, uint32_t> visibility;
+  std::unordered_map<uint32_t, NativeText> text;
   std::filesystem::path config;
 } menu;
 
@@ -192,13 +195,13 @@ void Visible(uint8_t* base, uint32_t owner, uint32_t id, bool visible) {
 }
 void Restore(uint8_t* base) {
   for (const auto& [node, value] : menu.visibility) W32(base, node + 944, value);
-  if (menu.lifted_node) W32(base, menu.lifted_node + kNodeY, menu.lifted_y);
-  menu.lifted_node = 0; menu.cursor_bias = 0;
-  for (auto& [_, t] : menu.text) {
   for (const auto& [node, bits] : menu.moved) W32(base, node + kNodeY, bits);
   menu.moved.clear();
   for (const auto& [group, count] : menu.row_counts) base[group + kGroupRowCount] = count;
   menu.row_counts.clear();
+  if (menu.lifted_node) W32(base, menu.lifted_node + kNodeY, menu.lifted_y);
+  menu.lifted_node = 0; menu.cursor_bias = 0;
+  for (auto& [_, t] : menu.text) {
     if (U32(base, t.widget + 20) != t.allocation) continue;
     W32(base, t.widget + 20, t.original_context);
     W32(base, t.widget + 168, t.original_index);
@@ -429,11 +432,11 @@ std::string Value(const Option& option) {
 }
 void Labels(uint8_t* base) {
   for (int i = 0; i < kVisibleRows; ++i) {
+    const uint32_t group = menu.object + kGroupOffsets[SlotGroup(i)];
+    const int slot = SlotLocal(i);
     std::string label, value;
     const int index = menu.scroll + i;
     if (menu.page == Page::Categories) {
-    const uint32_t group = menu.object + kGroupOffsets[SlotGroup(i)];
-    const int slot = SlotLocal(i);
       if (i < int(std::size(kCategories))) label = kCategories[i];
     } else if (index < int(Options().size())) {
       const auto& option = Options()[index]; label = option.label; value = Value(option);
@@ -497,9 +500,6 @@ void Labels(uint8_t* base) {
   }
   SetText(base, menu.object, U32(base, menu.object + 864), wrapped);
 }
-// The controller diagram and its legend belong to the retail System page.
-void ControllerDiagram(uint8_t* base, bool shown) {
-  Visible(base, menu.object, 9, shown);
 float NodeFloat(const uint8_t* base, uint32_t node, uint32_t offset) {
   return std::bit_cast<float>(U32(base, node + offset));
 }
@@ -526,6 +526,9 @@ void LayoutSlots(uint8_t* base) {
     }
   }
 }
+// The controller diagram and its legend belong to the retail System page.
+void ControllerDiagram(uint8_t* base, bool shown) {
+  Visible(base, menu.object, 9, shown);
   for (uint32_t id = 12; id <= 34; ++id) Visible(base, menu.object, id, shown);
 }
 void CustomPage(PPCContext& ctx, uint8_t* base, Page page, int row = 0) {
@@ -535,10 +538,10 @@ void CustomPage(PPCContext& ctx, uint8_t* base, Page page, int row = 0) {
   for (int k = 0; k < 3; ++k)
     Visible(base, menu.object, U32(base, menu.object + kGroupContainers + k * 4), RowCount() > kGroupFirstRow[k]);
   ControllerDiagram(base, false);
+  LayoutSlots(base);
   // A retail category leaves groups 1 and 2 active; custom pages use group 0.
   for (int i = 0; i < 3; ++i) Call(ctx, base, sub_82C40F08, menu.object + kGroupOffsets[i], i == 0);
   for (int i = 0; i < kVisibleRows; ++i) Highlight(ctx, base, i, false);
-  LayoutSlots(base);
   Highlight(ctx, base, Slot(), true);
   Labels(base);
   MoveCursor(base, CustomCursorY(Slot()));
@@ -604,9 +607,6 @@ void FreeSession() {
 void Save() {
   if (menu.dirty) { MgrSaveConfig(menu.config); menu.dirty = false; }
 }
-// MGR_NATIVE_OPTIONS=0 (diagnostic): leave the retail Options menu untouched.
-bool Enabled() {
-  static const bool enabled = [] {
 // MGR_OPTIONS_DUMP=<file> (diagnostic): write every UI node's non-zero words and
 // the group's slot id arrays, to measure the retail layout.
 void DumpLayout(uint8_t* base) {
@@ -653,6 +653,9 @@ void DumpLayout(uint8_t* base) {
   std::fclose(out);
   std::fprintf(stderr, "[mgr-native-options] layout dumped to %s (%u nodes)\n", path, count);
 }
+// MGR_NATIVE_OPTIONS=0 (diagnostic): leave the retail Options menu untouched.
+bool Enabled() {
+  static const bool enabled = [] {
     const char* value = std::getenv("MGR_NATIVE_OPTIONS");
     return !value || value[0] != '0';
   }();
@@ -683,10 +686,10 @@ bool MgrNativeOptionsUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
     // The UI resource may still be loading on the first frames.
     if (phase > 1 || !Node(base, object, U32(base, object + 848))) return false;
     menu.ready = true;
+    DumpLayout(base);
     CustomPage(ctx, base, Page::Categories);
     PlaceCursor(ctx, base);
     return phase == 1;
-    DumpLayout(base);
   }
   if (phase == 0) { Labels(base); return false; }  // retries text that was not ready yet
   if (phase != 1) return false;

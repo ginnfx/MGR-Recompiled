@@ -84,7 +84,7 @@ void Occlusion::Begin() {
     if (void *mapped = s.occlusion_readback[slot]->map()) {
       const u32 count = *static_cast<const u32 *>(mapped);
       s.occlusion_readback[slot]->unmap();
-      const f32 ss = SceneRenderScale();
+      const f32 ss = SceneInputScale();
       u32 oversample = static_cast<u32>(ss * ss + 0.5f);
       switch (Video::CvarMSAASampleCount()) {
       case plume::RenderSampleCount::COUNT_2:

@@ -52,12 +52,16 @@ struct SharedConstants {
   // Half-pixel NDC nudge read only by host blit shaders.
   float blitHalfPixelOffsetX{}; // byte 592
   float blitHalfPixelOffsetY{}; // byte 596
-  u32 _pad600[2]{};             // bytes 600..607
+  // Pixel-shader mip bias (g_MipBias): sharper texture levels for scene
+  // draws rendered below the output size by the upscaler.
+  float mipBias{};              // byte 600
+  u32 _pad604{};                // bytes 604..607
 };
 static_assert(offsetof(SharedConstants, samplerIndices) == 384);
 static_assert(offsetof(SharedConstants, booleansArr) == 512);
 static_assert(offsetof(SharedConstants, swappedTexcoords) == 544);
 static_assert(offsetof(SharedConstants, alphaThreshold) == 556);
+static_assert(offsetof(SharedConstants, mipBias) == 600);
 static_assert(offsetof(SharedConstants, shadowPcfScale) == 584);
 static_assert(sizeof(SharedConstants) == 608);
 

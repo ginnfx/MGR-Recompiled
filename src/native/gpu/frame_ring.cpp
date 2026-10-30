@@ -30,6 +30,7 @@
 #include "gpu/native_texture_mirror.h"
 #include "gpu/physical_buffers.h"
 #include "gpu/surface_registry.h"
+#include "gpu/upscale.h"
 
 namespace mgrn::gpu {
 
@@ -41,7 +42,7 @@ void BeginCommandList(VideoState &s) {
   if (!s.pipeline_layout)
     return;
   const u32 cur = s.frame.load(std::memory_order_relaxed);
-  s.command_list = s.command_lists[cur].get();
+  s.command_list = (s.split_list_active ? s.split_lists[cur] : s.command_lists[cur]).get();
   s.draw_framebuffer_bound = false;
   s.last_resolved_dst = nullptr;
   s.command_list->begin();
@@ -218,10 +219,12 @@ void DrainSlot(VideoState &s, u32 slot) {
 }
 
 void AdvanceAndWaitReused(VideoState &s) {
+  upscale::EndFrameLocked(s);
   const u32 slot = s.next_frame;
   s.reclaiming_slot.store(static_cast<i32>(slot), std::memory_order_relaxed);
   s.frame.store(slot, std::memory_order_relaxed);
   s.next_frame = (slot + 1) % kNumFrames;
+  s.split_list_active = false;
   s.command_list = s.command_lists[slot].get();
   if (s.command_list_submitted[slot]) {
     s.queue->waitForCommandFence(s.fences[slot].get());
@@ -236,16 +239,45 @@ void AdvanceAndWaitReused(VideoState &s) {
   ResetFrame(slot);
 }
 
+void SubmitFrameListLocked(VideoState &s, plume::RenderCommandSemaphore **waits,
+                           u32 wait_count, plume::RenderCommandSemaphore **signals,
+                           u32 signal_count) {
+  const u32 cur = s.frame.load(std::memory_order_relaxed);
+  s.command_list->end();
+  s.command_list_open = false;
+  const plume::RenderCommandList *lists[] = {s.command_list};
+  // On one queue the fence also covers the split's first half, submitted
+  // earlier.
+  s.queue->executeCommandLists(lists, 1, waits, wait_count, signals, signal_count,
+                               s.fences[cur].get());
+  s.command_list_submitted[cur] = true;
+  s.split_list_active = false;
+}
+
 void SubmitOpenListLocked(VideoState &s) {
   if (!s.command_list_open)
     return;
+  SubmitFrameListLocked(s, nullptr, 0, nullptr, 0);
+}
+
+bool SubmitSplitLocked(VideoState &s) {
+  // Only split when the second list is sure to open: the first half has no
+  // fence of its own, so the frame must still end in a fenced submission.
+  if (!s.command_list_open || s.split_list_active || !s.pipeline_layout ||
+      s.shutting_down.load(std::memory_order_acquire))
+    return false;
   const u32 cur = s.frame.load(std::memory_order_relaxed);
-  s.command_lists[cur]->end();
+  if (!s.split_lists[cur]) {
+    s.split_lists[cur] = s.queue->createCommandList();
+    if (!s.split_lists[cur])
+      return false;
+  }
+  s.command_list->end();
   s.command_list_open = false;
-  const plume::RenderCommandList *lists[] = {s.command_lists[cur].get()};
-  s.queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0,
-                               s.fences[cur].get());
-  s.command_list_submitted[cur] = true;
+  const plume::RenderCommandList *lists[] = {s.command_list};
+  s.queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, nullptr);
+  s.split_list_active = true;
+  return true;
 }
 
 } // namespace mgrn::gpu

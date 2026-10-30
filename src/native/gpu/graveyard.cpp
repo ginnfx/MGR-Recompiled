@@ -23,6 +23,7 @@
 #include "core/logging.h"
 #include "gpu/frame.h"
 #include "gpu/host_resource_heap.h"
+#include "gpu/upscale.h"
 
 namespace mgrn::gpu {
 
@@ -156,6 +157,7 @@ void Video::ParkBufferUntilFence(std::unique_ptr<plume::RenderBuffer> buffer) {
 }
 
 void RetireTextureBindingsLocked(VideoState &s, GuestTexture *dead) {
+  upscale::ForgetTextureLocked(s, dead);
   if (dead->framebufferAttached) {
     MGRN_CPU_ZONE("FbCacheInvalidate");
     const plume::RenderTexture *deadTex = dead->texture;

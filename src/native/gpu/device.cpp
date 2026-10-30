@@ -49,6 +49,8 @@
 #include "gpu/pipeline/pso_recorder.h"
 #include "gpu/settings.h"
 #include "gpu/surface_registry.h"
+#include "gpu/metalfx.h"
+#include "gpu/upscale.h"
 #include "platform/platform.h"
 
 namespace plume {
@@ -470,6 +472,7 @@ bool Video::CreateHostDevice(rex::ui::Window *window) {
   InitGPUProfiler(static_cast<plume::D3D12Device *>(s.device.get())->d3d,
                   static_cast<plume::D3D12CommandQueue *>(s.queue.get())->d3d);
 #endif
+  upscale::InitDevice(s);
   RefreshRenderTargetSettings();
   s.ready = true;
   MGRN_DEBUG("Plume backend ready: {}x{} ({} buffers, {} bindless slots)",
@@ -628,6 +631,7 @@ void Video::Shutdown(const std::function<void()> &ui_pump) {
   for (u32 i = 0; i < kNumFrames; ++i)
     s.acquire_semaphores[i].reset();
   s.swap_chain.reset();
+  metalfx::Shutdown();
 }
 
 // Substituted for content textures reblue cannot resolve, so the draw renders

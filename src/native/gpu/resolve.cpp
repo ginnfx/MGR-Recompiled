@@ -25,6 +25,7 @@
 #include "core/logging.h"
 #include "gpu/backend.h"
 #include "gpu/format.h"
+#include "gpu/upscale.h"
 
 namespace mgrn::gpu {
 
@@ -477,6 +478,7 @@ void Video::ResolveRtToTexture(GuestTexture *dst,
     depth_rect = nullptr;
   if (!depth_rect && CanAliasResolveLocked(src, dst)) {
     s.last_resolved_dst = dst;
+    upscale::NoteResolveLocked(s, src, dst);
     NoteTileContentLocked(s, dst);
     s.draw_framebuffer_bound = false;
     return;
@@ -484,6 +486,7 @@ void Video::ResolveRtToTexture(GuestTexture *dst,
 
   if (CopySurfaceToTextureLocked(s, src, dst, "Resolve", depth_rect, dest_x, dest_y)) {
     s.last_resolved_dst = dst;
+    upscale::NoteResolveLocked(s, src, dst);
     NoteTileContentLocked(s, dst);
     DetachSourceSurfaceLocked(s, dst);
   }

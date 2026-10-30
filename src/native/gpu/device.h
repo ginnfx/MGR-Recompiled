@@ -290,6 +290,12 @@ struct VideoState {
   // every advance so intra-frame s.command_list-> sites are unchanged. frame is
   // read on guest threads (QueueResourceDestroy) so it is atomic.
   std::unique_ptr<plume::RenderCommandList> command_lists[kNumFrames];
+  // The second half of a frame the upscaler split (SubmitSplitLocked): the
+  // work before the upscale is submitted without a fence, and this list,
+  // submitted after it with the slot's fence, carries the rest of the frame.
+  // Created on the first split.
+  std::unique_ptr<plume::RenderCommandList> split_lists[kNumFrames];
+  bool split_list_active = false;
   std::unique_ptr<plume::RenderCommandFence> fences[kNumFrames];
   std::unique_ptr<plume::RenderCommandSemaphore> acquire_semaphores[kNumFrames];
   // Sized to the swapchain image count, not kNumFrames, and indexed by

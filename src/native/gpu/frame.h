@@ -26,6 +26,18 @@ void AdvanceAndWaitReused(VideoState &s);
 
 void SubmitOpenListLocked(VideoState &s);
 
+// Submits the open list without a fence and makes the next BeginCommandList
+// open the slot's split list, so work outside the plume queue (MetalFX) can
+// run between the two halves of a frame. False if nothing was open or the
+// frame is already split.
+bool SubmitSplitLocked(VideoState &s);
+
+// Ends and submits the open list with the slot's fence and the given
+// semaphores, ending any split.
+void SubmitFrameListLocked(VideoState &s, plume::RenderCommandSemaphore **waits,
+                           u32 wait_count, plume::RenderCommandSemaphore **signals,
+                           u32 signal_count);
+
 void ResolveEffectiveTargets(VideoState &s, GuestTexture *&rt,
                              GuestTexture *&ds);
 

@@ -38,6 +38,7 @@
 #include "gpu/frame.h"
 #include "gpu/host_resource_heap.h"
 #include "gpu/settings.h"
+#include "gpu/upscale.h"
 #include "gpu/vertex_declaration.h"
 #include "hooks/hook_macros.h"
 #include "hooks/resources.h"
@@ -489,6 +490,10 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
   s.dirtyStates.vertexShaderConstants = true;
   s.dirtyStates.pixelShaderConstants = true;
 
+  // The composite's first draw upscales the scene first, which can submit the
+  // frame so far and redirect the bound target.
+  gpu::upscale::BeforeDrawLocked(s, device_guest);
+  if (!s.command_list_open) return;
   if (!gpu::Video::BindDrawFramebufferLocked()) return;
   if (!gpu::Video::FlushRenderStateLocked(device_guest)) return;
 

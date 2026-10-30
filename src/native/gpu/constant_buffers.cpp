@@ -24,6 +24,7 @@
 #include "gpu/device.h"
 #include "gpu/sampler_cache.h"
 #include "gpu/settings.h"
+#include "gpu/upscale.h"
 #include "gpu/shaders/shader_cache.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
@@ -334,12 +335,14 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
     s.shared.textureCubeIndices[i] = mgrn::gpu::kNullTextureCubeDescriptorIndex;
 
     mgrn::gpu::GuestTexture *tex = vs.textures[i];
-    if (tex && tex->sourceSurface && tex->sourceSurface->texture &&
-        tex->sourceSurface->sampleCount == plume::RenderSampleCount::COUNT_1 &&
-        tex->sourceSurface != vs.render_target &&
-        tex->sourceSurface != vs.depth_stencil &&
-        tex->sourceSurface->descriptorIndex !=
-            mgrn::gpu::kInvalidDescriptorIndex) {
+    if (mgrn::gpu::GuestTexture *upscaled = mgrn::gpu::upscale::SubstituteLocked(tex)) {
+      tex = upscaled;
+    } else if (tex && tex->sourceSurface && tex->sourceSurface->texture &&
+               tex->sourceSurface->sampleCount == plume::RenderSampleCount::COUNT_1 &&
+               tex->sourceSurface != vs.render_target &&
+               tex->sourceSurface != vs.depth_stencil &&
+               tex->sourceSurface->descriptorIndex !=
+                   mgrn::gpu::kInvalidDescriptorIndex) {
       tex = tex->sourceSurface;
     }
     if (tex && tex->descriptorIndex != mgrn::gpu::kInvalidDescriptorIndex) {
@@ -419,8 +422,10 @@ ConstantAllocation UploadSharedConstants(u32 device_guest) {
   }
 
   s.shared.alphaThreshold = mgrn::gpu::Video::AlphaThreshold();
-  s.shared.halfPixelOffsetX = 0.0f;
-  s.shared.halfPixelOffsetY = 0.0f;
+  // Zero except on scene draws while upscaling: the frame's sub-pixel jitter.
+  mgrn::gpu::upscale::SceneDrawOffsetLocked(vs, device_guest, s.shared.halfPixelOffsetX,
+                                            s.shared.halfPixelOffsetY);
+  s.shared.mipBias = mgrn::gpu::upscale::SceneMipBiasLocked(vs);
   s.shared.swappedTexcoords =
       vs.vertex_declaration ? vs.vertex_declaration->swappedTexcoords : 0u;
   s.shared.swappedNormals =

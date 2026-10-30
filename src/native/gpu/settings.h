@@ -49,6 +49,9 @@ public:
   f32 Brightness() const;
   // mgr_sharpening: contrast adaptive sharpening in the present pass, 0..1.
   f32 Sharpness() const;
+  // mgr_upscaler: the scene's input size per axis as a fraction of the
+  // output, 1 when off.
+  f32 UpscalerInputFraction() const;
   bool PSOPrecache() const { return false; }
   bool GeometryGPUUpload() const { return false; }
   bool SceneColorR11G11B10() const { return false; }
@@ -64,11 +67,27 @@ inline constexpr u32 kGameHeight = 720;
 inline constexpr u32 kMinScaledTargetWidth = 320;
 // MGR draws its 3D scene at 1152x720 and composites it into 1280x720.
 inline constexpr u32 kSceneWidth = 1152;
+// The scale the 3D scene renders at: SceneRenderScale(), or the upscaler's
+// input fraction of it while mgr_upscaler is on.
+f32 SceneInputScale();
+// True while the scene renders at SceneInputScale() and is upscaled to
+// SceneRenderScale() before the composite.
+bool UpscalerActive();
+// The largest output/input ratio the upscaler supports; 1 (the default)
+// leaves it off.
+void SetMaxUpscaleRatio(f32 ratio);
+// Scale of a scene-shaped render target ('surface') or texture of these guest
+// dimensions.
+f32 SceneTargetScale(u32 width, u32 height, bool depth, bool surface);
+// The 16:9 shapes (1280x720 and its halves) whose colour textures take the
+// output scale while upscaling.
+bool IsUpscaledShape(u32 width, u32 height);
 // Bumped whenever the scene scale, shadow scale or MSAA count changes; targets
 // built at an older generation are rebuilt before their next use.
 u32 RenderTargetGeneration();
-// Re-reads mgr_resolution_scale, mgr_shadow_resolution and mgr_msaa; call once
-// per frame on the render thread, so a frame's targets all agree.
+// Re-reads mgr_resolution_scale, mgr_shadow_resolution, mgr_msaa and
+// mgr_upscaler; call once per frame on the render thread, so a frame's
+// targets all agree.
 void RefreshRenderTargetSettings();
 // mgr_msaa as of the last refresh.
 i32 ActiveMSAA();
