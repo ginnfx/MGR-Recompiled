@@ -2,7 +2,7 @@ Metal Gear Rising: Revengeance recompiled from the Xbox 360 version using [ReXGl
 WIP, don't expect good performance . No Win11 build planned since that one works fine on steam
 
 No game files are included. You need your own legally obtained copy of the Xbox 360 game
-Not affiliated with Konami or PlatinumGames
+
 
 ## Play
 
@@ -122,3 +122,4 @@ python3 tools/release/hash_game_files.py private/game src/mgr_game_manifest.inc
 
 MGR Recompiled is licensed under the GNU General Public License v3.0, see `LICENSE`
 Third-party licenses are listed in `THIRD_PARTY_NOTICES`
+Not affiliated with Konami or PlatinumGames.
