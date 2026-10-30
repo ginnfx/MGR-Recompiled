@@ -45,14 +45,32 @@ constexpr uint32_t kGroupContainers = 848, kNodeY = 868;
 constexpr float kCursorRowStep = 44.0f, kCursorGroupGap = 6.0f;
 constexpr int kDisplayFirstRow = 6, kSoundFirstRow = 9;
 // OptionGroup node ids for the two System slider bars (built by 82C44810).
-constexpr uint32_t kSliderSegmentIds = 136, kSliderSegments = 20;
+// Audio has three sliders, so up to 30 segments (the group struct ends at +268).
+constexpr uint32_t kSliderSegmentIds = 136, kSliderSegments = 30;
 enum class Page { Categories, Retail, Video, Misc };
 // The first three categories are the retail System/Display/Audio groups.
 constexpr const char* kCategories[] = {"SYSTEM", "DISPLAY", "AUDIO", "VIDEO", "MISC"};
 constexpr int kFirstCustomCategory = 3;
 constexpr Page kCustomPages[] = {Page::Video, Page::Misc};
-// Retail row slots per page; longer pages scroll through them.
-constexpr int kVisibleRows = 6;
+// Row slots per page, stacked in the retail list's three groups. System has 6;
+// Display and Audio each have 5 text slots, of which retail uses 3. Longer pages
+// scroll through them.
+constexpr int kGroupRows[] = {6, 5, 5};
+constexpr int kGroupFirstRow[] = {0, 6, 11};
+constexpr int kVisibleRows = 16;
+// Pages that fill more than the retail 12 rows use closer rows, and sit higher,
+// so every slot fits above the button legend.
+constexpr int kRetailSlots = 12;
+constexpr float kCompactPitch = 36.0f, kCompactShift = -18.0f;
+// OptionGroup byte +260 is its row count; selectRow ignores rows past it.
+constexpr uint32_t kGroupRowCount = 260;
+// Side-strip text node ids per group (Audio's are shifted by one).
+constexpr uint32_t kStripIds[][2] = {{5, 6}, {5, 6}, {4, 5}};
+// Help text wraps narrow enough to stay right of the bottom row's highlight band.
+constexpr size_t kHelpWidth = 40;
+// The retail group (0..2) that owns a slot, and the slot's row inside it.
+int SlotGroup(int slot) { return slot < kGroupFirstRow[1] ? 0 : slot < kGroupFirstRow[2] ? 1 : 2; }
+int SlotLocal(int slot) { return slot - kGroupFirstRow[SlotGroup(slot)]; }
 
 uint8_t* Guest(uint8_t* base, uint32_t a) { return REX_RAW_ADDR(a); }
 const uint8_t* Guest(const uint8_t* base, uint32_t a) { return REX_RAW_ADDR(a); }
@@ -152,6 +170,10 @@ struct Menu {
   float cursor_bias = 0;
   std::unordered_map<uint32_t, uint32_t> visibility;
   std::unordered_map<uint32_t, NativeText> text;
+  // Nodes whose Y offset (+868) a custom page changed, with the original bits.
+  std::unordered_map<uint32_t, uint32_t> moved;
+  // Groups whose row count (+260) a custom page raised, with the original.
+  std::unordered_map<uint32_t, uint8_t> row_counts;
   std::filesystem::path config;
 } menu;
 
@@ -164,13 +186,19 @@ void Visible(uint8_t* base, uint32_t owner, uint32_t id, bool visible) {
   const uint32_t node = Node(base, owner, id);
   if (!node) return;
   menu.visibility.try_emplace(node, U32(base, node + 944));
-  W32(base, node + 944, visible ? menu.visibility.at(node) : 0);
+  // Slots retail leaves hidden (original 0) are shown as 1.
+  const uint32_t original = menu.visibility.at(node);
+  W32(base, node + 944, visible ? (original ? original : 1) : 0);
 }
 void Restore(uint8_t* base) {
   for (const auto& [node, value] : menu.visibility) W32(base, node + 944, value);
   if (menu.lifted_node) W32(base, menu.lifted_node + kNodeY, menu.lifted_y);
   menu.lifted_node = 0; menu.cursor_bias = 0;
   for (auto& [_, t] : menu.text) {
+  for (const auto& [node, bits] : menu.moved) W32(base, node + kNodeY, bits);
+  menu.moved.clear();
+  for (const auto& [group, count] : menu.row_counts) base[group + kGroupRowCount] = count;
+  menu.row_counts.clear();
     if (U32(base, t.widget + 20) != t.allocation) continue;
     W32(base, t.widget + 20, t.original_context);
     W32(base, t.widget + 168, t.original_index);
@@ -304,8 +332,15 @@ float CursorY(int absolute_row) {
 }
 // The retail page update reads these each frame (82C71DE4); custom pages skip
 // that update, so PlaceCursor repeats its positioning call.
-void MoveCursor(uint8_t* base, int absolute_row) {
-  W32(base, menu.object + kCursorTarget, std::bit_cast<uint32_t>(CursorY(absolute_row) - menu.cursor_bias));
+int RowCount();
+bool Compact() { return RowCount() > kRetailSlots; }
+float SlotPitch() { return Compact() ? kCompactPitch : kCursorRowStep; }
+float CustomCursorY(int slot) {
+  return (Compact() ? kCompactShift : 0.0f) + slot * SlotPitch() + (slot >= kGroupFirstRow[1] ? kCursorGroupGap : 0) +
+         (slot >= kGroupFirstRow[2] ? kCursorGroupGap : 0);
+}
+void MoveCursor(uint8_t* base, float y) {
+  W32(base, menu.object + kCursorTarget, std::bit_cast<uint32_t>(y - menu.cursor_bias));
   W32(base, menu.object + kCursorMoving, 1);
 }
 void PlaceCursor(PPCContext& ctx, uint8_t* base) {
@@ -315,8 +350,10 @@ void PlaceCursor(PPCContext& ctx, uint8_t* base) {
   call.f1.f64 = std::bit_cast<float>(U32(base, menu.object + kCursorTarget));
   sub_8293F530(call, base);
 }
-void Highlight(PPCContext& ctx, uint8_t* base, int row, bool selected) {
-  Call(ctx, base, sub_82C40DD8, menu.object + 28, uint32_t(row), selected);
+void Highlight(PPCContext& ctx, uint8_t* base, int slot, bool selected) {
+  constexpr int kRetailFirstRow[] = {0, kDisplayFirstRow, kSoundFirstRow};
+  const int group = SlotGroup(slot);
+  Call(ctx, base, sub_82C40DD8, menu.object + kGroupOffsets[group], uint32_t(kRetailFirstRow[group] + SlotLocal(slot)), selected);
 }
 // MSAA levels the GPU cannot run are left out.
 std::span<const Choice> SupportedMsaa() {
@@ -391,35 +428,46 @@ std::string Value(const Option& option) {
   return value;
 }
 void Labels(uint8_t* base) {
-  const uint32_t group = menu.object + 28;
   for (int i = 0; i < kVisibleRows; ++i) {
     std::string label, value;
     const int index = menu.scroll + i;
     if (menu.page == Page::Categories) {
+    const uint32_t group = menu.object + kGroupOffsets[SlotGroup(i)];
+    const int slot = SlotLocal(i);
       if (i < int(std::size(kCategories))) label = kCategories[i];
     } else if (index < int(Options().size())) {
       const auto& option = Options()[index]; label = option.label; value = Value(option);
     }
     const bool shown = !label.empty();
-    Visible(base, group, U32(base, group + 40 + i * 4), shown);
-    Visible(base, group, U32(base, group + 64 + i * 4), shown);
-    SetText(base, group, U32(base, group + 64 + i * 4), label, 8);
-    Visible(base, group, U32(base, group + 88 + i * 4), !value.empty());
-    if (!value.empty()) SetText(base, group, U32(base, group + 88 + i * 4), value);
-    Visible(base, group, U32(base, group + 112 + i * 4), menu.page != Page::Categories && index < int(Options().size()));
+    Visible(base, group, U32(base, group + 40 + slot * 4), shown);
+    Visible(base, group, U32(base, group + 64 + slot * 4), shown);
+    SetText(base, group, U32(base, group + 64 + slot * 4), label, 8);
+    Visible(base, group, U32(base, group + 88 + slot * 4), !value.empty());
+    if (!value.empty()) SetText(base, group, U32(base, group + 88 + slot * 4), value);
+    Visible(base, group, U32(base, group + 112 + slot * 4), menu.page != Page::Categories && index < int(Options().size()));
   }
-  // Retail System rows 4 and 5 are 0-10 sliders (82C4DE90 / 82C4DB40) with ten
-  // bar segments each at group+136..+212; custom rows are choices only.
-  for (uint32_t k = 0; k < kSliderSegments; ++k) {
-    const uint32_t id = U32(base, group + kSliderSegmentIds + k * 4);
-    if (id) Visible(base, group, id, false);
+  // Retail System rows 4 and 5 and the Audio rows are 0-10 sliders (82C4DE90 /
+  // 82C4DB40) with ten bar segments each at group+136..; custom rows are choices only.
+  for (uint32_t offset : kGroupOffsets) {
+    const uint32_t group = menu.object + offset;
+    for (uint32_t k = 0; k < kSliderSegments; ++k) {
+      const uint32_t id = U32(base, group + kSliderSegmentIds + k * 4);
+      if (id) Visible(base, group, id, false);
+    }
   }
   // Pages longer than the slots show the selected row's position.
   std::string title = PageTitle();
   if (RowCount() > kVisibleRows)
     title += "  " + std::to_string(menu.row + 1) + "/" + std::to_string(RowCount());
-  SetText(base, group, 5, title, 8);
-  SetText(base, group, 6, title, 8);
+  // Group 0's side strip names the page; group 1's (when shown) holds the
+  // position, and group 2's is left blank instead of its retail name.
+  const std::string position = title.substr(std::string_view(PageTitle()).size());
+  const std::string names[] = {PageTitle(), position.empty() ? "" : position.substr(2), ""};
+  for (int k = 0; k < 3; ++k) {
+    const uint32_t strip_group = menu.object + kGroupOffsets[k];
+    SetText(base, strip_group, kStripIds[k][0], names[k], 8);
+    SetText(base, strip_group, kStripIds[k][1], names[k], 8);
+  }
   const char* help = menu.page == Page::Categories ? "SELECT AN OPTIONS CATEGORY." :
       menu.row < int(Options().size()) ? Options()[menu.row].help : "";
   std::string wrapped(help);
@@ -442,8 +490,8 @@ void Labels(uint8_t* base) {
   if (OnRow("mgr_transparency_aa") && rex::cvar::GetFlagByName("mgr_msaa") == "0")
     wrapped += " Turn on anti-aliasing to use it.";
   size_t start = 0;
-  while (wrapped.size() - start > 52) {
-    const size_t at = wrapped.rfind(' ', start + 52);
+  while (wrapped.size() - start > kHelpWidth) {
+    const size_t at = wrapped.rfind(' ', start + kHelpWidth);
     if (at == std::string::npos || at < start) break;
     wrapped[at] = '\n'; start = at + 1;
   }
@@ -452,22 +500,48 @@ void Labels(uint8_t* base) {
 // The controller diagram and its legend belong to the retail System page.
 void ControllerDiagram(uint8_t* base, bool shown) {
   Visible(base, menu.object, 9, shown);
+float NodeFloat(const uint8_t* base, uint32_t node, uint32_t offset) {
+  return std::bit_cast<float>(U32(base, node + offset));
+}
+// Moves a node by writing its Y offset so it lands `y` units from its layout Y.
+void OffsetNodeTo(uint8_t* base, uint32_t node, float target_y) {
+  menu.moved.try_emplace(node, U32(base, node + kNodeY));
+  W32(base, node + kNodeY, std::bit_cast<uint32_t>(target_y - NodeFloat(base, node, 4)));
+}
+// Packs the slots at kSlotPitch and the groups below one another, so a page can
+// use every slot. Restore() puts the retail offsets back.
+void LayoutSlots(uint8_t* base) {
+  const uint32_t first = Node(base, menu.object, U32(base, menu.object + kGroupContainers));
+  if (!first) return;
+  const float top = NodeFloat(base, first, 4);
+  for (int k = 0; k < 3; ++k) {
+    const uint32_t group = menu.object + kGroupOffsets[k];
+    menu.row_counts.try_emplace(group, base[group + kGroupRowCount]);
+    base[group + kGroupRowCount] = uint8_t(kGroupRows[k]);
+    const uint32_t container = Node(base, menu.object, U32(base, menu.object + kGroupContainers + k * 4));
+    if (container) OffsetNodeTo(base, container, top + CustomCursorY(kGroupFirstRow[k]));
+    for (int i = 0; i < kGroupRows[k]; ++i) {
+      const uint32_t row = Node(base, group, U32(base, group + 40 + i * 4));
+      if (row) OffsetNodeTo(base, row, i * SlotPitch());
+    }
+  }
+}
   for (uint32_t id = 12; id <= 34; ++id) Visible(base, menu.object, id, shown);
 }
 void CustomPage(PPCContext& ctx, uint8_t* base, Page page, int row = 0) {
   Restore(base);
   menu.page = page; menu.row = row; menu.scroll = 0; ScrollToRow();
-  for (uint32_t offset : kGroupOffsets) {
-    const bool first = offset == 28;
-    Visible(base, menu.object, U32(base, menu.object + 848 + ((offset - 28) / 268) * 4), first);
-  }
+  // Groups 1 and 2 only hold the slots past the first six and nine rows.
+  for (int k = 0; k < 3; ++k)
+    Visible(base, menu.object, U32(base, menu.object + kGroupContainers + k * 4), RowCount() > kGroupFirstRow[k]);
   ControllerDiagram(base, false);
   // A retail category leaves groups 1 and 2 active; custom pages use group 0.
   for (int i = 0; i < 3; ++i) Call(ctx, base, sub_82C40F08, menu.object + kGroupOffsets[i], i == 0);
   for (int i = 0; i < kVisibleRows; ++i) Highlight(ctx, base, i, false);
+  LayoutSlots(base);
   Highlight(ctx, base, Slot(), true);
   Labels(base);
-  MoveCursor(base, Slot());
+  MoveCursor(base, CustomCursorY(Slot()));
   base[menu.object + 921] = uint8_t(Slot()); base[menu.object + 922] = 1;
   std::fprintf(stderr, "[mgr-native-options] page=%d row=%d\n", int(page), row);
 }
@@ -494,7 +568,7 @@ void RetailPage(PPCContext& ctx, uint8_t* base, int category) {
         std::bit_cast<uint32_t>(std::bit_cast<float>(menu.lifted_y) - menu.cursor_bias));
   }
   Call(ctx, base, sub_82C4C6A0, menu.object, row);
-  MoveCursor(base, row);
+  MoveCursor(base, CursorY(row));
   PlaceCursor(ctx, base);
   std::fprintf(stderr, "[mgr-native-options] retail category=%d row=%d lift=%.1f\n", category, row,
                menu.cursor_bias);
@@ -512,7 +586,7 @@ bool RetailWrap(PPCContext& ctx, uint8_t* base, bool up, bool down) {
   Call(ctx, base, sub_82C40DD8, group, uint32_t(row), 0);
   Call(ctx, base, sub_82C40DD8, group, uint32_t(next), 1);
   base[menu.object + 921] = uint8_t(next); base[menu.object + 922] = 1;
-  MoveCursor(base, next);
+  MoveCursor(base, CursorY(next));
   PlaceCursor(ctx, base);
   Call(ctx, base, sub_82C4C6A0, menu.object, uint32_t(next));
   Call(ctx, base, sub_82C46620, U32(base, menu.object + 840));
@@ -524,7 +598,7 @@ void FreeSession() {
   auto* memory = REX_KERNEL_STATE()->memory();
   for (auto& [_, t] : menu.text) if (t.allocation) memory->SystemHeapFree(t.allocation);
   if (menu.scratch) memory->SystemHeapFree(menu.scratch);
-  menu.text.clear(); menu.visibility.clear(); menu.scratch = 0; menu.object = 0; menu.ready = false;
+  menu.text.clear(); menu.visibility.clear(); menu.moved.clear(); menu.row_counts.clear(); menu.scratch = 0; menu.object = 0; menu.ready = false;
   menu.lifted_node = 0; menu.cursor_bias = 0;
 }
 void Save() {
@@ -533,6 +607,52 @@ void Save() {
 // MGR_NATIVE_OPTIONS=0 (diagnostic): leave the retail Options menu untouched.
 bool Enabled() {
   static const bool enabled = [] {
+// MGR_OPTIONS_DUMP=<file> (diagnostic): write every UI node's non-zero words and
+// the group's slot id arrays, to measure the retail layout.
+void DumpLayout(uint8_t* base) {
+  const char* path = std::getenv("MGR_OPTIONS_DUMP");
+  if (!path || !*path) return;
+  std::FILE* out = std::fopen(path, "w");
+  if (!out) return;
+  const uint32_t ui = U32(base, menu.object + 24), count = U32(base, ui + 124);
+  std::fprintf(out, "object=%08X ui=%08X nodes=%u\n", menu.object, ui, count);
+  const uint32_t group = menu.object + 28;
+  for (uint32_t offset = 40; offset < 136; offset += 4) {
+    std::fprintf(out, "group+%u id=%u\n", offset, U32(base, group + offset));
+  }
+  for (uint32_t k = 0; k < 3; ++k) {
+    std::fprintf(out, "container[%u] id=%u\n", k, U32(base, menu.object + kGroupContainers + k * 4));
+  }
+  for (uint32_t offset : kGroupOffsets) {
+    const uint32_t owner = menu.object + offset, group_ui = U32(base, owner + 24);
+    std::fprintf(out, "group@+%u ui=%08X nodes=%u text ids:", offset, group_ui, group_ui ? U32(base, group_ui + 124) : 0);
+    for (uint32_t id = 0; group_ui && id < U32(base, group_ui + 124); ++id) {
+      const uint32_t node = Node(base, owner, id), widget = U32(base, node + 1008);
+      if (widget && U32(base, widget) == kTextVtable)
+        std::fprintf(out, " %u(x=%.0f,y=%.0f)", id, std::bit_cast<float>(U32(base, node)), std::bit_cast<float>(U32(base, node + 4)));
+    }
+    std::fprintf(out, "\n");
+    for (uint32_t array : {40u, 64u, 88u, 112u}) {
+      std::fprintf(out, "  group@+%u array+%u:", offset, array);
+      for (uint32_t i = 0; i < 6; ++i) {
+        const uint32_t id = U32(base, owner + array + i * 4), node = Node(base, owner, id);
+        std::fprintf(out, " %u(y=%.1f vis=%u)", id, node ? std::bit_cast<float>(U32(base, node + 4)) : -1.f, node ? U32(base, node + 944) : 0);
+      }
+      std::fprintf(out, "\n");
+    }
+  }
+  for (uint32_t id = 0; id < count; ++id) {
+    const uint32_t node = Node(base, menu.object, id);
+    std::fprintf(out, "node %u @%08X:", id, node);
+    for (uint32_t off = 0; off < 1024; off += 4) {
+      const uint32_t v = U32(base, node + off);
+      if (v) std::fprintf(out, " %u=%08X", off, v);
+    }
+    std::fprintf(out, "\n");
+  }
+  std::fclose(out);
+  std::fprintf(stderr, "[mgr-native-options] layout dumped to %s (%u nodes)\n", path, count);
+}
     const char* value = std::getenv("MGR_NATIVE_OPTIONS");
     return !value || value[0] != '0';
   }();
@@ -566,6 +686,7 @@ bool MgrNativeOptionsUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
     CustomPage(ctx, base, Page::Categories);
     PlaceCursor(ctx, base);
     return phase == 1;
+    DumpLayout(base);
   }
   if (phase == 0) { Labels(base); return false; }  // retries text that was not ready yet
   if (phase != 1) return false;
@@ -589,7 +710,7 @@ bool MgrNativeOptionsUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
     ScrollToRow();
     std::fprintf(stderr, "[mgr-native-options] select page=%d row=%d slot=%d\n", int(menu.page), menu.row, Slot());
     Highlight(ctx, base, Slot(), true); base[object + 921] = uint8_t(Slot());
-    MoveCursor(base, Slot());
+    MoveCursor(base, CustomCursorY(Slot()));
     Sound(ctx, base, 0x8218A538);
   } else if (menu.page == Page::Categories && confirm) {
     menu.category = menu.row;
