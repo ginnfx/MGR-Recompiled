@@ -6,18 +6,13 @@ Not affiliated with Konami or PlatinumGames
 
 ## Play
 
-Needs a Mac with Apple Silicon running macOS 14 or newer, and about 8 GB of free space
+
 
 1. Download `MGR-Recompiled-<version>-macos-arm64.dmg` from the [releases page](https://github.com/ginnfx/MGR-Recompiled/releases)
-2. Open it and drag **MGR Recompiled** into Applications
-3. Open the app. The build isn't notarized, so macOS blocks the first launch
-   - Click **Done** on the warning, then go to System Settings → Privacy & Security and click **Open Anyway** next to MGR Recompiled
-   - Or run this once in Terminal: `xattr -dr com.apple.quarantine "/Applications/MGR Recompiled.app"`
-4. Choose your copy of the game when asked. Either works:
+2. Open it and drag to Applications
+3. Choose your copy, Either works:
    - a disc image (`.iso`) of the Xbox 360 disc
    - a folder with the extracted files (`default.xex` and `media/`)
-
-The app checks the copy and installs the game files, which takes a minute or two. After that it starts straight into the game
 
 Only the Xbox 360 USA/Europe disc is supported: title ID `4B4E080A`, media ID `6CC18291`, version 4, no title update. The app tells you if your copy is a different version
 
@@ -30,11 +25,6 @@ cache/     shader cache
 logs/      logs (attach the latest one to bug reports)
 mgr.toml   settings
 ```
-
-Hold **Option** while opening the app to install the game files again. Delete the folder to reset everything
-
-Graphics settings are on the Video page of the in-game Options menu
-
 ## Build from source
 
 Built against one exact `default.xex`, SHA-256:
@@ -43,7 +33,6 @@ Other regions or updated builds won't match the hardcoded addresses
 
 ### needed
 
-- macOS on Apple Silicon (arm64)
 - Your own extracted Xbox 360 copy of the game (the build above)
 - Xcode Command Line Tools (the scripts use Apple clang at `/usr/bin/clang`, C++23)
 - CMake 3.25 or newer
