@@ -93,7 +93,9 @@ void MgrPromptDeviceUninstall() {
 }
 
 PromptFamily MgrPromptFamily() {
-  const std::string& style = REXCVAR_GET(mgr_prompt_style);
+  // Locked copy: the guest render thread asks while the settings UI may be
+  // assigning the string on another thread. Called once per 30 frames.
+  const std::string style = rex::cvar::GetFlagByName("mgr_prompt_style");
   if (style == "keyboard") return PromptFamily::kKeyboard;
   if (style == "xbox") return PromptFamily::kXbox;
   if (style == "playstation") return PromptFamily::kPlayStation;
