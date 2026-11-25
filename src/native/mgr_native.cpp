@@ -19,9 +19,9 @@
 #include "gpu/imgui_overlay_drawer.h"
 #include "platform/native_window.h"
 
-REXCVAR_DEFINE_STRING(mgr_renderer, "xenos", "MGR/Graphics",
-                      "Renderer: xenos (GPU emulation) or native (D3D-hook renderer, experimental). "
-                      "Applies on the next launch.");
+REXCVAR_DEFINE_STRING(mgr_renderer, "native", "MGR/Graphics",
+                      "Renderer: native (D3D-hook renderer, the shipped default) or xenos "
+                      "(GPU emulation, development reference). Applies on the next launch.");
 
 namespace mgrn {
 
