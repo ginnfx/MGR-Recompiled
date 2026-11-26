@@ -243,6 +243,10 @@ plume::RenderShader *GetOrLinkShader(GuestShader *shader, u32 specConstants);
 // By microcode hash (== ShaderCacheEntry::hash). nullptr if not yet created.
 GuestShader *FindGuestShaderByHash(u64 hash);
 
+// Drops the registry entry that points at `shader`; call before freeing it so
+// PSO replay never resolves a hash to freed memory.
+void ForgetGuestShader(GuestShader *shader);
+
 // 4x4 neutral-white, process lifetime. SetTexture substitutes it for content
 // textures reblue cannot resolve.
 GuestTexture *GetOrCreateDebugTexture();

@@ -43,6 +43,9 @@
 namespace mgrn::gpu {
 
 namespace {
+// Guards ShaderCacheEntry::guestShader, read by PSO replay on worker threads.
+std::mutex g_guestShaderMutex;
+
 ShaderCacheEntry *FindShaderCacheEntry(u64 hash) {
   auto *end = g_shaderCacheEntries + g_shaderCacheEntryCount;
   auto *result = std::lower_bound(
@@ -158,6 +161,7 @@ GuestShader *CreateShader(const be_u32 *function, ResourceType type) {
   ShaderCacheEntry *entry = FindShaderCacheEntry(hash);
   auto *shader = HostResourceHeap::Alloc<GuestShader>(type);
   if (entry) {
+    std::lock_guard lock(g_guestShaderMutex);
     if (entry->guestShader == nullptr) {
       entry->guestShader = shader;
     }
@@ -272,9 +276,21 @@ plume::RenderShader *GetOrLinkShader(GuestShader *gs, u32 specConstants) {
 
 GuestShader *FindGuestShaderByHash(u64 hash) {
   ShaderCacheEntry *entry = FindShaderCacheEntry(hash);
-  if (!entry || !entry->guestShader)
+  if (!entry)
     return nullptr;
+  std::lock_guard lock(g_guestShaderMutex);
   return entry->guestShader;
+}
+
+void ForgetGuestShader(GuestShader *shader) {
+  if (!shader || !shader->shaderCacheEntry)
+    return;
+  ShaderCacheEntry *entry = FindShaderCacheEntry(shader->shaderCacheEntry->hash);
+  if (!entry)
+    return;
+  std::lock_guard lock(g_guestShaderMutex);
+  if (entry->guestShader == shader)
+    entry->guestShader = nullptr;
 }
 
 } // namespace mgrn::gpu
