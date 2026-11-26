@@ -11,6 +11,7 @@
 #include "gpu/settings.h"
 #include "gpu/pipeline/pso_recorder.h"
 
+#include <format>
 #include <string>
 
 #include <rex/cvar.h>
@@ -109,6 +110,17 @@ i32 g_msaa = 0;
 bool g_transparency_aa = false;
 u32 g_target_generation = 1;
 f32 g_max_upscale = 1.0f;
+bool g_status_published = false;
+
+// The Options menu reads mgr_resolution_status ("requested|state|active|reason",
+// scales as "1", "1.5", "2", "3"; src/mgr_settings.h). This renderer applies a
+// new scale at the next present, so the requested scale is active at once.
+void PublishResolutionStatus(f32 scene) {
+  const std::string scale = std::format("{:g}", scene);
+  rex::cvar::SetFlagByName("mgr_resolution_active_scale", scale);
+  rex::cvar::SetFlagByName("mgr_resolution_status", scale + "|active|" + scale + "|");
+  g_status_published = true;
+}
 } // namespace
 
 f32 SceneRenderScale() { return g_scene_scale; }
@@ -135,8 +147,10 @@ void RefreshRenderTargetSettings() {
   const i32 msaa = input != scene ? 0 : Settings::Get().MSAA();
   const bool transparencyAA = Settings::Get().TransparencyAA();
   if (scene == g_scene_scale && input == g_scene_input_scale && shadow == g_shadow_scale &&
-      msaa == g_msaa && transparencyAA == g_transparency_aa)
+      msaa == g_msaa && transparencyAA == g_transparency_aa && g_status_published)
     return;
+  if (scene != g_scene_scale || !g_status_published)
+    PublishResolutionStatus(scene);
   g_scene_scale = scene;
   g_scene_input_scale = input;
   g_shadow_scale = shadow;

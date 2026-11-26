@@ -346,6 +346,8 @@ void Labels(uint8_t* base) {
     };
     if (!menu.pending_scale.empty())
       wrapped = Value(kInternalResolution) + " applies when you close Options. Active: " + resolution(status.active) + ".";
+    else if (status.state == "active" && status.requested == status.active)
+      wrapped += " Active: " + std::string(resolution(status.active)) + ".";
     else
       wrapped = "Requested: " + Value(kInternalResolution) + ". Active: " + resolution(status.active) + ". " + status.state + ".";
     if (status.state == "failed") wrapped += " " + status.reason.substr(0, 55);
