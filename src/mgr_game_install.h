@@ -106,6 +106,12 @@ struct DlcPackage {
 DlcPackage CheckDlcPackage(const std::filesystem::path& package);
 const char* Describe(DlcCheck check);
 
+// A pending package that fails its block hashes is renamed to <name>.damaged so
+// later launches skip it instead of retrying.
+std::filesystem::path DamagedPackagePath(const std::filesystem::path& package);
+// False for files the installer must leave alone (.partial copies, .damaged).
+bool IsPendingPackageFile(const std::filesystem::path& package);
+
 // Copies a checked package into data_root/dlc (unpacked on the next boot by
 // MgrInstallPendingDlc).
 InstallResult QueueDlcPackage(const std::filesystem::path& package,

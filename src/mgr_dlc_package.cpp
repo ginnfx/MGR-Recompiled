@@ -169,4 +169,15 @@ InstallResult QueueDlcPackage(const fs::path& package, const fs::path& data_root
   return {true, false, {}};
 }
 
+std::filesystem::path DamagedPackagePath(const std::filesystem::path& package) {
+  std::filesystem::path aside = package;
+  aside += ".damaged";
+  return aside;
+}
+
+bool IsPendingPackageFile(const std::filesystem::path& package) {
+  const auto ext = package.extension();
+  return ext != ".partial" && ext != ".damaged";
+}
+
 }  // namespace mgr_install

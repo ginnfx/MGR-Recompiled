@@ -59,6 +59,10 @@ DlcCheck Check(const std::vector<uint8_t>& bytes) {
 }  // namespace
 
 int main() {
+  assert(mgr_install::DamagedPackagePath("pending/wolf.pkg") == fs::path("pending/wolf.pkg.damaged"));
+  assert(mgr_install::IsPendingPackageFile("pending/wolf"));
+  assert(!mgr_install::IsPendingPackageFile("pending/wolf.partial"));
+  assert(!mgr_install::IsPendingPackageFile("pending/wolf.damaged"));
   const auto good = FakePackage();
   const fs::path path = Write(good, "good");
   const auto info = mgr_install::CheckDlcPackage(path);
