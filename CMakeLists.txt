@@ -30,6 +30,10 @@ set(MGR_SOURCES
     src/mgr_options_dialog.cpp
     src/mgr_game_options.cpp
     src/mgr_native_options.cpp
+    src/mgr_options_dump.cpp
+    src/mgr_options_pictures.cpp
+    src/mgr_picture_codec.cpp
+    src/mgr_options_sprite.cpp
     src/mgr_options_trace.cpp
     src/mgr_menu_fonts.cpp
     src/mgr_test_script.cpp

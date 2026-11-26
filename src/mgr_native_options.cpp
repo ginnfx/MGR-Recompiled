@@ -2,6 +2,9 @@
 // Reuses the retail UID instances, MCD renderer, row animation states and audio.
 // No host UI rendering or host input polling is used by this menu.
 #include "mgr_native_options.h"
+#include "mgr_options_dump.h"
+#include "mgr_options_pictures.h"
+#include "mgr_options_sprite.h"
 #include "mgr_settings.h"
 #include "native/mgr_native.h"
 #include "generated/default/mgr_pch.h"
@@ -29,6 +32,8 @@ REX_EXTERN(sub_82C40F08);  // OptionGroup::setActive(group, active)
 REX_EXTERN(sub_82886A90);  // native menu sound, shared-string argument
 REX_EXTERN(sub_82C46620);  // existing description animation/update
 REX_EXTERN(sub_82C4C6A0);  // existing help text for a retail row
+REX_EXTERN(sub_82C40728);  // OptionGroup exit: commit working bytes (r4 = 1) or restore the entry copy (r4 = 0)
+REX_EXTERN(sub_82C39DD8);  // save-data request (mode r3, flag r4); the retail YES path uses (6, -1)
 REX_EXTERN(sub_8293F530);  // Ui::setNodeY(owner, node, f1 = y), rounded like the retail cursor
 
 namespace {
@@ -41,9 +46,32 @@ constexpr uint32_t kTextVtable = 0x821CBF50;
 constexpr uint32_t kCursorNode = 860, kCursorTarget = 956, kCursorMoving = 964;
 // Group containers (one per OptionGroup) and the node Y that 8293F530 writes
 // (node+672+196, a rounded float).
-constexpr uint32_t kGroupContainers = 848, kNodeY = 868;
+constexpr uint32_t kGroupContainers = 848, kNodeX = 864, kNodeY = 868;
 constexpr float kCursorRowStep = 44.0f, kCursorGroupGap = 6.0f;
+// Node scale Y (+20, mirrored at +100): the selection band is a 44 unit sprite.
+constexpr uint32_t kNodeScaleY = 20, kNodeScaleYMirror = 100;
 constexpr int kDisplayFirstRow = 6, kSoundFirstRow = 9;
+// cOptionMenu keeps the retail rows as 14 bytes: working values at +925, and the copy
+// taken on entry at +939 that Cancel restores (82C40728 with r4 = 0).
+constexpr uint32_t kWorkOptions = 925, kEntryOptions = 939, kOptionBytes = 14;
+constexpr uint32_t kSaveSettingsMode = 6, kSaveNoFlag = 0xFFFFFFFFu;
+// Widget pointer of a UI node (all node types), traced 2026-11-26.
+constexpr uint32_t kNodeWidget = 1008;
+// Sounds played through Sound() (guest addresses of the retail cue ids).
+constexpr uint32_t kSoundMove = 0x8218A538, kSoundBack = 0x8218A524, kSoundSelect = 0x8218A660;
+// Bits of the retail input words (tap at kInput+4, repeat at kInput+12).
+constexpr uint32_t kTapConfirm = 0x10, kTapCancel = 0x20;
+constexpr uint32_t kRepeatUp = 0x8 | 0x40000, kRepeatDown = 0x4 | 0x80000;
+constexpr uint32_t kRepeatLeft = 0x1 | 0x10000, kRepeatRight = 0x2 | 0x20000;
+// MGR_OPTIONS_TEST_ROWS upper bound.
+constexpr long kMaxTestRows = 64;
+// Retail lays most value texts out at x=3 but some slots (group 0 rows 4-5, group 2
+// rows 0-2) at x=13, which shows as a stray leading space; all use x=3 here.
+constexpr float kValueLayoutX = 3.0f;
+// The help text grows upward from its bottom edge, so a 3-line text reaches the
+// picture box; it is moved down by one line (UI units) then.
+constexpr int kHelpTallLines = 3;
+constexpr float kHelpTallShift = 26.0f;
 // OptionGroup node ids for the two System slider bars (built by 82C44810).
 // Audio has three sliders, so up to 30 segments (the group struct ends at +268).
 constexpr uint32_t kSliderSegmentIds = 136, kSliderSegments = 30;
@@ -171,12 +199,19 @@ struct Menu {
   // are offset by the same amount.
   uint32_t lifted_node = 0, lifted_y = 0;
   // Nodes whose Y offset (+868) a custom page changed, with the original bits.
-  std::unordered_map<uint32_t, uint32_t> moved;
+  std::unordered_map<uint32_t, uint32_t> moved;    // node -> original Y offset bits
+  std::unordered_map<uint32_t, uint32_t> moved_x;  // node -> original X offset bits
+  // The selection node whose scale Y a compact page changed, with the original bits.
+  std::unordered_map<uint32_t, uint32_t> cursor_scale;
   // Groups whose row count (+260) a custom page raised, with the original.
   std::unordered_map<uint32_t, uint8_t> row_counts;
   float cursor_bias = 0;
   std::unordered_map<uint32_t, uint32_t> visibility;
   std::unordered_map<uint32_t, NativeText> text;
+  // Side picture: the controller diagram sprite's texture, swapped while a custom
+  // page is open. shown_* is the row it currently illustrates.
+  mgr_options_sprite::SpriteTexture picture;
+  std::string shown_key, shown_value;
   std::filesystem::path config;
 } menu;
 
@@ -197,10 +232,16 @@ void Restore(uint8_t* base) {
   for (const auto& [node, value] : menu.visibility) W32(base, node + 944, value);
   for (const auto& [node, bits] : menu.moved) W32(base, node + kNodeY, bits);
   menu.moved.clear();
+  for (const auto& [node, bits] : menu.moved_x) W32(base, node + kNodeX, bits);
+  menu.moved_x.clear();
+  for (const auto& [node, bits] : menu.cursor_scale) { W32(base, node + kNodeScaleY, bits); W32(base, node + kNodeScaleYMirror, bits); }
+  menu.cursor_scale.clear();
   for (const auto& [group, count] : menu.row_counts) base[group + kGroupRowCount] = count;
   menu.row_counts.clear();
   if (menu.lifted_node) W32(base, menu.lifted_node + kNodeY, menu.lifted_y);
   menu.lifted_node = 0; menu.cursor_bias = 0;
+  menu.picture.Restore(base);
+  menu.shown_key.clear(); menu.shown_value.clear();
   for (auto& [_, t] : menu.text) {
     if (U32(base, t.widget + 20) != t.allocation) continue;
     W32(base, t.widget + 20, t.original_context);
@@ -219,7 +260,7 @@ void Restore(uint8_t* base) {
 bool SetText(uint8_t* base, uint32_t owner, uint32_t id, const std::string& value, uint16_t font = 3) {
   const uint32_t node = Node(base, owner, id);
   if (!node) return false;
-  const uint32_t widget = U32(base, node + 1008);
+  const uint32_t widget = U32(base, node + kNodeWidget);
   if (!widget || U32(base, widget) != kTextVtable) return false;
   auto& t = menu.text[widget];
   if (!t.widget) {
@@ -229,7 +270,7 @@ bool SetText(uint8_t* base, uint32_t owner, uint32_t id, const std::string& valu
     uint32_t core_context = 0;
     const uint32_t legend = Node(base, menu.object, 12);
     if (legend) {
-      const uint32_t legend_widget = U32(base, legend + 1008);
+      const uint32_t legend_widget = U32(base, legend + kNodeWidget);
       if (legend_widget && U32(base, legend_widget) == kTextVtable)
         core_context = U32(base, legend_widget + 20);
     }
@@ -342,6 +383,14 @@ float CustomCursorY(int slot) {
   return (Compact() ? kCompactShift : 0.0f) + slot * SlotPitch() + (slot >= kGroupFirstRow[1] ? kCursorGroupGap : 0) +
          (slot >= kGroupFirstRow[2] ? kCursorGroupGap : 0);
 }
+// Fits the selection band to the row pitch so it does not overlap its neighbours.
+void ScaleCursor(uint8_t* base) {
+  const uint32_t node = Node(base, menu.object, U32(base, menu.object + kCursorNode));
+  if (!node) return;
+  menu.cursor_scale.try_emplace(node, U32(base, node + kNodeScaleY));
+  const uint32_t bits = Compact() ? std::bit_cast<uint32_t>(kCompactPitch / kCursorRowStep) : menu.cursor_scale.at(node);
+  W32(base, node + kNodeScaleY, bits); W32(base, node + kNodeScaleYMirror, bits);
+}
 void MoveCursor(uint8_t* base, float y) {
   W32(base, menu.object + kCursorTarget, std::bit_cast<uint32_t>(y - menu.cursor_bias));
   W32(base, menu.object + kCursorMoving, 1);
@@ -377,6 +426,12 @@ std::vector<Option> ForRenderer(std::span<const Option> all) {
     if (std::string_view(option.key) == "mgr_msaa") option.choices = SupportedMsaa();
     shown.push_back(option);
   }
+  // MGR_OPTIONS_TEST_ROWS=<n> (diagnostic): repeat the rows up to n, to exercise scrolling.
+  static const size_t wanted = [] {
+    const char* text = std::getenv("MGR_OPTIONS_TEST_ROWS");
+    return text ? size_t(std::clamp(std::strtol(text, nullptr, 10), 0L, kMaxTestRows)) : size_t(0);
+  }();
+  for (size_t i = 0; wanted && !shown.empty() && shown.size() < wanted; ++i) shown.push_back(shown[i]);
   return shown;
 }
 std::span<const Option> Options() {
@@ -429,6 +484,42 @@ std::string Value(const Option& option) {
   const auto value = IsDeferred(option) ? RequestedScale() : rex::cvar::GetFlagByName(option.key);
   for (const Choice& c : option.choices) if (IsChoice(value, c.value)) return c.label;
   return value;
+}
+// The retail controller diagram sprite (outer node 9) shows a diagram of the selected
+// option on custom pages. Its texture is swapped in guest memory; the blocks outside
+// kPictureRegion belong to other sprites of the same texture and are never touched.
+constexpr uint32_t kPictureNode = 9;
+constexpr mgr_pictures::Region kPictureRegion{0, 0, mgr_pictures::kRegionWidth, mgr_pictures::kRegionHeight};
+void UpdatePicture(uint8_t* base) {
+  const bool wanted = menu.page != Page::Categories && menu.row < int(Options().size());
+  if (!wanted) { Visible(base, menu.object, kPictureNode, false); return; }
+  if (!menu.picture.Attached()) {
+    const uint32_t node = Node(base, menu.object, kPictureNode);
+    if (!node || !menu.picture.Attach(base, U32(base, node + kNodeWidget))) return;
+  }
+  const Option& option = Options()[menu.row];
+  const std::string value = IsDeferred(option) ? RequestedScale() : rex::cvar::GetFlagByName(option.key);
+  if (menu.shown_key != option.key || menu.shown_value != value) {
+    menu.picture.Write(base, mgr_pictures::RenderOptionPicture(option.key, value), kPictureRegion);
+    menu.shown_key = option.key; menu.shown_value = value;
+  }
+  Visible(base, menu.object, kPictureNode, true);
+}
+float NodeFloat(const uint8_t* base, uint32_t node, uint32_t offset);
+void OffsetNodeTo(uint8_t* base, uint32_t node, float target_y);
+// Moves a text node so its X lands `target_x` units from its layout X.
+void OffsetNodeXTo(uint8_t* base, uint32_t node, float target_x) {
+  menu.moved_x.try_emplace(node, U32(base, node + kNodeX));
+  W32(base, node + kNodeX, std::bit_cast<uint32_t>(target_x - NodeFloat(base, node, 0)));
+}
+void PlaceHelp(uint8_t* base, int lines) {
+  const uint32_t node = Node(base, menu.object, U32(base, menu.object + 864));
+  if (!node) return;
+  const auto moved = menu.moved.find(node);
+  if (lines >= kHelpTallLines) { OffsetNodeTo(base, node, NodeFloat(base, node, 4) + kHelpTallShift); return; }
+  if (moved == menu.moved.end()) return;
+  W32(base, node + kNodeY, moved->second);
+  menu.moved.erase(moved);
 }
 void Labels(uint8_t* base) {
   for (int i = 0; i < kVisibleRows; ++i) {
@@ -499,6 +590,8 @@ void Labels(uint8_t* base) {
     wrapped[at] = '\n'; start = at + 1;
   }
   SetText(base, menu.object, U32(base, menu.object + 864), wrapped);
+  PlaceHelp(base, 1 + int(std::count(wrapped.begin(), wrapped.end(), '\n')));
+  UpdatePicture(base);
 }
 float NodeFloat(const uint8_t* base, uint32_t node, uint32_t offset) {
   return std::bit_cast<float>(U32(base, node + offset));
@@ -523,6 +616,8 @@ void LayoutSlots(uint8_t* base) {
     for (int i = 0; i < kGroupRows[k]; ++i) {
       const uint32_t row = Node(base, group, U32(base, group + 40 + i * 4));
       if (row) OffsetNodeTo(base, row, i * SlotPitch());
+      const uint32_t value = Node(base, group, U32(base, group + 88 + i * 4));
+      if (value) OffsetNodeXTo(base, value, kValueLayoutX);
     }
   }
 }
@@ -544,6 +639,7 @@ void CustomPage(PPCContext& ctx, uint8_t* base, Page page, int row = 0) {
   for (int i = 0; i < kVisibleRows; ++i) Highlight(ctx, base, i, false);
   Highlight(ctx, base, Slot(), true);
   Labels(base);
+  ScaleCursor(base);
   MoveCursor(base, CustomCursorY(Slot()));
   base[menu.object + 921] = uint8_t(Slot()); base[menu.object + 922] = 1;
   std::fprintf(stderr, "[mgr-native-options] page=%d row=%d\n", int(page), row);
@@ -593,65 +689,37 @@ bool RetailWrap(PPCContext& ctx, uint8_t* base, bool up, bool down) {
   PlaceCursor(ctx, base);
   Call(ctx, base, sub_82C4C6A0, menu.object, uint32_t(next));
   Call(ctx, base, sub_82C46620, U32(base, menu.object + 840));
-  Sound(ctx, base, 0x8218A538);
+  Sound(ctx, base, kSoundMove);
   std::fprintf(stderr, "[mgr-native-options] retail wrap row=%d\n", next);
   return true;
+}
+// Retail Confirm shows "Options updated. Proceed?"; YES runs 82C40728(obj, 1) then
+// the save request 82C39DD8(6, -1) (82C71448, 82C72208). Cancel, which is also how
+// this menu is left, restores the entry copy and saves nothing, so a changed retail
+// row was lost. Leaving with changes pending now takes the YES path; the entry copy
+// is updated so the retail Cancel that follows restores the same values.
+bool RetailChangesPending(const uint8_t* base) {
+  return std::memcmp(Guest(base, menu.object + kWorkOptions), Guest(base, menu.object + kEntryOptions), kOptionBytes) != 0;
+}
+void CommitRetailOptions(PPCContext& ctx, uint8_t* base) {
+  if (!RetailChangesPending(base)) return;
+  Call(ctx, base, sub_82C40728, menu.object, 1);
+  // 82C39DD8 returns 0 when the write could not be started (82C39E88), else 1.
+  const uint32_t accepted = Call(ctx, base, sub_82C39DD8, kSaveSettingsMode, kSaveNoFlag);
+  std::memcpy(Guest(base, menu.object + kEntryOptions), Guest(base, menu.object + kWorkOptions), kOptionBytes);
+  std::fprintf(stderr, "[mgr-native-options] committed retail options; %s\n",
+               accepted ? "save requested" : "SAVE REQUEST FAILED");
 }
 void FreeSession() {
   auto* memory = REX_KERNEL_STATE()->memory();
   for (auto& [_, t] : menu.text) if (t.allocation) memory->SystemHeapFree(t.allocation);
   if (menu.scratch) memory->SystemHeapFree(menu.scratch);
-  menu.text.clear(); menu.visibility.clear(); menu.moved.clear(); menu.row_counts.clear(); menu.scratch = 0; menu.object = 0; menu.ready = false;
+  menu.text.clear(); menu.visibility.clear(); menu.moved.clear(); menu.moved_x.clear(); menu.cursor_scale.clear(); menu.row_counts.clear(); menu.scratch = 0; menu.object = 0; menu.ready = false;
   menu.lifted_node = 0; menu.cursor_bias = 0;
+  menu.picture.Forget(); menu.shown_key.clear(); menu.shown_value.clear();
 }
 void Save() {
   if (menu.dirty) { MgrSaveConfig(menu.config); menu.dirty = false; }
-}
-// MGR_OPTIONS_DUMP=<file> (diagnostic): write every UI node's non-zero words and
-// the group's slot id arrays, to measure the retail layout.
-void DumpLayout(uint8_t* base) {
-  const char* path = std::getenv("MGR_OPTIONS_DUMP");
-  if (!path || !*path) return;
-  std::FILE* out = std::fopen(path, "w");
-  if (!out) return;
-  const uint32_t ui = U32(base, menu.object + 24), count = U32(base, ui + 124);
-  std::fprintf(out, "object=%08X ui=%08X nodes=%u\n", menu.object, ui, count);
-  const uint32_t group = menu.object + 28;
-  for (uint32_t offset = 40; offset < 136; offset += 4) {
-    std::fprintf(out, "group+%u id=%u\n", offset, U32(base, group + offset));
-  }
-  for (uint32_t k = 0; k < 3; ++k) {
-    std::fprintf(out, "container[%u] id=%u\n", k, U32(base, menu.object + kGroupContainers + k * 4));
-  }
-  for (uint32_t offset : kGroupOffsets) {
-    const uint32_t owner = menu.object + offset, group_ui = U32(base, owner + 24);
-    std::fprintf(out, "group@+%u ui=%08X nodes=%u text ids:", offset, group_ui, group_ui ? U32(base, group_ui + 124) : 0);
-    for (uint32_t id = 0; group_ui && id < U32(base, group_ui + 124); ++id) {
-      const uint32_t node = Node(base, owner, id), widget = U32(base, node + 1008);
-      if (widget && U32(base, widget) == kTextVtable)
-        std::fprintf(out, " %u(x=%.0f,y=%.0f)", id, std::bit_cast<float>(U32(base, node)), std::bit_cast<float>(U32(base, node + 4)));
-    }
-    std::fprintf(out, "\n");
-    for (uint32_t array : {40u, 64u, 88u, 112u}) {
-      std::fprintf(out, "  group@+%u array+%u:", offset, array);
-      for (uint32_t i = 0; i < 6; ++i) {
-        const uint32_t id = U32(base, owner + array + i * 4), node = Node(base, owner, id);
-        std::fprintf(out, " %u(y=%.1f vis=%u)", id, node ? std::bit_cast<float>(U32(base, node + 4)) : -1.f, node ? U32(base, node + 944) : 0);
-      }
-      std::fprintf(out, "\n");
-    }
-  }
-  for (uint32_t id = 0; id < count; ++id) {
-    const uint32_t node = Node(base, menu.object, id);
-    std::fprintf(out, "node %u @%08X:", id, node);
-    for (uint32_t off = 0; off < 1024; off += 4) {
-      const uint32_t v = U32(base, node + off);
-      if (v) std::fprintf(out, " %u=%08X", off, v);
-    }
-    std::fprintf(out, "\n");
-  }
-  std::fclose(out);
-  std::fprintf(stderr, "[mgr-native-options] layout dumped to %s (%u nodes)\n", path, count);
 }
 // MGR_NATIVE_OPTIONS=0 (diagnostic): leave the retail Options menu untouched.
 bool Enabled() {
@@ -661,16 +729,59 @@ bool Enabled() {
   }();
   return enabled;
 }
+// Retail B (82C40728(obj, 0), phase 4 -> 5) then fades out over the Categories page;
+// End() restores the retail text before the destructor runs.
+bool HandleCancel(PPCContext& ctx, uint8_t* base) {
+  if (menu.page == Page::Categories) { CommitRetailOptions(ctx, base); return false; }
+  Save(); CustomPage(ctx, base, Page::Categories, menu.category); Sound(ctx, base, kSoundBack);
+  return true;
+}
+void Navigate(PPCContext& ctx, uint8_t* base, bool down) {
+  const int count = RowCount();
+  Highlight(ctx, base, Slot(), false);
+  menu.row = (menu.row + (down ? 1 : count - 1)) % count;
+  ScrollToRow();
+  std::fprintf(stderr, "[mgr-native-options] select page=%d row=%d slot=%d\n", int(menu.page), menu.row, Slot());
+  Highlight(ctx, base, Slot(), true); base[menu.object + 921] = uint8_t(Slot());
+  MoveCursor(base, CustomCursorY(Slot()));
+  Sound(ctx, base, kSoundMove);
+}
+void EnterCategory(PPCContext& ctx, uint8_t* base) {
+  menu.category = menu.row;
+  if (menu.row < kFirstCustomCategory) RetailPage(ctx, base, menu.row);
+  else CustomPage(ctx, base, kCustomPages[menu.row - kFirstCustomCategory]);
+  Sound(ctx, base, kSoundSelect);
+}
+void AdjustOption(PPCContext& ctx, uint8_t* base, bool right) {
+  if (menu.row >= int(Options().size())) return;
+  const auto& option = Options()[menu.row];
+  const bool deferred = IsDeferred(option);
+  const std::string current = deferred ? RequestedScale() : rex::cvar::GetFlagByName(option.key);
+  size_t i = 0;
+  for (size_t n = 0; n < option.choices.size(); ++n) if (IsChoice(current, option.choices[n].value)) i = n;
+  const size_t next = (i + (right ? 1 : option.choices.size() - 1)) % option.choices.size();
+  if (deferred) {
+    const std::string_view value = option.choices[next].value;
+    menu.pending_scale = value == rex::cvar::GetFlagByName(option.key) ? "" : std::string(value);
+    Sound(ctx, base, kSoundMove);
+    std::fprintf(stderr, "[mgr-native-options] pending %s=%s\n", option.key, option.choices[next].value);
+  } else if (rex::cvar::SetFlagByName(option.key, option.choices[next].value)) {
+    menu.dirty = true; Sound(ctx, base, kSoundMove);
+    std::fprintf(stderr, "[mgr-native-options] set %s=%s\n", option.key, option.choices[next].value);
+  }
+}
 } // namespace
 
 void MgrNativeOptionsConfigure(const std::filesystem::path& config_path) { menu.config = config_path; }
 
-void MgrNativeOptionsBegin(PPCContext&, uint8_t*, uint32_t object) {
+void MgrNativeOptionsBegin(PPCContext&, uint8_t* base, uint32_t object) {
   if (!Enabled()) return;
   // A session that ended without the destructor hook leaves addresses that may
   // now belong to other objects: release them without writing guest memory.
   if (menu.object && menu.object != object) {
     std::fprintf(stderr, "[mgr-native-options] dropping stale session %08X\n", menu.object);
+    // Only the picture is put back (guarded by its WTB magic); other state is dropped unwritten.
+    menu.picture.Restore(base);
     FreeSession();
   }
   menu.object = object; menu.ready = false; menu.dirty = false; menu.page = Page::Categories; menu.row = menu.category = menu.scroll = 0;
@@ -686,7 +797,7 @@ bool MgrNativeOptionsUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
     // The UI resource may still be loading on the first frames.
     if (phase > 1 || !Node(base, object, U32(base, object + 848))) return false;
     menu.ready = true;
-    DumpLayout(base);
+    MgrDumpOptionsLayout(base, menu.object);
     CustomPage(ctx, base, Page::Categories);
     PlaceCursor(ctx, base);
     return phase == 1;
@@ -696,47 +807,13 @@ bool MgrNativeOptionsUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
   const uint32_t tapped = U32(base, kInput + 4), repeat = U32(base, kInput + 12);
   if ((tapped || repeat) && std::getenv("MGR_OPTIONS_TRACE"))
     std::fprintf(stderr, "[mgr-native-input] tap=%08X repeat=%08X\n", tapped, repeat);
-  const bool up = repeat & (0x8 | 0x40000), down = repeat & (0x4 | 0x80000);
+  const bool up = repeat & kRepeatUp, down = repeat & kRepeatDown;
   if (menu.page == Page::Retail) return RetailWrap(ctx, base, up, down);
-  const bool left = repeat & (0x1 | 0x10000), right = repeat & (0x2 | 0x20000);
-  const bool confirm = tapped & 0x10, cancel = tapped & 0x20;
-  if (cancel) {
-    // Retail B (82C40728(obj, 0), phase 4 -> 5) then fades out over this page;
-    // End() restores the retail text before the destructor runs.
-    if (menu.page == Page::Categories) return false;
-    Save(); CustomPage(ctx, base, Page::Categories, menu.category); Sound(ctx, base, 0x8218A524); return true;
-  }
-  if (up || down) {
-    const int count = RowCount();
-    Highlight(ctx, base, Slot(), false);
-    menu.row = (menu.row + (down ? 1 : count - 1)) % count;
-    ScrollToRow();
-    std::fprintf(stderr, "[mgr-native-options] select page=%d row=%d slot=%d\n", int(menu.page), menu.row, Slot());
-    Highlight(ctx, base, Slot(), true); base[object + 921] = uint8_t(Slot());
-    MoveCursor(base, CustomCursorY(Slot()));
-    Sound(ctx, base, 0x8218A538);
-  } else if (menu.page == Page::Categories && confirm) {
-    menu.category = menu.row;
-    if (menu.row < kFirstCustomCategory) RetailPage(ctx, base, menu.row);
-    else CustomPage(ctx, base, kCustomPages[menu.row - kFirstCustomCategory]);
-    Sound(ctx, base, 0x8218A660);
-  } else if (menu.page != Page::Categories && menu.row < int(Options().size()) && (left || right)) {
-    const auto& option = Options()[menu.row];
-    const bool deferred = IsDeferred(option);
-    const std::string current = deferred ? RequestedScale() : rex::cvar::GetFlagByName(option.key);
-    size_t i = 0;
-    for (size_t n = 0; n < option.choices.size(); ++n) if (IsChoice(current, option.choices[n].value)) i = n;
-    const size_t next = (i + (right ? 1 : option.choices.size() - 1)) % option.choices.size();
-    if (deferred) {
-      const std::string_view value = option.choices[next].value;
-      menu.pending_scale = value == rex::cvar::GetFlagByName(option.key) ? "" : std::string(value);
-      Sound(ctx, base, 0x8218A538);
-      std::fprintf(stderr, "[mgr-native-options] pending %s=%s\n", option.key, option.choices[next].value);
-    } else if (rex::cvar::SetFlagByName(option.key, option.choices[next].value)) {
-      menu.dirty = true; Sound(ctx, base, 0x8218A538);
-      std::fprintf(stderr, "[mgr-native-options] set %s=%s\n", option.key, option.choices[next].value);
-    }
-  }
+  if (tapped & kTapCancel) return HandleCancel(ctx, base);
+  if (up || down) Navigate(ctx, base, down);
+  else if (menu.page == Page::Categories && (tapped & kTapConfirm)) EnterCategory(ctx, base);
+  else if (menu.page != Page::Categories && (repeat & (kRepeatLeft | kRepeatRight)))
+    AdjustOption(ctx, base, repeat & kRepeatRight);
   if (menu.page != Page::Retail) Labels(base);
   PlaceCursor(ctx, base);
   Call(ctx, base, sub_82C46620, U32(base, object + 840));
@@ -746,6 +823,9 @@ bool MgrNativeOptionsUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
 void MgrNativeOptionsAfterUpdate(PPCContext& ctx, uint8_t* base, uint32_t object) {
   if (!Enabled() || menu.object != object || !menu.ready || menu.page != Page::Retail) return;
   if (base[object + 920] == 4) {
+    // Retail Cancel re-applied the entry copy (82C40728(obj, 0)) but leaves the working
+    // copy (+925) alone, so a changed value is still pending and is committed by
+    // CommitRetailOptions when the menu is left with B (see its comment).
     base[object + 920] = 1;
     CustomPage(ctx, base, Page::Categories, menu.category);
   }
