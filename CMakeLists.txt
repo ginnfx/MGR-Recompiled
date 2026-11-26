@@ -159,6 +159,21 @@ target_sources(mgr PRIVATE src/mgr_game_install.cpp src/mgr_disc_source.cpp src/
 set_source_files_properties(src/mgr_setup_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 target_link_libraries(mgr PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers"
                       "-framework ImageIO")
+# Auto-updates (src/mgr_updater.h). Off unless packaging points at an unpacked
+# Sparkle release (scripts/fetch-sparkle.sh).
+set(MGR_SPARKLE_DIR "" CACHE PATH "Folder holding Sparkle.framework; empty builds without updates")
+if(MGR_SPARKLE_DIR)
+    if(NOT EXISTS "${MGR_SPARKLE_DIR}/Sparkle.framework")
+        message(FATAL_ERROR "No Sparkle.framework in MGR_SPARKLE_DIR=${MGR_SPARKLE_DIR}")
+    endif()
+    target_sources(mgr PRIVATE src/mgr_updater_mac.mm)
+    set_source_files_properties(src/mgr_updater_mac.mm PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc;-F${MGR_SPARKLE_DIR}")
+    target_compile_definitions(mgr PRIVATE MGR_UPDATER=1)
+    target_link_options(mgr PRIVATE "-F${MGR_SPARKLE_DIR}"
+        "LINKER:-rpath,@executable_path/../Frameworks")
+    target_link_libraries(mgr PRIVATE "-framework Sparkle")
+endif()
 # Setup screen fonts (OFL) and key art. private/setup_background.jpg is a
 # local-only override; the shipped default is the app icon art.
 set(MGR_SETUP_BACKGROUND "${CMAKE_SOURCE_DIR}/cmake/macos/AppIcon-source.jpg")
@@ -294,6 +309,17 @@ endif()
 
 # `ninja -C build mgr_tests && ctest --test-dir build` runs every host-only check.
 enable_testing()
+# -DMGR_SANITIZE=ON builds the tests of the parsers and codecs with
+# AddressSanitizer and UndefinedBehaviorSanitizer.
+option(MGR_SANITIZE "Sanitize the self-contained test programs" OFF)
+if(MGR_SANITIZE)
+    foreach(_target mgr_game_install_checks mgr_dlc_package_checks mgr_picture_codec_checks
+                    mgr_bundle_paths_checks mgr_lod_bias_checks mgr_ot_key_checks)
+        target_compile_options(${_target} PRIVATE -fsanitize=address,undefined
+            -fno-sanitize-recover=all)
+        target_link_options(${_target} PRIVATE -fsanitize=address,undefined)
+    endforeach()
+endif()
 set(MGR_TEST_TARGETS mgr_msaa_twin_checks mgr_resolve_arena_checks mgr_scale_ratio_checks mgr_scaled_viewport_checks
     mgr_scaled_texture_address_checks
     mgr_ot_key_checks mgr_lod_bias_checks mgr_upscale_math_checks mgr_bundle_paths_checks mgr_game_install_checks
@@ -323,5 +349,6 @@ add_test(NAME dlc_package COMMAND mgr_dlc_package_checks)
 foreach(_mode enabled disabled forced)
     add_test(NAME timing_${_mode} COMMAND mgr_timing_checks ${_mode})
 endforeach()
+add_test(NAME package_version COMMAND "${CMAKE_SOURCE_DIR}/tests/package_version_test.sh")
 add_test(NAME native_math COMMAND mgr_native_math_checks)
 add_test(NAME native_memory COMMAND mgr_native_memory_checks)
