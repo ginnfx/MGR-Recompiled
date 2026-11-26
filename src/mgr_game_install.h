@@ -23,7 +23,7 @@ struct ManifestEntry {
 using ManifestView = std::span<const ManifestEntry>;
 // The supported disc's files (src/mgr_game_manifest.inc). Tests pass their own.
 ManifestView Manifest();
-uint64_t TotalBytes(ManifestView manifest);
+[[nodiscard]] uint64_t TotalBytes(ManifestView manifest);
 
 // Where the supported xex identifies itself (XEX2 execution info).
 inline constexpr uint32_t kTitleId = 0x4B4E080A;
@@ -38,7 +38,7 @@ enum class XexCheck {
   kModified,      // right IDs, different bytes (patched or damaged)
 };
 // expected_xxh3 is the manifest hash of default.xex.
-XexCheck CheckXex(std::span<const uint8_t> xex, uint64_t expected_xxh3);
+[[nodiscard]] XexCheck CheckXex(std::span<const uint8_t> xex, uint64_t expected_xxh3);
 const char* Describe(XexCheck check);
 
 // A place to read the game files from: an extracted folder or a disc image.
@@ -65,7 +65,7 @@ class FolderSource final : public GameSource {
 };
 
 // Reads the source's default.xex fully and checks it.
-XexCheck CheckSourceXex(GameSource& source, ManifestView manifest = Manifest());
+[[nodiscard]] XexCheck CheckSourceXex(GameSource& source, ManifestView manifest = Manifest());
 
 struct InstallResult {
   bool ok = false;
@@ -77,13 +77,13 @@ using Progress = std::function<void(uint64_t done, uint64_t total)>;
 
 // Installs into data_root/game. Leaves an existing game/ in place until the new
 // copy is complete; on failure or cancel only data_root/game.partial is removed.
-InstallResult InstallFrom(GameSource& source, const std::filesystem::path& data_root,
+[[nodiscard]] InstallResult InstallFrom(GameSource& source, const std::filesystem::path& data_root,
                           const Progress& progress, const std::atomic<bool>& cancel,
                           ManifestView manifest = Manifest());
 
 // Quick check on launch: the install marker matches this build's manifest and
 // every file has its expected size.
-bool IsInstalled(const std::filesystem::path& game_dir, ManifestView manifest = Manifest());
+[[nodiscard]] bool IsInstalled(const std::filesystem::path& game_dir, ManifestView manifest = Manifest());
 
 inline constexpr const char* kMarkerName = ".mgr-install";
 
@@ -103,18 +103,18 @@ struct DlcPackage {
   std::string name;      // English display name from the package header
   uint64_t size = 0;
 };
-DlcPackage CheckDlcPackage(const std::filesystem::path& package);
+[[nodiscard]] DlcPackage CheckDlcPackage(const std::filesystem::path& package);
 const char* Describe(DlcCheck check);
 
 // A pending package that fails its block hashes is renamed to <name>.damaged so
 // later launches skip it instead of retrying.
 std::filesystem::path DamagedPackagePath(const std::filesystem::path& package);
 // False for files the installer must leave alone (.partial copies, .damaged).
-bool IsPendingPackageFile(const std::filesystem::path& package);
+[[nodiscard]] bool IsPendingPackageFile(const std::filesystem::path& package);
 
 // Copies a checked package into data_root/dlc (unpacked on the next boot by
 // MgrInstallPendingDlc).
-InstallResult QueueDlcPackage(const std::filesystem::path& package,
+[[nodiscard]] InstallResult QueueDlcPackage(const std::filesystem::path& package,
                               const std::filesystem::path& data_root);
 
 }  // namespace mgr_install

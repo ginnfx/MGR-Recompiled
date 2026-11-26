@@ -77,6 +77,9 @@ int main() {
   assert(Check(truncated) == DlcCheck::kDamaged);
   assert(Check(FakePackage(0x5345085E)) == DlcCheck::kOtherGame);
   assert(Check(FakePackage(mgr_install::kTitleId, 1)) == DlcCheck::kNotDlc);
+  auto empty = good;
+  Put32(empty, 0x379 + 0x1C, 0);  // no data blocks, so nothing could be verified
+  assert(Check(empty) == DlcCheck::kDamaged);
   auto writable = good;
   writable[0x379 + 2] = 0;
   assert(Check(writable) == DlcCheck::kUnsupported);

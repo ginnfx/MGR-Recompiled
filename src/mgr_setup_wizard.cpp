@@ -14,6 +14,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <exception>
 #include <vector>
 
 #include "mgr_disc_source.h"
@@ -188,7 +189,12 @@ void SetupWizard::PickDlc() {
   dlc_checking_ = int(picked.size());
   worker_ = std::thread([this, picked = std::move(picked)] {
     for (const auto& path : picked) {
-      auto info = mgr_install::CheckDlcPackage(path);
+      mgr_install::DlcPackage info;
+      try {
+        info = mgr_install::CheckDlcPackage(path);
+      } catch (const std::exception& error) {  // would otherwise end the app
+        REXLOG_ERROR("Setup: DLC check of {} failed: {}", path.string(), error.what());
+      }
       REXLOG_INFO("Setup: DLC {} ({}) -> {}", path.filename().string(), info.name,
                   mgr_install::Describe(info.check));
       std::lock_guard lock(dlc_mutex_);

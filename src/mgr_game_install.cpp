@@ -1,7 +1,10 @@
 #include "mgr_game_install.h"
 
+#include "mgr_byte_order.h"
+
 #include <xxhash.h>
 
+#include <exception>
 #include <fstream>
 #include <system_error>
 #include <vector>
@@ -16,16 +19,14 @@ constexpr ManifestEntry kManifest[] = {
 };
 
 constexpr size_t kChunkBytes = size_t{1} << 20;
+// default.xex is read into memory whole; far above any real one, so a bogus
+// file is refused before it is allocated.
+constexpr int64_t kMaxXexBytes = int64_t{64} << 20;
 // Room for the install marker and filesystem overhead beyond the file bytes.
 constexpr uint64_t kSpaceMarginBytes = uint64_t{256} << 20;
 constexpr uint32_t kExecutionInfoKey = 0x00040006;
 constexpr size_t kXexHeaderCountOffset = 0x14;
 constexpr size_t kXexHeadersOffset = 0x18;
-
-uint32_t ReadBE32(std::span<const uint8_t> bytes, size_t offset) {
-  return uint32_t{bytes[offset]} << 24 | uint32_t{bytes[offset + 1]} << 16 |
-         uint32_t{bytes[offset + 2]} << 8 | uint32_t{bytes[offset + 3]};
-}
 
 const ManifestEntry* FindEntry(ManifestView manifest, std::string_view path) {
   for (const auto& entry : manifest)
@@ -96,13 +97,20 @@ InstallResult CopyEntry(GameSource& source, const ManifestEntry& entry, const fs
 InstallResult Commit(const fs::path& partial, const fs::path& game) {
   std::error_code ec;
   const fs::path old = game.string() + ".old";
-  fs::remove_all(old, ec);
-  const bool had_game = fs::exists(game);
-  if (had_game) fs::rename(game, old, ec);
+  const bool had_game = fs::exists(game, ec);
+  // With no game/, game.old may be all that is left of an interrupted swap, so
+  // it stays until the new copy is in place.
+  if (had_game) {
+    fs::remove_all(old, ec);
+    fs::rename(game, old, ec);
+  } else {
+    ec.clear();
+  }
   if (!ec) fs::rename(partial, game, ec);
   if (ec) {
     const std::string reason = ec.message();
-    if (had_game && !fs::exists(game)) fs::rename(old, game, ec);
+    std::error_code ignored;  // `reason` is what the player needs to see
+    if (had_game && !fs::exists(game, ignored)) fs::rename(old, game, ignored);
     return Failure("Could not move the game files into place: " + reason);
   }
   fs::remove_all(old, ec);
@@ -120,17 +128,17 @@ uint64_t TotalBytes(ManifestView manifest) {
 }
 
 XexCheck CheckXex(std::span<const uint8_t> xex, uint64_t expected_xxh3) {
-  if (xex.size() < kXexHeadersOffset || ReadBE32(xex, 0) != 0x58455832)  // "XEX2"
+  if (xex.size() < kXexHeadersOffset || ReadBE32(xex.data()) != 0x58455832)  // "XEX2"
     return XexCheck::kNotXex;
-  const uint32_t count = ReadBE32(xex, kXexHeaderCountOffset);
+  const uint32_t count = ReadBE32(xex.data() + kXexHeaderCountOffset);
   for (uint32_t i = 0; i < count; ++i) {
     const size_t at = kXexHeadersOffset + size_t{i} * 8;
     if (at + 8 > xex.size()) break;
-    if (ReadBE32(xex, at) != kExecutionInfoKey) continue;
-    const size_t info = ReadBE32(xex, at + 4);
+    if (ReadBE32(xex.data() + at) != kExecutionInfoKey) continue;
+    const size_t info = ReadBE32(xex.data() + at + 4);
     if (info + 16 > xex.size()) return XexCheck::kNotXex;
-    if (ReadBE32(xex, info + 12) != kTitleId) return XexCheck::kOtherGame;
-    if (ReadBE32(xex, info) != kMediaId || ReadBE32(xex, info + 4) != kVersion)
+    if (ReadBE32(xex.data() + info + 12) != kTitleId) return XexCheck::kOtherGame;
+    if (ReadBE32(xex.data() + info) != kMediaId || ReadBE32(xex.data() + info + 4) != kVersion)
       return XexCheck::kOtherVersion;
     return XXH3_64bits(xex.data(), xex.size()) == expected_xxh3 ? XexCheck::kOk
                                                                 : XexCheck::kModified;
@@ -176,10 +184,10 @@ bool FolderSource::Read(std::string_view path,
   return in.eof();
 }
 
-XexCheck CheckSourceXex(GameSource& source, ManifestView manifest) {
+static XexCheck ReadAndCheckXex(GameSource& source, ManifestView manifest) {
   const ManifestEntry* entry = FindEntry(manifest, "default.xex");
   const int64_t size = source.Size("default.xex");
-  if (!entry || size <= 0) return XexCheck::kNotXex;
+  if (!entry || size <= 0 || size > kMaxXexBytes) return XexCheck::kNotXex;
   std::vector<uint8_t> xex;
   xex.reserve(size_t(size));
   if (!source.Read("default.xex", [&](std::span<const uint8_t> chunk) {
@@ -190,8 +198,17 @@ XexCheck CheckSourceXex(GameSource& source, ManifestView manifest) {
   return CheckXex(xex, entry->xxh3);
 }
 
-InstallResult InstallFrom(GameSource& source, const fs::path& data_root, const Progress& progress,
-                          const std::atomic<bool>& cancel, ManifestView manifest) {
+XexCheck CheckSourceXex(GameSource& source, ManifestView manifest) {
+  try {
+    return ReadAndCheckXex(source, manifest);
+  } catch (const std::exception&) {  // unreadable source or out of memory
+    return XexCheck::kNotXex;
+  }
+}
+
+static InstallResult InstallUnchecked(GameSource& source, const fs::path& data_root,
+                                      const Progress& progress, const std::atomic<bool>& cancel,
+                                      ManifestView manifest) {
   std::error_code ec;
   fs::create_directories(data_root, ec);
   if (ec) return Failure("Could not create " + data_root.string() + ": " + ec.message());
@@ -220,6 +237,19 @@ InstallResult InstallFrom(GameSource& source, const fs::path& data_root, const P
   if (result.ok) result = Commit(partial, data_root / "game");
   if (!result.ok) fs::remove_all(partial, ec);
   return result;
+}
+
+// Callers run this on a worker thread, where an escaping exception would end
+// the app, so every failure comes back as a result.
+InstallResult InstallFrom(GameSource& source, const fs::path& data_root, const Progress& progress,
+                          const std::atomic<bool>& cancel, ManifestView manifest) {
+  try {
+    return InstallUnchecked(source, data_root, progress, cancel, manifest);
+  } catch (const std::exception& error) {
+    std::error_code ignored;
+    fs::remove_all(data_root / "game.partial", ignored);
+    return Failure(std::string("Setup stopped unexpectedly: ") + error.what());
+  }
 }
 
 bool IsInstalled(const fs::path& game_dir, ManifestView manifest) {
