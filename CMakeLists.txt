@@ -234,6 +234,12 @@ add_executable(mgr_scale_ratio_checks EXCLUDE_FROM_ALL tests/scale_ratio_test.cp
 target_include_directories(mgr_scale_ratio_checks PRIVATE
     "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
 target_compile_options(mgr_scale_ratio_checks PRIVATE -UNDEBUG)
+add_executable(mgr_msaa_twin_checks EXCLUDE_FROM_ALL tests/msaa_twin_test.cpp)
+target_include_directories(mgr_msaa_twin_checks PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/native"
+    "${CMAKE_SOURCE_DIR}/vendor/reblue/thirdparty/XenosRecomp/XenosRecomp"
+    "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
+target_compile_options(mgr_msaa_twin_checks PRIVATE -UNDEBUG)
 add_executable(mgr_scaled_texture_address_checks EXCLUDE_FROM_ALL
     tests/scaled_texture_address_test.cpp)
 target_include_directories(mgr_scaled_texture_address_checks PRIVATE
@@ -285,7 +291,7 @@ endif()
 
 # `ninja -C build mgr_tests && ctest --test-dir build` runs every host-only check.
 enable_testing()
-set(MGR_TEST_TARGETS mgr_resolve_arena_checks mgr_scale_ratio_checks mgr_scaled_viewport_checks
+set(MGR_TEST_TARGETS mgr_msaa_twin_checks mgr_resolve_arena_checks mgr_scale_ratio_checks mgr_scaled_viewport_checks
     mgr_scaled_texture_address_checks
     mgr_ot_key_checks mgr_lod_bias_checks mgr_upscale_math_checks mgr_bundle_paths_checks mgr_game_install_checks
     mgr_dlc_package_checks
@@ -297,6 +303,7 @@ endif()
 add_custom_target(mgr_tests DEPENDS ${MGR_TEST_TARGETS})
 add_test(NAME resolve_arena COMMAND mgr_resolve_arena_checks)
 add_test(NAME scale_ratio COMMAND mgr_scale_ratio_checks)
+add_test(NAME msaa_twin COMMAND mgr_msaa_twin_checks)
 add_test(NAME scaled_viewport COMMAND mgr_scaled_viewport_checks)
 add_test(NAME scaled_texture_address COMMAND mgr_scaled_texture_address_checks)
 if(TARGET mgr_rational_shader_gpu_checks)

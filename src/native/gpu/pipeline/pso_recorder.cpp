@@ -13,8 +13,18 @@
  */
 #include "gpu/pipeline/pso_recorder.h"
 
+#include "gpu/pipeline/msaa_twin.h"
+#include "gpu/settings.h"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <exception>
 #include <mutex>
+#include <system_error>
+#include <thread>
 #include <rex/types.h>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -105,9 +115,9 @@ std::mutex g_replayMutex;
 std::vector<PipelineState> g_replayPending;
 bool g_replayActive = false;
 
-// Returns false (leaving the entry for later) if any shader/decl is missing.
-// Caller holds g_replayMutex.
-bool TryResolveAndEnqueueLocked(const PipelineState &entry) {
+// Resolves a cache entry's shader/decl content hashes to live objects.
+// Returns false if any is missing (the entry stays pending).
+bool ResolveEntry(const PipelineState &entry, PipelineState &resolved) {
   GuestShader *vs = FindGuestShaderByHash(HashFromPtr(entry.vertexShader));
   if (!vs)
     return false;
@@ -122,27 +132,41 @@ bool TryResolveAndEnqueueLocked(const PipelineState &entry) {
   if (!decl)
     return false;
 
-  PipelineState resolved = entry;
+  resolved = entry;
   resolved.vertexShader = vs;
   resolved.pixelShader = ps;
   resolved.vertexDeclaration = decl;
   SanitizePipelineState(resolved);
+  return true;
+}
+
+// The capture masks sampleCount to COUNT_1 so the store stays
+// config-independent, but under mgr_msaa the scene pass draws at the cvar
+// count, so precompile that twin or every scene PSO becomes a render thread
+// compile. Scene signature = the scene depth (the only stencil format bound);
+// since c893fb3 every full-height scene surface is multisampled, so the colour
+// format is not part of the signature (the depth pre-pass uses another one).
+void EnqueueSceneMSAATwin(const PipelineState &resolved) {
+  const plume::RenderSampleCounts msaa = Video::CvarMSAASampleCount();
+  if (msaa == plume::RenderSampleCount::COUNT_1 ||
+      !plume::RenderFormatIsStencil(resolved.depthStencilFormat))
+    return;
+  PipelineState ms = resolved;
+  ms.sampleCount = msaa;
+  EnqueuePipelinePriority(ms);
+}
+
+// Returns false (leaving the entry for later) if any shader/decl is missing.
+// Caller holds g_replayMutex.
+bool TryResolveAndEnqueueLocked(const PipelineState &entry) {
+  PipelineState resolved;
+  if (!ResolveEntry(entry, resolved))
+    return false;
   // Residual entries resolve the moment their last shader/decl is created,
   // which is typically right before their first draw, so they must jump the
   // background backlog, tokenless so they never gate a model load.
   EnqueuePipelinePriority(resolved);
-  // The capture masks sampleCount to COUNT_1 so the store stays
-  // config-independent, but under bd_msaa the scene pass draws at the cvar
-  // count, so precompile that twin or every scene PSO becomes a render thread
-  // compile. Scene signature = the only surface pair BD multisamples.
-  const plume::RenderSampleCounts msaa = Video::CvarMSAASampleCount();
-  if (msaa != plume::RenderSampleCount::COUNT_1 &&
-      resolved.renderTargetFormat == Video::SceneColorFormat() &&
-      plume::RenderFormatIsStencil(resolved.depthStencilFormat)) {
-    PipelineState ms = resolved;
-    ms.sampleCount = msaa;
-    EnqueuePipelinePriority(ms);
-  }
+  EnqueueSceneMSAATwin(resolved);
   return true;
 }
 
@@ -433,8 +457,9 @@ void RecordPipelineState(const PipelineState &state, u32 renderPassId,
                renderPassId, vsHash, psHash, declHash);
     } else {
       MGRN_WARN("pso: render-thread compile (miss, not in residual) pass={} "
-              "vs=0x{:016X} ps=0x{:016X} decl=0x{:016X}",
-              renderPassId, vsHash, psHash, declHash);
+              "vs=0x{:016X} ps=0x{:016X} decl=0x{:016X} samples={} rt={} ds={}",
+              renderPassId, vsHash, psHash, declHash, u32(state.sampleCount),
+              u32(state.renderTargetFormat), u32(state.depthStencilFormat));
     }
   }
 
@@ -471,6 +496,116 @@ void FlushPSOCapture() {
 #ifdef REBLUE_PSO_CAP
   WriteCSVIfDirty();
 #endif
+}
+
+namespace {
+// Scene pipelines built at runtime (predicted or render thread), keyed by the
+// content-hash identity at one sample. Live shader pointers are not kept: a
+// shader can be destroyed, so entries re-resolve by hash like the boot cache.
+std::mutex g_builtMutex;
+std::unordered_map<u64, PipelineState> g_builtScene;
+
+bool IsSceneSignature(const PipelineState &s) {
+  return plume::RenderFormatIsStencil(s.depthStencilFormat);
+}
+} // namespace
+
+void NoteBuiltPipeline(const PipelineState &state) {
+  const u64 vsHash = ShaderHash(state.vertexShader);
+  if (vsHash == 0 || !IsSceneSignature(state) || !state.vertexDeclaration)
+    return; // hcg-HLSL shaders carry no content hash and cannot be replayed
+  PipelineState e = state;
+  e.vertexShader = reinterpret_cast<GuestShader *>(vsHash);
+  e.pixelShader = reinterpret_cast<GuestShader *>(ShaderHash(state.pixelShader));
+  e.vertexDeclaration = reinterpret_cast<GuestVertexDeclaration *>(
+      state.vertexDeclaration->hash);
+  e.sampleCount = plume::RenderSampleCount::COUNT_1;
+  // Store the one-sample form of the alpha-test state, so a pipeline built at
+  // MSAA 4 (A2C flag, coverage spec bit) and its MSAA 1 twin share one entry
+  // and the set does not grow with each toggle.
+  const AlphaTestVariant oneSample = AlphaTestVariantFor(
+      e.specConstants, e.alphaBlendEnable, false, false);
+  e.specConstants = oneSample.specConstants;
+  e.enableAlphaToCoverage = oneSample.alphaToCoverage;
+  std::lock_guard<std::mutex> lock(g_builtMutex);
+  g_builtScene.try_emplace(HashPipelineState(e), e);
+}
+
+namespace {
+// Upper bound on helper threads compiling twins; the switch is a one-off
+// settings change, so using most cores briefly beats hitching later draws.
+constexpr unsigned kMaxTwinCompileThreads = 6;
+
+std::vector<PipelineState> SnapshotBuiltScene() {
+  std::lock_guard<std::mutex> lock(g_builtMutex);
+  std::vector<PipelineState> built;
+  built.reserve(g_builtScene.size());
+  for (const auto &kv : g_builtScene)
+    built.push_back(kv.second);
+  return built;
+}
+
+// Compiles one state; a throwing build is logged and skipped so a worker
+// thread never lets an exception escape (std::terminate).
+void CompileOne(const PipelineState &state) noexcept {
+  try {
+    GetOrCreatePipeline(state, nullptr);
+  } catch (const std::exception &e) {
+    MGRN_WARN("pso_recorder: twin compile threw: {}", e.what());
+  } catch (...) {
+    MGRN_WARN("pso_recorder: twin compile threw an unknown exception");
+  }
+}
+
+// Compiles every state in parallel and returns when all are in the cache.
+// Helper threads are std::jthread, so they join even if spawning another one
+// throws.
+void CompileAll(const std::vector<PipelineState> &states) {
+  std::atomic<size_t> next{0};
+  const auto work = [&states, &next] {
+    for (size_t i = next.fetch_add(1); i < states.size(); i = next.fetch_add(1))
+      CompileOne(states[i]);
+  };
+  const unsigned hw = std::max(2u, std::thread::hardware_concurrency());
+  const unsigned count = std::min(kMaxTwinCompileThreads, hw);
+  std::vector<std::jthread> helpers;
+  try {
+    for (unsigned i = 1; i < count; ++i)
+      helpers.emplace_back(work);
+  } catch (const std::system_error &e) {
+    MGRN_WARN("pso_recorder: could not start a twin compile thread: {}", e.what());
+  }
+  work(); // the calling thread drains whatever the helpers do not
+}
+} // namespace
+
+// Runs synchronously on the guest thread: from RefreshRenderTargetSettings in
+// the D3DDevice_Swap hook (draw_hooks.cpp) and at device creation (device.cpp).
+// PSOPrecache is off in the shipped renderer, so there is no background twin
+// queue: the scene pipelines seen so far are re-built at the new sample count
+// right here (parallel, joined before returning), before the first multisampled
+// frame, instead of one render thread compile per draw.
+void OnMSAAChanged() {
+  const plume::RenderSampleCounts msaa = Video::CvarMSAASampleCount();
+  std::vector<PipelineState> twins;
+  for (const PipelineState &entry : SnapshotBuiltScene()) {
+    PipelineState resolved;
+    if (!ResolveEntry(entry, resolved))
+      continue; // shader or declaration destroyed since it was built
+    resolved.sampleCount = msaa;
+    const AlphaTestVariant alpha = AlphaTestVariantFor(
+        resolved.specConstants, resolved.alphaBlendEnable,
+        Settings::Get().TransparencyAA(), msaa != plume::RenderSampleCount::COUNT_1);
+    resolved.specConstants = alpha.specConstants;
+    resolved.enableAlphaToCoverage = alpha.alphaToCoverage;
+    twins.push_back(resolved);
+  }
+  const auto start = std::chrono::steady_clock::now();
+  CompileAll(twins);
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - start).count();
+  MGRN_WARN("pso_recorder: mgr_msaa changed, compiled {} scene pipeline twins in {} ms",
+            twins.size(), ms);
 }
 
 void OnShaderCreated(u64) {
