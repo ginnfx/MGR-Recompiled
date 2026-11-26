@@ -197,6 +197,19 @@ void DumpDraw(u32 device_guest, const gpu::VideoState& s, u32 primitive_type,
             block_stream_mask);
 }
 
+// Bound textures of the draw as slot:va fmt(guest) WxH (host size), for
+// finding which pass feeds a full-screen shader.
+std::string DescribeBoundTextures(const gpu::VideoState& s) {
+  std::string out;
+  for (u32 i = 0; i < gpu::kFetchSlotCount; ++i) {
+    const gpu::GuestTexture* t = s.textures[i];
+    if (!t) continue;
+    out += std::format(" s{}=0x{:08X}/g{}/{}x{}{}", i, t->selfVa, t->guestFormat, t->width,
+                       t->height, t->sourceSurface ? "/rt" : "");
+  }
+  return out;
+}
+
 // Each element as stream:offset usage[index] type.
 std::string DescribeDecl(const gpu::GuestVertexDeclaration* decl) {
   std::string out;
@@ -537,6 +550,7 @@ void DispatchDraw(u32 device_guest, u32 primitive_type, const DrawArgs& args) {
     ProbeDepthBeforeDraw(s);
     mgrn::native::NoteDrawGeometry(draw_ordinal);
     DumpDraw(device_guest, s, primitive_type, args, draw_ordinal);
+    MGRN_WARN("[draw-dump]   tex{}", DescribeBoundTextures(s));
     if (gpu::IsSkinnedDeclaration(s.pipelineState.vertexDeclaration) ||
         s.pipelineState.colorWriteEnable == 0) {
       DumpBonePalette(device_guest);
