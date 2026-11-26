@@ -10,21 +10,12 @@ No game files are included. You need your own legally obtained copy of the Xbox 
 
 1. Download `MGR-Recompiled-<version>-macos-arm64.dmg` from the [releases page](https://github.com/ginnfx/MGR-Recompiled/releases)
 2. Open it and drag to Applications
-3. Choose your copy, Either works:
-   - a disc image (`.iso`) of the Xbox 360 disc
-   - a folder with the extracted files (`default.xex` and `media/`)
-
-Only the Xbox 360 USA/Europe disc is supported: title ID `4B4E080A`, media ID `6CC18291`, version 4, no title update. The app tells you if your copy is a different version
+3. Choose your copy,
+   
+Only the Xbox 360 USA/Europe disc is supported: title ID `4B4E080A`, media ID `6CC18291`, version 4, no title update (for now). The app tells you if your copy is a different version
 
 Everything the app writes lives in `~/Library/Application Support/MGR-Recompiled/`
 
-```text
-game/      installed game files
-user/      saves
-cache/     shader cache
-logs/      logs (attach the latest one to bug reports)
-mgr.toml   settings
-```
 ## Build from source
 
 Built against one exact `default.xex`, SHA-256:
