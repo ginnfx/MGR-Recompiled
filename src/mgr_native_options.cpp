@@ -562,8 +562,8 @@ void MgrNativeOptionsBegin(PPCContext&, uint8_t* base, uint32_t object) {
   // now belong to other objects: release them without writing guest memory.
   if (menu.object && menu.object != object) {
     std::fprintf(stderr, "[mgr-native-options] dropping stale session %08X\n", menu.object);
-    // Only the picture is put back (guarded by its WTB magic); other state is dropped unwritten.
-    menu.picture.Restore(base);
+    // FreeSession also forgets the picture. Restoring it here could overwrite
+    // another texture: the WTB magic does not prove the buffer is still ours.
     FreeSession();
   }
   menu.object = object; menu.ready = false; menu.dirty = false; menu.page = Page::Categories; menu.row = menu.category = menu.scroll = 0;

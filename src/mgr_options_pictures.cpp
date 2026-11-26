@@ -275,7 +275,7 @@ void FilmGrain(Canvas& c, std::string_view value) {
   const bool on = IsOn(value);
   for (int y = 50; y < 230; y += 3)
     for (int x = 60; x < 340; x += 3) {
-      uint32_t h = uint32_t(x * 73856093) ^ uint32_t(y * 19349663);
+      uint32_t h = uint32_t(x) * 73856093u ^ uint32_t(y) * 19349663u;  // wraps
       h ^= h >> 13; h *= 0x5bd1e995u; h ^= h >> 15;
       const float n = on ? float(h & 255) / 255.0f - 0.5f : 0.0f;
       c.Rect(float(x), float(y), 3, 3, Gray(std::clamp(0.45f + 0.5f * n, 0.0f, 1.0f)));
