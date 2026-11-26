@@ -404,8 +404,8 @@ void ControllerDiagram(uint8_t* base, bool shown) {
 void PlacePicture(uint8_t* base) {
   const uint32_t node = Node(base, menu.object, kPictureNode);
   if (!node) return;
-  menu.moved_x.try_emplace(node, U32(base, node + kNodeX));
-  W32(base, node + kNodeX, std::bit_cast<uint32_t>(kPictureShiftX));
+  const uint32_t retail = menu.moved_x.try_emplace(node, U32(base, node + kNodeX)).first->second;
+  W32(base, node + kNodeX, std::bit_cast<uint32_t>(std::bit_cast<float>(retail) + kPictureShiftX));
 }
 void CustomPage(PPCContext& ctx, uint8_t* base, Page page, int row = 0) {
   Restore(base);

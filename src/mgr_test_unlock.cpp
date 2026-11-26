@@ -12,5 +12,6 @@ REX_EXTERN(__imp__sub_82C35600);
 extern "C" REX_FUNC(sub_82C35600) {
   static const bool unlock_all = std::getenv("MGR_TEST_UNLOCK_CHAPTERS") != nullptr;
   __imp__sub_82C35600(ctx, base);
-  if (unlock_all) ctx.r3.u64 = 1;
+  // Callers test the entry for non-zero; keep a stored non-zero entry as it is.
+  if (unlock_all && ctx.r3.u32 == 0) ctx.r3.u64 = 1;
 }

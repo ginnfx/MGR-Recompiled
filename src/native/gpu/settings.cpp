@@ -114,11 +114,13 @@ bool g_status_published = false;
 
 // The Options menu reads mgr_resolution_status ("requested|state|active|reason",
 // scales as "1", "1.5", "2", "3"; src/mgr_settings.h). This renderer applies a
-// new scale at the next present, so the requested scale is active at once.
+// new scale at the next present. "Active" is the scene target scale; with an
+// upscaler the 3D scene renders below it and is upscaled to it.
 void PublishResolutionStatus(f32 scene) {
-  const std::string scale = std::format("{:g}", scene);
-  rex::cvar::SetFlagByName("mgr_resolution_active_scale", scale);
-  rex::cvar::SetFlagByName("mgr_resolution_status", scale + "|active|" + scale + "|");
+  const std::string active = std::format("{:g}", scene);
+  rex::cvar::SetFlagByName("mgr_resolution_active_scale", active);
+  rex::cvar::SetFlagByName("mgr_resolution_status",
+                           Flag("mgr_resolution_scale") + "|active|" + active + "|");
   g_status_published = true;
 }
 } // namespace
