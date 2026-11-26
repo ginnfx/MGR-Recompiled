@@ -4,7 +4,10 @@
 #include "mgr_native_options.h"
 #include "mgr_options_dump.h"
 #include "mgr_options_pictures.h"
+#include "mgr_options_guest.h"
+#include "mgr_options_rows.h"
 #include "mgr_options_sprite.h"
+#include "mgr_options_text.h"
 #include "mgr_settings.h"
 #include "native/mgr_native.h"
 #include "generated/default/mgr_pch.h"
@@ -37,9 +40,13 @@ REX_EXTERN(sub_82C39DD8);  // save-data request (mode r3, flag r4); the retail Y
 REX_EXTERN(sub_8293F530);  // Ui::setNodeY(owner, node, f1 = y), rounded like the retail cursor
 
 namespace {
+using namespace mgr_options_guest;
+using mgr_options_rows::Choice;
+using mgr_options_rows::Option;
+using mgr_options_rows::kInternalResolution;
+using mgr_options_rows::kScale;
 constexpr uint32_t kInput = 0x83739CD0; // verified lis/addi in 82C71590
 constexpr uint32_t kGroupOffsets[] = {28, 296, 564};
-constexpr uint32_t kTextVtable = 0x821CBF50;
 // Selection cursor (traced from the retail update, 82C718B0..82C71968): its node
 // at +860 animates toward the float target at +956 while +964 is set. Targets
 // are row * 44, plus 6 past each group header (rows 6 and 9).
@@ -63,8 +70,6 @@ constexpr uint32_t kSoundMove = 0x8218A538, kSoundBack = 0x8218A524, kSoundSelec
 constexpr uint32_t kTapConfirm = 0x10, kTapCancel = 0x20;
 constexpr uint32_t kRepeatUp = 0x8 | 0x40000, kRepeatDown = 0x4 | 0x80000;
 constexpr uint32_t kRepeatLeft = 0x1 | 0x10000, kRepeatRight = 0x2 | 0x20000;
-// MGR_OPTIONS_TEST_ROWS upper bound.
-constexpr long kMaxTestRows = 64;
 // Retail lays most value texts out at x=3 but some slots (group 0 rows 4-5, group 2
 // rows 0-2) at x=13, which shows as a stray leading space; all use x=3 here.
 constexpr float kValueLayoutX = 3.0f;
@@ -100,90 +105,6 @@ constexpr size_t kHelpWidth = 40;
 int SlotGroup(int slot) { return slot < kGroupFirstRow[1] ? 0 : slot < kGroupFirstRow[2] ? 1 : 2; }
 int SlotLocal(int slot) { return slot - kGroupFirstRow[SlotGroup(slot)]; }
 
-uint8_t* Guest(uint8_t* base, uint32_t a) { return REX_RAW_ADDR(a); }
-const uint8_t* Guest(const uint8_t* base, uint32_t a) { return REX_RAW_ADDR(a); }
-uint32_t U32(const uint8_t* base, uint32_t a) {
-  uint32_t v; std::memcpy(&v, Guest(base, a), 4); return __builtin_bswap32(v);
-}
-uint16_t U16(const uint8_t* base, uint32_t a) {
-  uint16_t v; std::memcpy(&v, Guest(base, a), 2); return __builtin_bswap16(v);
-}
-void W32(uint8_t* base, uint32_t a, uint32_t v) {
-  v = __builtin_bswap32(v); std::memcpy(Guest(base, a), &v, 4);
-}
-void W16(uint8_t* base, uint32_t a, uint16_t v) {
-  v = __builtin_bswap16(v); std::memcpy(Guest(base, a), &v, 2);
-}
-
-uint32_t Call(PPCContext& ctx, uint8_t* base, PPCFunc* fn,
-              uint32_t a = 0, uint32_t b = 0, uint32_t c = 0) {
-  PPCContext call = ctx;
-  call.r3.u64 = a; call.r4.u64 = b; call.r5.u64 = c;
-  fn(call, base);
-  return call.r3.u32;
-}
-
-struct Choice { const char* label; const char* value; };
-// Renderer an option applies to; rows for the other renderer are hidden.
-enum class Renderer { Any, Native, Xenos };
-struct Option {
-  const char* key; const char* label; const char* help; std::span<const Choice> choices;
-  Renderer renderer = Renderer::Any;
-};
-constexpr Choice kScale[] = {{"1280X720", "1"}, {"1920X1080", "1.5"}, {"2560X1440", "2"}, {"3840X2160", "3"}};
-constexpr Choice kBool[] = {{"ON", "true"}, {"OFF", "false"}};
-constexpr Choice kRate[] = {{"60 FPS", "60"}, {"120 FPS (EXPERIMENTAL)", "120"}, {"UNLOCKED (EXPERIMENTAL)", "unlocked"}};
-constexpr Choice kPacing[] = {{"LOW LATENCY", "true"}, {"COMPATIBILITY", "false"}};
-constexpr Choice kFilter[] = {{"GAME DEFAULT", "game"}, {"OFF", "off"}, {"2X", "2x"}, {"4X", "4x"}, {"8X", "8x"}, {"16X", "16x"}};
-constexpr Choice kPrecision[] = {{"HIGH (ACCURATE)", "high"}, {"FAST (RESTART REQUIRED)", "fast"}};
-constexpr Choice kOutput[] = {{"MATCH GAME", "source"}, {"MATCH DISPLAY", "display"}, {"1920X1080 OUTPUT", "1920x1080"}, {"2560X1440 OUTPUT", "2560x1440"}};
-constexpr Choice kLod[] = {{"GAME DEFAULT", "game"}, {"HIGH", "high"}, {"MAXIMUM", "max"}};
-constexpr Choice kMsaa[] = {{"OFF", "0"}, {"2X", "2"}, {"4X", "4"}, {"8X", "8"}};
-constexpr Choice kUpscaler[] = {{"OFF", "off"}, {"METALFX QUALITY", "metalfx_quality"}, {"METALFX BALANCED", "metalfx_balanced"},
-                                {"METALFX PERFORMANCE", "metalfx_performance"}};
-constexpr Choice kShadow[] = {{"ORIGINAL (1024)", "0"}, {"2048", "2048"}, {"4096", "4096"}};
-constexpr Choice kSharpening[] = {{"OFF", "0"}, {"LOW", "0.3"}, {"MEDIUM", "0.6"}, {"HIGH", "1"}};
-constexpr Choice kBrightness[] = {{"0.7", "0.7"}, {"0.8", "0.8"}, {"0.9", "0.9"}, {"1.0 (DEFAULT)", "1"},
-                                  {"1.1", "1.1"}, {"1.2", "1.2"}, {"1.3", "1.3"}};
-const Option kInternalResolution = {"mgr_resolution_scale", "INTERNAL RESOLUTION", "Changes internal rendering detail. Applies after the GPU rebuilds its resources.", kScale};
-// Every graphics, video and screen option, in one scrolling page.
-const Option kVideo[] = {
-  {"fullscreen", "FULLSCREEN", "Uses the current display in fullscreen mode.", kBool},
-  {"mgr_output_resolution", "OUTPUT RESOLUTION", "Resizes the completed image. Internal rendering detail is controlled separately.", kOutput},
-  kInternalResolution,
-  {"mgr_upscaler", "UPSCALING", "Renders below the internal resolution and rebuilds the detail with MetalFX. Turns anti-aliasing off.", kUpscaler, Renderer::Native},
-  {"mgr_msaa", "ANTI-ALIASING", "Multisampling smooths jagged edges. Higher settings cost frame rate.", kMsaa, Renderer::Native},
-  {"mgr_transparency_aa", "TRANSPARENCY AA", "Smooths the edges of hair, fences and foliage. Needs anti-aliasing.", kBool, Renderer::Native},
-  {"mgr_shadow_resolution", "SHADOW RESOLUTION", "Sharper, more detailed shadows. Higher settings use more video memory.", kShadow, Renderer::Native},
-  {"present_letterbox", "PRESERVE ASPECT RATIO", "Preserves the original image proportions on wider or taller displays.", kBool},
-  {"mgr_vsync", "VSYNC", "Syncs frames to the display refresh, preventing tearing. Frame rates above the refresh rate need it off.", kBool},
-  {"mgr_frame_rate", "FRAME RATE", "60 FPS is the original timing. Higher rates are experimental.", kRate},
-  {"vulkan_nonblocking_guest_present", "FRAME PACING", "Low latency avoids blocking the game while waiting for a display image.", kPacing, Renderer::Xenos},
-  {"mgr_brightness", "BRIGHTNESS", "Brightens or darkens the image. 1.0 is the original look.", kBrightness, Renderer::Native},
-  {"mgr_sharpening", "SHARPENING", "Restores fine detail softened by upscaling or anti-aliasing.", kSharpening, Renderer::Native},
-  {"mgr_texture_filtering", "TEXTURE FILTERING", "Anisotropic filtering improves textures viewed at an angle.", kFilter},
-  {"mgr_lod", "MODEL DETAIL", "Detail and draw distance of far away characters and objects. Higher settings cost frame rate.", kLod},
-  {"mgr_render_target_precision", "RENDERING QUALITY", "High preserves the original gamma precision. Changing this setting requires a restart.", kPrecision, Renderer::Xenos},
-  {"mgr_bloom", "BLOOM", "The glow around lights, sparks and Blade Mode effects.", kBool},
-  {"mgr_film_grain", "FILM GRAIN", "Enables the original film grain post processing effect.", kBool},
-};
-
-constexpr Choice kPrompts[] = {{"AUTOMATIC", "auto"}, {"KEYBOARD", "keyboard"}, {"XBOX", "xbox"}, {"PLAYSTATION", "playstation"}};
-constexpr Choice kSensitivity[] = {{"0.5", "0.5"}, {"1.0", "1"}, {"2.0", "2"}, {"3.0", "3"}};
-const Option kMisc[] = {
-  {"mgr_prompt_style", "BUTTON PROMPTS", "Automatic follows the keyboard or controller used last.", kPrompts},
-  {"mnk_mouse", "MOUSE CAMERA", "Use the mouse for camera movement and free angle Blade Mode.", kBool},
-  {"mnk_sensitivity", "MOUSE SENSITIVITY", "Changes mouse camera and Blade Mode sensitivity.", kSensitivity},
-  {"mgr_skip_intro_logos", "SKIP INTRO LOGOS", "Skips any remaining boot logos. Applies to the next launch.", kBool},
-};
-
-struct NativeText {
-  uint32_t widget = 0, original_context = 0, original_index = 0, original_line = 0, original_alignment = 0;
-  uint32_t allocation = 0, mcd = 0, paragraph = 0, line = 0, letters = 0;
-  std::unordered_map<char, uint16_t> glyphs;
-  uint16_t font = 3;
-  std::string shown;
-};
 struct Menu {
   uint32_t object = 0;
   Page page = Page::Categories;
@@ -207,7 +128,7 @@ struct Menu {
   std::unordered_map<uint32_t, uint8_t> row_counts;
   float cursor_bias = 0;
   std::unordered_map<uint32_t, uint32_t> visibility;
-  std::unordered_map<uint32_t, NativeText> text;
+  mgr_options_text::TextOverrides text;
   // Side picture: the controller diagram sprite's texture, swapped while a custom
   // page is open. shown_* is the row it currently illustrates.
   mgr_options_sprite::SpriteTexture picture;
@@ -215,11 +136,6 @@ struct Menu {
   std::filesystem::path config;
 } menu;
 
-uint32_t Node(uint8_t* base, uint32_t owner, uint32_t id) {
-  const uint32_t ui = U32(base, owner + 24);
-  if (!ui || id >= U32(base, ui + 124)) return 0;
-  return U32(base, ui + 120) + id * 1024;
-}
 void Visible(uint8_t* base, uint32_t owner, uint32_t id, bool visible) {
   const uint32_t node = Node(base, owner, id);
   if (!node) return;
@@ -242,126 +158,7 @@ void Restore(uint8_t* base) {
   menu.lifted_node = 0; menu.cursor_bias = 0;
   menu.picture.Restore(base);
   menu.shown_key.clear(); menu.shown_value.clear();
-  for (auto& [_, t] : menu.text) {
-    if (U32(base, t.widget + 20) != t.allocation) continue;
-    W32(base, t.widget + 20, t.original_context);
-    W32(base, t.widget + 168, t.original_index);
-    W32(base, t.widget + 172, t.original_line);
-    W32(base, t.widget + 12, t.original_alignment);
-    W32(base, t.widget + 184, 0);
-    t.shown.clear();
-  }
-}
-
-// A private MCD message uses the loaded game's own glyphs and texture bindings.
-// The 360 renderer decodes glyph IDs directly (829880C0), not symbol indices.
-// Original resources and message tables remain intact; context pointers are
-// restored before the retail handlers or destructors run.
-bool SetText(uint8_t* base, uint32_t owner, uint32_t id, const std::string& value, uint16_t font = 3) {
-  const uint32_t node = Node(base, owner, id);
-  if (!node) return false;
-  const uint32_t widget = U32(base, node + kNodeWidget);
-  if (!widget || U32(base, widget) != kTextVtable) return false;
-  auto& t = menu.text[widget];
-  if (!t.widget) {
-    const uint32_t context = U32(base, widget + 20);
-    // Controller legend labels use the resident core font context. Find that
-    // context through a live retail widget rather than assuming a pool address.
-    uint32_t core_context = 0;
-    const uint32_t legend = Node(base, menu.object, 12);
-    if (legend) {
-      const uint32_t legend_widget = U32(base, legend + kNodeWidget);
-      if (legend_widget && U32(base, legend_widget) == kTextVtable)
-        core_context = U32(base, legend_widget + 20);
-    }
-    const uint32_t source = core_context ? U32(base, core_context + 4) : 0;
-    if (!context || !source) { std::fprintf(stderr, "[mgr-native-text] no source widget=%08X context=%08X core=%08X source=%08X\n", widget, context, core_context, source); menu.text.erase(widget); return false; }
-    const uint32_t size = U32(base, source + 32) + U32(base, source + 36) * 8;
-    if (size < 40 || size > 0x40000) {
-      static bool logged = false;
-      if (!logged) {
-        logged = true;
-        std::fprintf(stderr, "[mgr-native-text] bad size=%u core=%08X source=%08X header:", size, core_context, source);
-        for (uint32_t off = 0; off < 40; off += 4) std::fprintf(stderr, " %08X", U32(base, source + off));
-        std::fprintf(stderr, "\n");
-      }
-      menu.text.erase(widget); return false;
-    }
-    t.widget = widget; t.original_context = context;
-    t.original_index = U32(base, widget + 168); t.original_line = U32(base, widget + 172); t.original_alignment = U32(base, widget + 12);
-    t.font = font;
-    t.allocation = REX_KERNEL_STATE()->memory()->SystemHeapAlloc(size + 64 + U32(base, source + 20) * 40 + 16384);
-    if (!t.allocation) { menu.text.erase(widget); return false; }
-    std::memcpy(Guest(base, t.allocation), Guest(base, core_context), 64);
-    t.mcd = t.allocation + 64;
-    std::memcpy(Guest(base, t.mcd), Guest(base, source), size);
-    W32(base, t.allocation + 4, t.mcd);
-    // Retail labels use font 8 from the shared core bank, not the larger
-    // font 6 used by title text. Bit 0x4000 selects that bank and its textures.
-    const uint32_t shared = U32(base, 0x83933450);
-    if (shared) {
-      for (uint32_t i = 0; i < U32(base, shared + 12); ++i) {
-        const uint32_t symbol = shared + U32(base, shared + 8) + i * 8;
-        if (U16(base, symbol) == 8 && U16(base, symbol + 2) < 128)
-          t.glyphs[char(U16(base, symbol + 2))] = uint16_t(U32(base, symbol + 4) | 0x4000);
-      }
-    }
-    if (font != 8) {
-      for (uint32_t i = 0; i < U32(base, source + 12); ++i) {
-        const uint32_t symbol = source + U32(base, source + 8) + i * 8;
-        if (U16(base, symbol) == font && U16(base, symbol + 2) < 128)
-          t.glyphs[char(U16(base, symbol + 2))] = uint16_t(U32(base, symbol + 4));
-      }
-    }
-    t.paragraph = (size + 15) & ~15u;
-    t.line = t.paragraph + 20; t.letters = t.line + 24 * 4;
-    const uint32_t message = t.mcd + U32(base, t.mcd);
-    W32(base, message, t.paragraph); W32(base, message + 4, 1);
-    W32(base, t.mcd + t.paragraph, t.line);
-    W32(base, t.mcd + t.paragraph + 4, 1);
-    W32(base, t.mcd + t.paragraph + 8, 0);
-    W32(base, t.mcd + t.paragraph + 12, 0);
-    W32(base, t.mcd + t.paragraph + 16, uint32_t(t.font) << 16);
-    W32(base, t.mcd + t.line, t.letters);
-    W32(base, t.mcd + t.line + 4, 0);
-    W32(base, t.mcd + t.line + 16, 39);
-    W32(base, t.mcd + t.line + 20, 0);
-    std::fprintf(stderr, "[mgr-native-options] text widget=%08X core=%08X glyphs=%zu\n", widget, source, t.glyphs.size());
-  }
-  const bool value_row = owner != menu.object && font == 3;
-  if (t.shown == value && U32(base, widget + 20) == t.allocation) return true;
-  if (U32(base, widget + 20) != t.allocation) {
-    t.original_context = U32(base, widget + 20);
-    t.original_index = U32(base, widget + 168);
-    t.original_line = U32(base, widget + 172); t.original_alignment = U32(base, widget + 12);
-  }
-  const std::string text = value.substr(0, 180);
-  uint32_t p = t.mcd + t.letters;
-  uint32_t line_index = 0, line_count = 0, line_start = p;
-  const auto finish_line = [&] {
-    const uint32_t line = t.mcd + t.line + line_index * 24;
-    W16(base, p, 0x8000); p += 2;
-    W32(base, line, line_start - t.mcd); W32(base, line + 4, 0);
-    W32(base, line + 8, line_count); W32(base, line + 12, line_count + 1);
-    W32(base, line + 16, 39); W32(base, line + 20, 0);
-    line_start = p; line_count = 0; ++line_index;
-  };
-  for (char c : text) {
-    if (c == '\n' && line_index < 3) { finish_line(); continue; }
-    const bool space = c == ' ';
-    const auto found = t.glyphs.find(c);
-    W16(base, p, space || found == t.glyphs.end() ? 0x8001 : found->second);
-    W16(base, p + 2, space || found == t.glyphs.end() ? t.font : 0);
-    p += 4;
-    ++line_count;
-  }
-  finish_line();
-  W32(base, t.mcd + t.paragraph + 4, line_index);
-  if (value_row) W32(base, widget + 12, 0);
-  W32(base, widget + 20, t.allocation);
-  W32(base, widget + 168, 0); W32(base, widget + 172, 0); W32(base, widget + 184, 0);
-  t.shown = value;
-  return true;
+  menu.text.Restore(base);
 }
 
 void Sound(PPCContext& ctx, uint8_t* base, uint32_t name) {
@@ -407,38 +204,10 @@ void Highlight(PPCContext& ctx, uint8_t* base, int slot, bool selected) {
   const int group = SlotGroup(slot);
   Call(ctx, base, sub_82C40DD8, menu.object + kGroupOffsets[group], uint32_t(kRetailFirstRow[group] + SlotLocal(slot)), selected);
 }
-// MSAA levels the GPU cannot run are left out.
-std::span<const Choice> SupportedMsaa() {
-  static const std::vector<Choice> shown = [] {
-    std::vector<Choice> levels;
-    std::copy_if(std::begin(kMsaa), std::end(kMsaa), std::back_inserter(levels),
-                 [](const Choice& c) { return std::atoi(c.value) <= mgrn::MgrNativeMaxMSAA(); });
-    return levels;
-  }();
-  return shown;
-}
-// The rows of a page that apply to this run's renderer (fixed at launch).
-std::vector<Option> ForRenderer(std::span<const Option> all) {
-  const Renderer active = mgrn::NativeRendererActive() ? Renderer::Native : Renderer::Xenos;
-  std::vector<Option> shown;
-  for (Option option : all) {
-    if (option.renderer != Renderer::Any && option.renderer != active) continue;
-    if (std::string_view(option.key) == "mgr_msaa") option.choices = SupportedMsaa();
-    shown.push_back(option);
-  }
-  // MGR_OPTIONS_TEST_ROWS=<n> (diagnostic): repeat the rows up to n, to exercise scrolling.
-  static const size_t wanted = [] {
-    const char* text = std::getenv("MGR_OPTIONS_TEST_ROWS");
-    return text ? size_t(std::clamp(std::strtol(text, nullptr, 10), 0L, kMaxTestRows)) : size_t(0);
-  }();
-  for (size_t i = 0; wanted && !shown.empty() && shown.size() < wanted; ++i) shown.push_back(shown[i]);
-  return shown;
-}
 std::span<const Option> Options() {
-  static const std::vector<Option> video = ForRenderer(kVideo), misc = ForRenderer(kMisc);
   switch (menu.page) {
-    case Page::Video: return video;
-    case Page::Misc: return misc;
+    case Page::Video: return mgr_options_rows::VideoRows();
+    case Page::Misc: return mgr_options_rows::MiscRows();
     default: return {};
   }
 }
@@ -535,9 +304,9 @@ void Labels(uint8_t* base) {
     const bool shown = !label.empty();
     Visible(base, group, U32(base, group + 40 + slot * 4), shown);
     Visible(base, group, U32(base, group + 64 + slot * 4), shown);
-    SetText(base, group, U32(base, group + 64 + slot * 4), label, 8);
+    menu.text.Set(base, menu.object, group, U32(base, group + 64 + slot * 4), label, 8);
     Visible(base, group, U32(base, group + 88 + slot * 4), !value.empty());
-    if (!value.empty()) SetText(base, group, U32(base, group + 88 + slot * 4), value);
+    if (!value.empty()) menu.text.Set(base, menu.object, group, U32(base, group + 88 + slot * 4), value);
     Visible(base, group, U32(base, group + 112 + slot * 4), menu.page != Page::Categories && index < int(Options().size()));
   }
   // Retail System rows 4 and 5 and the Audio rows are 0-10 sliders (82C4DE90 /
@@ -559,8 +328,8 @@ void Labels(uint8_t* base) {
   const std::string names[] = {PageTitle(), position.empty() ? "" : position.substr(2), ""};
   for (int k = 0; k < 3; ++k) {
     const uint32_t strip_group = menu.object + kGroupOffsets[k];
-    SetText(base, strip_group, kStripIds[k][0], names[k], 8);
-    SetText(base, strip_group, kStripIds[k][1], names[k], 8);
+    menu.text.Set(base, menu.object, strip_group, kStripIds[k][0], names[k], 8);
+    menu.text.Set(base, menu.object, strip_group, kStripIds[k][1], names[k], 8);
   }
   const char* help = menu.page == Page::Categories ? "SELECT AN OPTIONS CATEGORY." :
       menu.row < int(Options().size()) ? Options()[menu.row].help : "";
@@ -589,7 +358,7 @@ void Labels(uint8_t* base) {
     if (at == std::string::npos || at < start) break;
     wrapped[at] = '\n'; start = at + 1;
   }
-  SetText(base, menu.object, U32(base, menu.object + 864), wrapped);
+  menu.text.Set(base, menu.object, menu.object, U32(base, menu.object + 864), wrapped);
   PlaceHelp(base, 1 + int(std::count(wrapped.begin(), wrapped.end(), '\n')));
   UpdatePicture(base);
 }
@@ -712,9 +481,9 @@ void CommitRetailOptions(PPCContext& ctx, uint8_t* base) {
 }
 void FreeSession() {
   auto* memory = REX_KERNEL_STATE()->memory();
-  for (auto& [_, t] : menu.text) if (t.allocation) memory->SystemHeapFree(t.allocation);
+  menu.text.Free();
   if (menu.scratch) memory->SystemHeapFree(menu.scratch);
-  menu.text.clear(); menu.visibility.clear(); menu.moved.clear(); menu.moved_x.clear(); menu.cursor_scale.clear(); menu.row_counts.clear(); menu.scratch = 0; menu.object = 0; menu.ready = false;
+  menu.visibility.clear(); menu.moved.clear(); menu.moved_x.clear(); menu.cursor_scale.clear(); menu.row_counts.clear(); menu.scratch = 0; menu.object = 0; menu.ready = false;
   menu.lifted_node = 0; menu.cursor_bias = 0;
   menu.picture.Forget(); menu.shown_key.clear(); menu.shown_value.clear();
 }

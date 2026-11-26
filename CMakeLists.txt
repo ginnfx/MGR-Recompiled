@@ -31,6 +31,8 @@ set(MGR_SOURCES
     src/mgr_game_options.cpp
     src/mgr_native_options.cpp
     src/mgr_options_dump.cpp
+    src/mgr_options_rows.cpp
+    src/mgr_options_text.cpp
     src/mgr_options_pictures.cpp
     src/mgr_picture_codec.cpp
     src/mgr_options_sprite.cpp
