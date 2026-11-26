@@ -17,6 +17,8 @@ constexpr Color kPanel{0.02f, 0.07f, 0.10f, 0.78f};
 constexpr Color kWhite{1.0f, 1.0f, 1.0f, 1.0f};
 constexpr Color kWarm{1.0f, 0.62f, 0.25f, 1.0f};
 constexpr float kPi = 3.14159265f;
+// Opacity of a fully covered PixelGrid cell; slightly below solid so the art does not glare.
+constexpr float kCellFill = 0.82f;
 // Scenes are laid out on a 400x320 stage.
 constexpr int kStageWidth = 400, kStageHeight = 320;
 // The stage sits in a square panel, scaled up to kPictureSize.
@@ -58,8 +60,15 @@ void PixelGrid(Canvas& c, float x, float y, float w, float h, float cell, Covera
   for (float py = y; py + cell <= y + h + 0.01f; py += cell)
     for (float px = x; px + cell <= x + w + 0.01f; px += cell) {
       const float v = coverage(px + cell / 2, py + cell / 2, cell);
-      if (v > 0.01f) c.Rect(px, py, cell, cell, Tint(kInk, v));
+      if (v > 0.01f) c.Rect(px, py, cell, cell, Tint(kInk, v * kCellFill));
     }
+}
+
+// Faint lines between the "pixels" of a PixelGrid, so each cell reads as one sample.
+void GridLines(Canvas& c, float x, float y, float w, float h, float cell) {
+  const Color line = Tint(kPanel, 0.55f);
+  for (float gx = x + cell; gx < x + w - 0.01f; gx += cell) c.Rect(gx - 0.75f, y, 1.5f, h, line);
+  for (float gy = y + cell; gy < y + h - 0.01f; gy += cell) c.Rect(x, gy - 0.75f, w, 1.5f, line);
 }
 
 // Fraction of a cell covered by the half plane left of the line x - y * slope < offset.
@@ -104,31 +113,38 @@ void InternalResolution(Canvas& c, std::string_view value) {
   PixelGrid(c, 100, 50, 200, 200, cell, [&](float x, float y, float) {
     return std::hypot(x - cx, y - cy) < radius ? 1.0f : 0.0f;
   });
+  GridLines(c, 100, 50, 200, 200, cell);
   c.Ring(cx, cy, radius, 2, Tint(kWhite, 0.5f));
 }
 
 void Upscaling(Canvas& c, std::string_view value) {
   const bool on = value != "off";
-  const float cell = on ? 14.0f : 7.0f;
-  PixelGrid(c, 40, 100, 98, 98, 14.0f, [&](float x, float y, float) {
-    return std::hypot(x - 89, y - 149) < 40 ? 1.0f : 0.0f;
-  });
+  const auto circle = [](float cx, float cy, float r) {
+    return [=](float x, float y, float) { return std::hypot(x - cx, y - cy) < r ? 1.0f : 0.0f; };
+  };
+  // The low resolution render, then the same picture enlarged: blocky without
+  // upscaling, rebuilt with fine detail when it is on.
+  PixelGrid(c, 36, 102, 96, 96, 12.0f, circle(84, 150, 44));
+  GridLines(c, 36, 102, 96, 96, 12.0f);
   Arrow(c, {150, 150}, {206, 150}, on ? kWhite : kDim);
   if (on) {
-    c.Disc(178, 118, 6, kWhite);
-    c.Disc(160, 128, 4, kWhite);
+    c.Disc(286, 150, 56, Tint(kInk, kCellFill));
+    c.Ring(286, 150, 56, 2, Tint(kWhite, 0.5f));
+    c.Disc(268, 128, 5, kWhite);
+  } else {
+    PixelGrid(c, 216, 80, 140, 140, 20.0f, circle(286, 150, 56));
+    GridLines(c, 216, 80, 140, 140, 20.0f);
   }
-  PixelGrid(c, 216, 70, 140, 160, on ? 7.0f : cell, [&](float x, float y, float) {
-    return std::hypot(x - 286, y - 150) < (on ? 56 : 40) ? 1.0f : 0.0f;
-  });
 }
 
 void AntiAliasing(Canvas& c, std::string_view value) {
   const int samples = int(Number(value));
-  PixelGrid(c, 60, 40, 280, 240, 20.0f, [&](float x, float y, float cell) {
+  constexpr float kCell = 16.0f, kX = 56, kY = 40, kW = 288, kH = 240;
+  PixelGrid(c, kX, kY, kW, kH, kCell, [&](float x, float y, float cell) {
     return Quantise(EdgeCoverage(x, y, cell, 0.55f, 170), samples);
   });
-  c.Line({170 + 0.55f * 40, 40}, {170 + 0.55f * 280, 280}, 2, Tint(kWhite, 0.45f));
+  GridLines(c, kX, kY, kW, kH, kCell);
+  c.Line({170 + 0.55f * kY, kY}, {170 + 0.55f * (kY + kH), kY + kH}, 2, Tint(kWhite, 0.6f));
 }
 
 void TransparencyAa(Canvas& c, std::string_view value) {
@@ -139,6 +155,7 @@ void TransparencyAa(Canvas& c, std::string_view value) {
     const float coverage = std::clamp(1.0f - std::fabs(phase - 28.0f) / (cell * 0.9f), 0.0f, 1.0f);
     return smooth ? Quantise(coverage, 4) : (coverage > 0.5f ? 1.0f : 0.0f);
   });
+  GridLines(c, 60, 40, 280, 190, 14.0f);
   Toggle(c, 200, 270, smooth);
 }
 
@@ -148,8 +165,9 @@ void ShadowResolution(Canvas& c, std::string_view value) {
   c.Rect(60, 90, 70, 110, kInk);
   PixelGrid(c, 130, 208, 224, 64, step, [&](float x, float y, float) {
     // A slanted shadow edge on the floor.
-    return x - 130 < 170 - (y - 208) * 1.1f ? 0.55f : 0.0f;
+    return x - 130 < 170 - (y - 208) * 1.1f ? 0.7f : 0.0f;
   });
+  GridLines(c, 130, 208, 224, 64, step);
 }
 
 void AspectRatio(Canvas& c, std::string_view value) {

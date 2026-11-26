@@ -259,6 +259,9 @@ std::string Value(const Option& option) {
 // kPictureRegion belong to other sprites of the same texture and are never touched.
 constexpr uint32_t kPictureNode = 9;
 constexpr mgr_pictures::Region kPictureRegion{0, 0, mgr_pictures::kRegionWidth, mgr_pictures::kRegionHeight};
+// The retail diagram box sits at screen x=700; the option list ends near x=630 and the help
+// text is right aligned to x=1183, so the box moves right to centre in the free area.
+constexpr float kPictureShiftX = 50.0f;
 void UpdatePicture(uint8_t* base) {
   const bool wanted = menu.page != Page::Categories && menu.row < int(Options().size());
   if (!wanted) { Visible(base, menu.object, kPictureNode, false); return; }
@@ -395,6 +398,13 @@ void ControllerDiagram(uint8_t* base, bool shown) {
   Visible(base, menu.object, 9, shown);
   for (uint32_t id = 12; id <= 34; ++id) Visible(base, menu.object, id, shown);
 }
+// Shifts the side picture right of its retail X (restored with the other moved nodes).
+void PlacePicture(uint8_t* base) {
+  const uint32_t node = Node(base, menu.object, kPictureNode);
+  if (!node) return;
+  menu.moved_x.try_emplace(node, U32(base, node + kNodeX));
+  W32(base, node + kNodeX, std::bit_cast<uint32_t>(kPictureShiftX));
+}
 void CustomPage(PPCContext& ctx, uint8_t* base, Page page, int row = 0) {
   Restore(base);
   menu.page = page; menu.row = row; menu.scroll = 0; ScrollToRow();
@@ -403,6 +413,7 @@ void CustomPage(PPCContext& ctx, uint8_t* base, Page page, int row = 0) {
     Visible(base, menu.object, U32(base, menu.object + kGroupContainers + k * 4), RowCount() > kGroupFirstRow[k]);
   ControllerDiagram(base, false);
   LayoutSlots(base);
+  PlacePicture(base);
   // A retail category leaves groups 1 and 2 active; custom pages use group 0.
   for (int i = 0; i < 3; ++i) Call(ctx, base, sub_82C40F08, menu.object + kGroupOffsets[i], i == 0);
   for (int i = 0; i < kVisibleRows; ++i) Highlight(ctx, base, i, false);
