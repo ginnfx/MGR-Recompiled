@@ -150,6 +150,13 @@ plume::RenderShader *PublishShader(GuestShader *gs,
   return gs->shader.get();
 }
 
+// Pipeline workers link in parallel, so reads take the lock that
+// PublishShader writes under.
+plume::RenderShader *PublishedShader(GuestShader *gs) {
+  std::lock_guard lock(g_shader_link_mutex);
+  return gs->shader.get();
+}
+
 } // namespace
 
 GuestShader *CreateShader(const be_u32 *function, ResourceType type) {
@@ -180,8 +187,8 @@ plume::RenderShader *GetOrLinkShader(GuestShader *gs, u32 specConstants) {
   if (!gs)
     return nullptr;
   // hcg*ShaderCreateByHlsl path: shader populated directly, no cache entry.
-  if (gs->shader)
-    return gs->shader.get();
+  if (plume::RenderShader *published = PublishedShader(gs))
+    return published;
   const ShaderCacheEntry *entry = gs->shaderCacheEntry;
   if (!entry)
     return nullptr;

@@ -70,7 +70,7 @@ GuestTexture *BuildBCMirrorCore(const BCMirrorDesc &d,
   if (!s.command_list_open)
     return nullptr;
 
-  auto *t = new GuestTexture(d.resource_type);
+  auto t = std::make_unique<GuestTexture>(d.resource_type);
   t->width = d.width;
   t->height = d.height;
   t->depth = d.depth;
@@ -91,7 +91,6 @@ GuestTexture *BuildBCMirrorCore(const BCMirrorDesc &d,
   t->textureHolder = CreateHostTexture(s.device.get(), desc, "bc-mirror");
   t->texture = t->textureHolder.get();
   if (!t->texture) {
-    delete t;
     return nullptr;
   }
 
@@ -108,7 +107,6 @@ GuestTexture *BuildBCMirrorCore(const BCMirrorDesc &d,
     if (!allocs[i].memory) {
       MGRN_ERROR("{}: upload of subresource {} ({} bytes) failed", d.caller_name,
                i, uploads[i].size);
-      delete t;
       return nullptr;
     }
   }
@@ -116,7 +114,6 @@ GuestTexture *BuildBCMirrorCore(const BCMirrorDesc &d,
   const u32 slot = AllocateSlot(s);
   if (slot == kInvalidDescriptorIndex) {
     MGRN_ERROR("{}: bindless heap full", d.caller_name);
-    delete t;
     return nullptr;
   }
   s.texture_descriptor_set->setTexture(slot, t->texture,
@@ -143,7 +140,7 @@ GuestTexture *BuildBCMirrorCore(const BCMirrorDesc &d,
                                    plume::RenderTextureLayout::SHADER_READ);
   s.command_list->barriers(plume::RenderBarrierStage::GRAPHICS, &post, 1);
   t->layout = plume::RenderTextureLayout::SHADER_READ;
-  return t;
+  return t.release();
 }
 
 // XE_GPU_TEXTURE_SWIZZLE: 0..3 = X..W, 4 = zero, 5 = one; 6 and 7 are invalid

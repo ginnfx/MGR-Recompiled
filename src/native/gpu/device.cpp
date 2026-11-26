@@ -651,7 +651,7 @@ GuestTexture *GetOrCreateDebugTexture() {
   if (!s.command_list_open)
     return nullptr;
 
-  auto *t = new GuestTexture(ResourceType::RenderTarget);
+  auto t = std::make_unique<GuestTexture>(ResourceType::RenderTarget);
   t->width = 4;
   t->height = 4;
   t->format = plume::RenderFormat::R8G8B8A8_UNORM;
@@ -673,7 +673,6 @@ GuestTexture *GetOrCreateDebugTexture() {
   if (!t->textureHolder) {
     MGRN_ERROR(
         "GetOrCreateDebugTexture: createTexture for fallback texture failed");
-    delete t;
     return nullptr;
   }
   t->texture = t->textureHolder.get();
@@ -688,7 +687,6 @@ GuestTexture *GetOrCreateDebugTexture() {
   if (slot == kInvalidDescriptorIndex) {
     MGRN_ERROR("GetOrCreateDebugTexture: bindless heap full, fallback texture "
              "dropped");
-    delete t;
     return nullptr;
   }
   s.texture_descriptor_set->setTexture(slot, t->texture,
@@ -699,7 +697,7 @@ GuestTexture *GetOrCreateDebugTexture() {
   plume::RenderTextureBarrier to_rt(t->texture,
                                     plume::RenderTextureLayout::COLOR_WRITE);
   s.command_list->barriers(plume::RenderBarrierStage::GRAPHICS, &to_rt, 1);
-  if (plume::RenderFramebuffer *fb = GetFramebuffer(s, t, nullptr)) {
+  if (plume::RenderFramebuffer *fb = GetFramebuffer(s, t.get(), nullptr)) {
     s.command_list->setFramebuffer(fb);
     s.command_list->clearColor(0, plume::RenderColor(1.0f, 1.0f, 1.0f, 1.0f));
     s.command_list->setFramebuffer(nullptr);
@@ -709,7 +707,7 @@ GuestTexture *GetOrCreateDebugTexture() {
   s.command_list->barriers(plume::RenderBarrierStage::GRAPHICS, &to_read, 1);
   t->layout = plume::RenderTextureLayout::SHADER_READ;
 
-  g_debug_texture = t;
+  g_debug_texture = t.release();  // lives as long as the device
   return g_debug_texture;
 }
 
