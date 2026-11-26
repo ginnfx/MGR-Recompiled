@@ -46,7 +46,7 @@ EOF
     MGR_CAPTURE_DIR="$PROF" MGR_GPU_TIMING=$LEVEL MGR_SHADER_NAMES="$NAMES" \
     MGR_OT_PROFILE=$((LEVEL == 2)) MGR_FRAME_CSV="$OUT-frame.csv" \
     MGR_GPU_TIMING_CSV="$OUT-gpu.csv" \
-    timeout "$RUN_TIMEOUT" "$ROOT/scripts/run.sh" --mgr_output_resolution=source "$@" \
+    timeout "$RUN_TIMEOUT" "$ROOT/scripts/run.sh" --mgr_renderer=xenos --mgr_output_resolution=source "$@" \
     > "$OUT.txt" 2>&1
   echo "   exit $?"
 done

@@ -339,10 +339,12 @@ void Video::Present(GuestTexture *frontBuffer) {
 
   BeginCommandList(s);
   RecordPresentPass(s, rt, back, back_fb);
-  // Optional scanout capture includes the present ramp and sRGB view decode;
-  // the default guest-buffer capture preserves internal-resolution texels.
-  static const bool capture_present = std::getenv("MGR_NATIVE_CAPTURE_PRESENT") != nullptr;
-  if (capture_present) {
+  // The default harness capture is the real scanout (present ramp and sRGB view
+  // decode). The guest front buffer is R8G8B8A8_UNORM_SRGB, so copying it raw
+  // reads sRGB-encoded bytes (about +65 luma). MGR_NATIVE_CAPTURE_GUEST=1 opts
+  // back into the raw internal-resolution copy for texel-level inspection.
+  static const bool capture_guest = std::getenv("MGR_NATIVE_CAPTURE_GUEST") != nullptr;
+  if (!capture_guest) {
     GuestTexture presented;
     presented.texture = back;
     presented.width = s.swap_chain->getWidth();

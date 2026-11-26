@@ -6,6 +6,8 @@
 #   scripts/package-macos.sh                 # ad-hoc signed
 #   SIGN_IDENTITY="Developer ID Application: ..." scripts/package-macos.sh
 #   MGR_SETUP_BACKGROUND=art.jpg scripts/package-macos.sh   # other setup art
+#   DMGBUILD=/path/to/dmgbuild scripts/package-macos.sh     # arranged installer window
+#                                                           # (pip install dmgbuild==1.6.5)
 #
 # Game files are never packaged: the app installs them from the player's own
 # disc image on first launch. Extra arguments are passed to the game's CMake.
@@ -19,16 +21,37 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 BUILD="$ROOT/build-release"
 DIST="$ROOT/dist"
 APP="$DIST/$APP_NAME.app"
+SPARKLE="${MGR_SPARKLE_DIR:-$ROOT/tools/sdk/sparkle/2.10.1}"
+FEED_URL="${MGR_FEED_URL:-https://github.com/ginnfx/MGR-Recompiled/releases/latest/download/appcast.xml}"
+KEY_FILE="$ROOT/cmake/macos/sparkle-public-key.txt"
+UPDATE_KEY="${MGR_UPDATE_PUBLIC_KEY:-}"
+[[ -n "$UPDATE_KEY" || ! -f "$KEY_FILE" ]] || UPDATE_KEY="$(tr -d '[:space:]' < "$KEY_FILE")"
 RUNTIME="$BUILD/rexruntime/librexruntimerd.dylib"
 SDK_LIB="$ROOT/tools/sdk/mac-arm64/lib"
 
 die() { echo "package-macos: $*" >&2; exit 1; }
 
+NUMBER='(0|[1-9][0-9]*)'
+[[ "$VERSION" =~ ^$NUMBER\.$NUMBER\.$NUMBER$ ]] ||
+  die "MGR_VERSION must be MAJOR.MINOR.PATCH, such as 0.1.0 (got '$VERSION')"
 if ! [[ "$JOBS" =~ ^[1-9][0-9]*$ ]]; then die "MGR_BUILD_JOBS must be a positive integer"; fi
 [[ -d "$ROOT/generated" ]] || die "missing generated/; run: tools/sdk/mac-arm64/bin/rexglue codegen mgr_manifest.toml"
 [[ -f "$ROOT/private/mgr_native_shaders.xrnb" ]] || die "missing private/mgr_native_shaders.xrnb (renderer shader cache)"
 [[ -z "$(git -C "$ROOT" status --porcelain --untracked-files=no)" ]] ||
   echo "package-macos: warning: working tree has uncommitted changes" >&2
+
+# Without a public key the app could not verify an update, so it ships without
+# the updater. A release must have one: set MGR_REQUIRE_UPDATER=1.
+if [[ -n "$UPDATE_KEY" ]]; then
+  [[ "$UPDATE_KEY" =~ ^[A-Za-z0-9+/]{43}=$ ]] || die "the update public key is not a base64 Ed25519 key"
+  [[ -d "$SPARKLE/Sparkle.framework" ]] || die "missing Sparkle; run: scripts/fetch-sparkle.sh"
+  [[ "$FEED_URL" == https://* ]] || die "MGR_FEED_URL must use https"
+  SPARKLE_CMAKE="$SPARKLE"
+else
+  [[ "${MGR_REQUIRE_UPDATER:-0}" != 1 ]] || die "no update public key (see scripts/release.sh)"
+  echo "package-macos: warning: no update public key; building without auto-updates" >&2
+  SPARKLE_CMAKE=""
+fi
 
 # --- Build -------------------------------------------------------------------
 # Source paths in __FILE__ and debug info become repo-relative, so the shipped
@@ -47,7 +70,7 @@ cmake --build "$BUILD/rexruntime" --target rexruntime --parallel "$JOBS"
 cmake -S "$ROOT" -B "$BUILD" -G Ninja \
   -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_PREFIX_PATH="$ROOT/tools/sdk/mac-arm64" \
   -DCMAKE_OSX_DEPLOYMENT_TARGET="$MIN_MACOS" -DMGR_CPU_TUNE= -DMGR_PGO_MODE=OFF \
-  -DMGR_RUNTIME_LIB="$RUNTIME" "${PATH_FLAGS[@]}" "$@"
+  -DMGR_RUNTIME_LIB="$RUNTIME" -DMGR_SPARKLE_DIR="$SPARKLE_CMAKE" "${PATH_FLAGS[@]}" "$@"
 cmake --build "$BUILD" --target mgr --parallel "$JOBS"
 cmake -E copy_if_different "$RUNTIME" "$BUILD/"
 
@@ -76,10 +99,17 @@ sips -Z 1920 -s format jpeg -s formatOptions 90 "$BACKGROUND" \
 if [[ -f "$ROOT/cmake/macos/AppIcon.icns" ]]; then
   cp "$ROOT/cmake/macos/AppIcon.icns" "$APP/Contents/Resources/"
 fi
-BUILD_NUMBER="$(git -C "$ROOT" rev-list --count HEAD)"
 sed -e "s/@APP_NAME@/$APP_NAME/g" -e "s/@VERSION@/$VERSION/g" \
-    -e "s/@BUILD_NUMBER@/$BUILD_NUMBER/g" -e "s/@MIN_MACOS@/$MIN_MACOS/g" \
+    -e "s/@BUILD_NUMBER@/$VERSION/g" -e "s/@MIN_MACOS@/$MIN_MACOS/g" \
     "$ROOT/cmake/macos/Info.plist.in" > "$APP/Contents/Info.plist"
+if [[ -n "$UPDATE_KEY" ]]; then
+  mkdir -p "$APP/Contents/Frameworks"
+  ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
+  cp "$SPARKLE/LICENSE" "$APP/Contents/Resources/LICENSE-Sparkle"
+  plutil -insert SUFeedURL -string "$FEED_URL" "$APP/Contents/Info.plist"
+  plutil -insert SUPublicEDKey -string "$UPDATE_KEY" "$APP/Contents/Info.plist"
+  plutil -insert SUEnableAutomaticChecks -bool true "$APP/Contents/Info.plist"
+fi
 plutil -lint -s "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
@@ -123,18 +153,37 @@ if [[ "$SIGN_IDENTITY" != "-" ]]; then SIGN_ARGS+=(--options runtime --timestamp
 for f in "${MACHO[@]}"; do
   [[ "$f" == "$APP/Contents/MacOS/mgr" ]] || codesign "${SIGN_ARGS[@]}" "$f"
 done
+# Sparkle's helpers are signed inside out, in the order its documentation gives.
+if [[ -n "$UPDATE_KEY" ]]; then
+  FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+  codesign "${SIGN_ARGS[@]}" "$FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
+  codesign "${SIGN_ARGS[@]}" --preserve-metadata=entitlements \
+    "$FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
+  codesign "${SIGN_ARGS[@]}" "$FRAMEWORK/Versions/B/Autoupdate"
+  codesign "${SIGN_ARGS[@]}" "$FRAMEWORK/Versions/B/Updater.app"
+  codesign "${SIGN_ARGS[@]}" "$FRAMEWORK"
+fi
 codesign "${SIGN_ARGS[@]}" "$APP"
 codesign --verify --deep --strict "$APP"
 
 # --- Disk image --------------------------------------------------------------
 DMG="$DIST/MGR-Recompiled-$VERSION-macos-arm64.dmg"
-STAGE="$DIST/dmg-stage"
-rm -rf "$STAGE" "$DMG"
-mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -quiet -volname "$APP_NAME" -srcfolder "$STAGE" -fs HFS+ -format ULFO "$DMG"
-rm -rf "$STAGE"
+rm -f "$DMG"
+# dmgbuild lays out the installer window by writing .DS_Store itself, so Finder
+# never opens. Without it the image is still usable, just unarranged.
+DMGBUILD="${DMGBUILD:-$(command -v dmgbuild || true)}"
+if [[ -n "$DMGBUILD" ]]; then
+  "$DMGBUILD" -s "$ROOT/tools/release/dmg_settings.py" -D "app=$APP" \
+    -D "icon=$ROOT/cmake/macos/AppIcon.icns" "$APP_NAME" "$DMG" >/dev/null
+else
+  echo "package-macos: warning: dmgbuild not found; making a plain disk image" >&2
+  STAGE="$DIST/dmg-stage"
+  rm -rf "$STAGE" && mkdir -p "$STAGE"
+  cp -R "$APP" "$STAGE/"
+  ln -s /Applications "$STAGE/Applications"
+  hdiutil create -quiet -volname "$APP_NAME" -srcfolder "$STAGE" -fs HFS+ -format ULFO "$DMG"
+  rm -rf "$STAGE"
+fi
 [[ "$SIGN_IDENTITY" == "-" ]] || codesign --force --sign "$SIGN_IDENTITY" --timestamp "$DMG"
 
 echo "App:     $APP"

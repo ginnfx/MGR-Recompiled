@@ -1,0 +1,14 @@
+# The checks used for the 2026-11 code audit. Run against a compile database:
+#   ninja -C build -t compdb > /tmp/db/compile_commands.json
+#   clang-tidy -p /tmp/db src/<file>.cpp
+Checks: >-
+  -*,bugprone-*,-bugprone-easily-swappable-parameters,-bugprone-reserved-identifier,
+  clang-analyzer-*,performance-*,cert-err34-c,cert-flp30-c,
+  cppcoreguidelines-init-variables,cppcoreguidelines-pro-type-cstyle-cast,
+  modernize-use-nullptr,readability-function-cognitive-complexity,
+  readability-function-size
+HeaderFilterRegex: '.*/(src|gpu)/.*'
+CheckOptions:
+  readability-function-size.LineThreshold: 50
+  readability-function-size.NestingThreshold: 4
+  readability-function-cognitive-complexity.Threshold: 25

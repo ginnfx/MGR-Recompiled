@@ -26,6 +26,7 @@
 #include "mgr_native_options.h"
 #include "mgr_menu_fonts.h"
 #include "mgr_test_script.h"
+#include "mgr_updater.h"
 #if MGR_NATIVE_RENDERER
 #include "native/mgr_native.h"
 #endif
@@ -211,6 +212,7 @@ class MgrApp : public rex::ReXApp {
   // drawer is null without SDK overlays (native renderer): no F2 dialog then.
   void InstallGameUi(rex::ui::ImGuiDrawer* drawer) {
     MgrTestScriptAttachWindow();  // the window has just opened
+    MgrStartUpdater();
     // Cvar callbacks may originate off the UI thread. The weak token prevents
     // queued resize work from accessing this app after shutdown.
     const std::weak_ptr<uint8_t> alive = settings_callbacks_alive_;

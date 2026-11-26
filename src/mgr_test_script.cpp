@@ -12,7 +12,7 @@
 //   <frame> quit                                   after pending captures
 //
 // <frame> may be "start+every*count" to repeat an event. '#' starts a comment.
-// Buttons: A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT.
+// Buttons: A B X Y START BACK LB RB LS RS UP DOWN LEFT RIGHT, and LT RT (full pull).
 // Scripted input is merged into player 1's XamInputGetState result, which is
 // reported as connected while the script runs. Keys go through SDL to the
 // keyboard driver.
@@ -52,7 +52,7 @@ enum class Action { kPress, kStick, kKey, kCapture, kMark, kSet, kSave, kQuit };
 struct Event {
   uint64_t frame;
   Action action;
-  uint16_t buttons = 0;
+  uint32_t buttons = 0;
   int16_t lx = 0, ly = 0;
   uint32_t hold = 4;
   std::string text;
@@ -62,19 +62,24 @@ struct Event {
 constexpr uint32_t kDefaultHold = 4;
 constexpr auto kQuitCaptureTimeout = std::chrono::seconds(10);
 constexpr uint64_t kCommandPollFrames = 15;
+// Triggers are analog bytes, not XInput button bits; these pseudo-bits ask for a
+// full pull (Blade Mode is LT).
+constexpr uint32_t kTriggerLeft = 0x10000;
+constexpr uint32_t kTriggerRight = 0x20000;
+constexpr uint8_t kTriggerFullPull = 255;
 
 struct ButtonName {
   const char* name;
-  uint16_t bit;
+  uint32_t bit;
 };
 constexpr ButtonName kButtons[] = {
     {"UP", 0x0001},  {"DOWN", 0x0002}, {"LEFT", 0x0004}, {"RIGHT", 0x0008},
     {"START", 0x0010}, {"BACK", 0x0020}, {"LS", 0x0040},  {"RS", 0x0080},
     {"LB", 0x0100},  {"RB", 0x0200},   {"A", 0x1000},    {"B", 0x2000},
-    {"X", 0x4000},   {"Y", 0x8000},
+    {"X", 0x4000},   {"Y", 0x8000},   {"LT", kTriggerLeft}, {"RT", kTriggerRight},
 };
 
-bool ParseButtons(const std::string& spec, uint16_t& out) {
+bool ParseButtons(const std::string& spec, uint32_t& out) {
   out = 0;
   std::stringstream parts(spec);
   std::string part;
@@ -204,7 +209,7 @@ struct Script {
   std::string commands_path;
   uint64_t command_id = 0;
   std::vector<Event> live_keys;
-  std::atomic<uint16_t> live_buttons{0};
+  std::atomic<uint32_t> live_buttons{0};
   std::atomic<uint64_t> live_buttons_until{0};
   bool focus_sent = false;
 
@@ -242,7 +247,7 @@ PPCFunc* ResolveSdk(const char* name) {
 }
 
 struct GamepadOverride {
-  uint16_t buttons = 0;
+  uint32_t buttons = 0;
   bool has_stick = false;
   int16_t lx = 0, ly = 0;
 };
@@ -277,6 +282,8 @@ constexpr uint32_t kXInputErrorSuccess = 0;
 // X_INPUT_STATE: be32 packet_number, then X_INPUT_GAMEPAD.
 constexpr uint32_t kStatePacketOffset = 0;
 constexpr uint32_t kStateButtonsOffset = 4;
+constexpr uint32_t kStateTriggerLeftOffset = 6;  // XINPUT_GAMEPAD bLeftTrigger
+constexpr uint32_t kStateTriggerRightOffset = 7;
 constexpr uint32_t kStateThumbLxOffset = 8;
 constexpr uint32_t kStateThumbLyOffset = 10;
 constexpr uint32_t kStateSize = 16;
@@ -421,7 +428,9 @@ extern "C" REX_FUNC(__imp__XamInputGetState) {
   const uint32_t packet = __builtin_bswap32(uint32_t(frame));
   std::memcpy(base + state + kStatePacketOffset, &packet, sizeof(packet));
   StoreGuestU16(base, state + kStateButtonsOffset,
-                LoadGuestU16(base, state + kStateButtonsOffset) | pad.buttons);
+                LoadGuestU16(base, state + kStateButtonsOffset) | uint16_t(pad.buttons));
+  if (pad.buttons & kTriggerLeft) base[state + kStateTriggerLeftOffset] = kTriggerFullPull;
+  if (pad.buttons & kTriggerRight) base[state + kStateTriggerRightOffset] = kTriggerFullPull;
   if (pad.has_stick) {
     StoreGuestU16(base, state + kStateThumbLxOffset, uint16_t(pad.lx));
     StoreGuestU16(base, state + kStateThumbLyOffset, uint16_t(pad.ly));

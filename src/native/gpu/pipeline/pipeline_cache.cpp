@@ -10,6 +10,7 @@
  *            See LICENSE file in the project root for full license text.
  */
 #include "gpu/pipeline/pipeline_cache.h"
+#include "gpu/pipeline/pso_recorder.h"
 #include "core/logging.h"
 
 #include <memory>
@@ -134,13 +135,18 @@ namespace {
 std::mutex g_mutex;
 std::unordered_map<u64, std::unique_ptr<plume::RenderPipeline>> g_pipelines;
 
-std::unique_ptr<plume::RenderPipeline> Build(const PipelineState &state) {
+std::unique_ptr<plume::RenderPipeline> Build(const PipelineState &state, bool &isTransientFailure) {
+  // Only a device, layout or occlusion shader that is not ready yet can succeed
+  // on a later attempt. A shader that fails to decode or create fails the same
+  // way for equal content, so it is remembered rather than retried every draw.
+  isTransientFailure = true;
   auto *device = Video::HostDevice();
   if (!device)
     return nullptr;
   auto *layout = Video::MainPipelineLayout();
   if (!layout)
     return nullptr;
+  isTransientFailure = false;
   if (!state.vertexShader || !state.vertexDeclaration)
     return nullptr;
 
@@ -152,8 +158,10 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineState &state) {
   plume::RenderShader *ps = nullptr;
   if (state.occlusionCounting) {
     ps = Occlusion::CountPS();
-    if (!ps)
+    if (!ps) {
+      isTransientFailure = true;
       return nullptr;
+    }
   } else {
     ps = state.pixelShader
              ? GetOrLinkShader(state.pixelShader, state.specConstants)
@@ -282,12 +290,38 @@ std::unique_ptr<plume::RenderPipeline> Build(const PipelineState &state) {
 
 } // namespace
 
+namespace {
+
+// Cache key by content, not object identity: the game creates equal shaders and
+// vertex declarations repeatedly (distinct objects, same microcode/element
+// hash), and a pipeline built for one must serve draws using another. Without
+// this an MSAA twin resolved by hash (pso_recorder.cpp) never matched the pipeline
+// the draw asked for. Shaders without a cache entry (runtime HLSL) keep
+// their pointer identity.
+u64 PipelineCacheKey(const PipelineState &state) {
+  const auto identity = [](const GuestShader *shader) -> GuestShader * {
+    if (shader && shader->shaderCacheEntry)
+      return reinterpret_cast<GuestShader *>(
+          static_cast<uintptr_t>(shader->shaderCacheEntry->hash));
+    return const_cast<GuestShader *>(shader);
+  };
+  PipelineState keyed = state;
+  keyed.vertexShader = identity(state.vertexShader);
+  keyed.pixelShader = identity(state.pixelShader);
+  if (state.vertexDeclaration)
+    keyed.vertexDeclaration = reinterpret_cast<GuestVertexDeclaration *>(
+        static_cast<uintptr_t>(state.vertexDeclaration->hash));
+  return HashPipelineState(keyed);
+}
+
+} // namespace
+
 plume::RenderPipeline *GetOrCreatePipeline(const PipelineState &state,
                                            bool *out_created) {
   MGRN_CPU_ZONE("GetOrCreatePipeline");
   if (out_created)
     *out_created = false;
-  const u64 key = HashPipelineState(state);
+  const u64 key = PipelineCacheKey(state);
   {
     std::lock_guard lock(g_mutex);
     auto it = g_pipelines.find(key);
@@ -296,7 +330,8 @@ plume::RenderPipeline *GetOrCreatePipeline(const PipelineState &state,
   }
   if (out_created)
     *out_created = true;
-  auto p = Build(state);
+  bool isTransientFailure = false;
+  auto p = Build(state, isTransientFailure);
   if (!p) {
     const auto hash_of = [](const GuestShader *shader) -> u64 {
       return (shader && shader->shaderCacheEntry) ? shader->shaderCacheEntry->hash : 0;
@@ -308,12 +343,24 @@ plume::RenderPipeline *GetOrCreatePipeline(const PipelineState &state,
               u32(state.depthStencilFormat),
               state.vertexDeclaration ? state.vertexDeclaration->inputElementCount : 0);
   }
-  // MGR: remember failures too (a null entry), so a pipeline the backend
-  // rejects costs one attempt rather than one per draw.
-  std::lock_guard lock(g_mutex);
-  // try_emplace handles a concurrent build of the same key (lock was dropped).
-  auto [it, inserted] = g_pipelines.try_emplace(key, std::move(p));
-  return it->second.get();
+  // Transient failures are not cached: the key is content based, so a null
+  // entry would disable that content for every equal object. A backend
+  // rejection is deterministic and is remembered (a null entry), so it costs one
+  // attempt rather than one per draw.
+  if (!p && isTransientFailure)
+    return nullptr;
+  plume::RenderPipeline *built = nullptr;
+  bool inserted = false;
+  {
+    std::lock_guard lock(g_mutex);
+    // try_emplace handles a concurrent build of the same key (lock was dropped).
+    auto [it, wasInserted] = g_pipelines.try_emplace(key, std::move(p));
+    built = it->second.get();
+    inserted = wasInserted;
+  }
+  if (inserted && built)
+    NoteBuiltPipeline(state);
+  return built;
 }
 
 size_t PipelineCacheSize() {

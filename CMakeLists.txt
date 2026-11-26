@@ -30,9 +30,16 @@ set(MGR_SOURCES
     src/mgr_options_dialog.cpp
     src/mgr_game_options.cpp
     src/mgr_native_options.cpp
+    src/mgr_options_dump.cpp
+    src/mgr_options_rows.cpp
+    src/mgr_options_text.cpp
+    src/mgr_options_pictures.cpp
+    src/mgr_picture_codec.cpp
+    src/mgr_options_sprite.cpp
     src/mgr_options_trace.cpp
     src/mgr_menu_fonts.cpp
     src/mgr_test_script.cpp
+    src/mgr_test_unlock.cpp
     src/mgr_test_window_mac.cpp
     src/thirdparty/mgrr_perf/perf_logger.cpp
 )
@@ -152,6 +159,21 @@ target_sources(mgr PRIVATE src/mgr_game_install.cpp src/mgr_disc_source.cpp src/
 set_source_files_properties(src/mgr_setup_mac.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 target_link_libraries(mgr PRIVATE "-framework AppKit" "-framework UniformTypeIdentifiers"
                       "-framework ImageIO")
+# Auto-updates (src/mgr_updater.h). Off unless packaging points at an unpacked
+# Sparkle release (scripts/fetch-sparkle.sh).
+set(MGR_SPARKLE_DIR "" CACHE PATH "Folder holding Sparkle.framework; empty builds without updates")
+if(MGR_SPARKLE_DIR)
+    if(NOT EXISTS "${MGR_SPARKLE_DIR}/Sparkle.framework")
+        message(FATAL_ERROR "No Sparkle.framework in MGR_SPARKLE_DIR=${MGR_SPARKLE_DIR}")
+    endif()
+    target_sources(mgr PRIVATE src/mgr_updater_mac.mm)
+    set_source_files_properties(src/mgr_updater_mac.mm PROPERTIES
+        COMPILE_OPTIONS "-fobjc-arc;-F${MGR_SPARKLE_DIR}")
+    target_compile_definitions(mgr PRIVATE MGR_UPDATER=1)
+    target_link_options(mgr PRIVATE "-F${MGR_SPARKLE_DIR}"
+        "LINKER:-rpath,@executable_path/../Frameworks")
+    target_link_libraries(mgr PRIVATE "-framework Sparkle")
+endif()
 # Setup screen fonts (OFL) and key art. private/setup_background.jpg is a
 # local-only override; the shipped default is the app icon art.
 set(MGR_SETUP_BACKGROUND "${CMAKE_SOURCE_DIR}/cmake/macos/AppIcon-source.jpg")
@@ -230,6 +252,12 @@ add_executable(mgr_scale_ratio_checks EXCLUDE_FROM_ALL tests/scale_ratio_test.cp
 target_include_directories(mgr_scale_ratio_checks PRIVATE
     "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
 target_compile_options(mgr_scale_ratio_checks PRIVATE -UNDEBUG)
+add_executable(mgr_msaa_twin_checks EXCLUDE_FROM_ALL tests/msaa_twin_test.cpp)
+target_include_directories(mgr_msaa_twin_checks PRIVATE
+    "${CMAKE_SOURCE_DIR}/src/native"
+    "${CMAKE_SOURCE_DIR}/vendor/reblue/thirdparty/XenosRecomp/XenosRecomp"
+    "${CMAKE_SOURCE_DIR}/vendor/rexglue-sdk/include")
+target_compile_options(mgr_msaa_twin_checks PRIVATE -UNDEBUG)
 add_executable(mgr_scaled_texture_address_checks EXCLUDE_FROM_ALL
     tests/scaled_texture_address_test.cpp)
 target_include_directories(mgr_scaled_texture_address_checks PRIVATE
@@ -243,6 +271,10 @@ target_compile_options(mgr_scaled_viewport_checks PRIVATE -UNDEBUG)
 add_executable(mgr_ot_key_checks EXCLUDE_FROM_ALL tests/ot_key_test.cpp)
 target_include_directories(mgr_ot_key_checks PRIVATE src)
 target_compile_options(mgr_ot_key_checks PRIVATE -UNDEBUG)
+add_executable(mgr_picture_codec_checks EXCLUDE_FROM_ALL tests/picture_codec_test.cpp
+    src/mgr_picture_codec.cpp src/mgr_options_pictures.cpp)
+target_include_directories(mgr_picture_codec_checks PRIVATE src)
+target_compile_options(mgr_picture_codec_checks PRIVATE -UNDEBUG)
 add_executable(mgr_lod_bias_checks EXCLUDE_FROM_ALL tests/lod_bias_test.cpp)
 target_include_directories(mgr_lod_bias_checks PRIVATE src)
 target_compile_options(mgr_lod_bias_checks PRIVATE -UNDEBUG)
@@ -277,11 +309,22 @@ endif()
 
 # `ninja -C build mgr_tests && ctest --test-dir build` runs every host-only check.
 enable_testing()
-set(MGR_TEST_TARGETS mgr_resolve_arena_checks mgr_scale_ratio_checks mgr_scaled_viewport_checks
+# -DMGR_SANITIZE=ON builds the tests of the parsers and codecs with
+# AddressSanitizer and UndefinedBehaviorSanitizer.
+option(MGR_SANITIZE "Sanitize the self-contained test programs" OFF)
+if(MGR_SANITIZE)
+    foreach(_target mgr_game_install_checks mgr_dlc_package_checks mgr_picture_codec_checks
+                    mgr_bundle_paths_checks mgr_lod_bias_checks mgr_ot_key_checks)
+        target_compile_options(${_target} PRIVATE -fsanitize=address,undefined
+            -fno-sanitize-recover=all)
+        target_link_options(${_target} PRIVATE -fsanitize=address,undefined)
+    endforeach()
+endif()
+set(MGR_TEST_TARGETS mgr_msaa_twin_checks mgr_resolve_arena_checks mgr_scale_ratio_checks mgr_scaled_viewport_checks
     mgr_scaled_texture_address_checks
     mgr_ot_key_checks mgr_lod_bias_checks mgr_upscale_math_checks mgr_bundle_paths_checks mgr_game_install_checks
     mgr_dlc_package_checks
-    mgr_timing_checks
+    mgr_timing_checks mgr_picture_codec_checks
     mgr_native_math_checks mgr_native_memory_checks)
 if(TARGET mgr_rational_shader_gpu_checks)
   list(APPEND MGR_TEST_TARGETS mgr_rational_shader_gpu_checks)
@@ -289,6 +332,7 @@ endif()
 add_custom_target(mgr_tests DEPENDS ${MGR_TEST_TARGETS})
 add_test(NAME resolve_arena COMMAND mgr_resolve_arena_checks)
 add_test(NAME scale_ratio COMMAND mgr_scale_ratio_checks)
+add_test(NAME msaa_twin COMMAND mgr_msaa_twin_checks)
 add_test(NAME scaled_viewport COMMAND mgr_scaled_viewport_checks)
 add_test(NAME scaled_texture_address COMMAND mgr_scaled_texture_address_checks)
 if(TARGET mgr_rational_shader_gpu_checks)
@@ -297,6 +341,7 @@ if(TARGET mgr_rational_shader_gpu_checks)
 endif()
 add_test(NAME ot_key COMMAND mgr_ot_key_checks)
 add_test(NAME lod_bias COMMAND mgr_lod_bias_checks)
+add_test(NAME picture_codec COMMAND mgr_picture_codec_checks)
 add_test(NAME upscale_math COMMAND mgr_upscale_math_checks)
 add_test(NAME bundle_paths COMMAND mgr_bundle_paths_checks)
 add_test(NAME game_install COMMAND mgr_game_install_checks)
@@ -304,5 +349,6 @@ add_test(NAME dlc_package COMMAND mgr_dlc_package_checks)
 foreach(_mode enabled disabled forced)
     add_test(NAME timing_${_mode} COMMAND mgr_timing_checks ${_mode})
 endforeach()
+add_test(NAME package_version COMMAND "${CMAKE_SOURCE_DIR}/tests/package_version_test.sh")
 add_test(NAME native_math COMMAND mgr_native_math_checks)
 add_test(NAME native_memory COMMAND mgr_native_memory_checks)

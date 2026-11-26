@@ -48,6 +48,10 @@ Setup screen fonts (Contents/Resources/setup/fonts), SIL Open Font License 1.1:
   Josefin Sans - Copyright 2010 The Josefin Sans Project Authors
   IBM Plex Sans Condensed, IBM Plex Mono - Copyright 2017 IBM Corp.
 
+Sparkle (auto-updates) - MIT and other permissive licenses, Copyright (c)
+  Andy Matuschak and the Sparkle Project contributors. Full text:
+  Contents/Resources/LICENSE-Sparkle.  https://sparkle-project.org
+
 Dear ImGui - MIT, Copyright (c) 2014-2025 Omar Cornut
 {fmt} - MIT, Copyright (c) 2012-present Victor Zverovich
 spdlog - MIT, Copyright (c) 2016 Gabi Melman

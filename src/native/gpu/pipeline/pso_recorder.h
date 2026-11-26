@@ -34,6 +34,18 @@ void ReplayBootCache();
 // and when nothing new arrived since the last periodic flush.
 void FlushPSOCapture();
 
+// mgr_msaa or mgr_transparency_aa changed (or the device was created with MSAA
+// on): synchronously compile, in parallel, the scene pipelines built so far at
+// the new sample count / alpha-to-coverage state and return when they are
+// cached, so the first frames after the change do not compile on demand. Runs
+// on the guest thread (D3DDevice_Swap hook and device init), not the render
+// thread.
+void OnMSAAChanged();
+
+// Called by the pipeline cache for every pipeline it builds: scene pipelines
+// are remembered (by content hash) so OnMSAAChanged can precompile their twins.
+void NoteBuiltPipeline(const PipelineState &state);
+
 // Called right after creating a guest shader / vertex decl so a deferred replay
 // entry waiting on that content hash can resolve and enqueue.
 void OnShaderCreated(u64 microcodeHash);

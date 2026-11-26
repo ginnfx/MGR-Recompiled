@@ -23,6 +23,7 @@
 #include "core/logging.h"
 #include "gpu/frame.h"
 #include "gpu/host_resource_heap.h"
+#include "gpu/vertex_declaration.h"
 #include "gpu/upscale.h"
 
 namespace mgrn::gpu {
@@ -121,10 +122,12 @@ void DestroyResourceNow(u32 guest_va, ResourceType type) {
     break;
   }
   case ResourceType::VertexDeclaration:
+    ForgetVertexDeclaration(static_cast<GuestVertexDeclaration *>(host));
     HostResourceHeap::Free(static_cast<GuestVertexDeclaration *>(host));
     break;
   case ResourceType::VertexShader:
   case ResourceType::PixelShader:
+    ForgetGuestShader(static_cast<GuestShader *>(host));
     HostResourceHeap::Free(static_cast<GuestShader *>(host));
     break;
   }

@@ -314,6 +314,15 @@ GuestVertexDeclaration *CreateVertexDeclaration(GuestVertexElement *elements) {
   return decl;
 }
 
+void ForgetVertexDeclaration(const GuestVertexDeclaration *decl) {
+  if (!decl)
+    return;
+  std::lock_guard<std::mutex> lock(g_declByHashMutex);
+  auto it = g_declByHash.find(decl->hash);
+  if (it != g_declByHash.end() && it->second == decl)
+    g_declByHash.erase(it);
+}
+
 GuestVertexDeclaration *FindVertexDeclarationByHash(u64 hash) {
   std::lock_guard<std::mutex> lock(g_declByHashMutex);
   auto it = g_declByHash.find(hash);

@@ -9,7 +9,9 @@
  */
 #include <algorithm>
 #include "gpu/settings.h"
+#include "gpu/pipeline/pso_recorder.h"
 
+#include <format>
 #include <string>
 
 #include <rex/cvar.h>
@@ -105,8 +107,22 @@ f32 g_scene_scale = 1.0f;
 f32 g_scene_input_scale = 1.0f;
 f32 g_shadow_scale = 1.0f;
 i32 g_msaa = 0;
+bool g_transparency_aa = false;
 u32 g_target_generation = 1;
 f32 g_max_upscale = 1.0f;
+bool g_status_published = false;
+
+// The Options menu reads mgr_resolution_status ("requested|state|active|reason",
+// scales as "1", "1.5", "2", "3"; src/mgr_settings.h). This renderer applies a
+// new scale at the next present. "Active" is the scene target scale; with an
+// upscaler the 3D scene renders below it and is upscaled to it.
+void PublishResolutionStatus(f32 scene) {
+  const std::string active = std::format("{:g}", scene);
+  rex::cvar::SetFlagByName("mgr_resolution_active_scale", active);
+  rex::cvar::SetFlagByName("mgr_resolution_status",
+                           Flag("mgr_resolution_scale") + "|active|" + active + "|");
+  g_status_published = true;
+}
 } // namespace
 
 f32 SceneRenderScale() { return g_scene_scale; }
@@ -131,14 +147,24 @@ void RefreshRenderTargetSettings() {
       std::max(Settings::Get().UpscalerInputFraction(), 1.0f / g_max_upscale);
   const f32 input = fraction < 1.0f ? scene * fraction : scene;
   const i32 msaa = input != scene ? 0 : Settings::Get().MSAA();
+  const bool transparencyAA = Settings::Get().TransparencyAA();
   if (scene == g_scene_scale && input == g_scene_input_scale && shadow == g_shadow_scale &&
-      msaa == g_msaa)
+      msaa == g_msaa && transparencyAA == g_transparency_aa && g_status_published)
     return;
+  if (scene != g_scene_scale || !g_status_published)
+    PublishResolutionStatus(scene);
   g_scene_scale = scene;
   g_scene_input_scale = input;
   g_shadow_scale = shadow;
+  // Transparency AA only matters while MSAA is on (alpha-to-coverage), but a
+  // toggle then changes the scene pipelines' state, so it needs the same pass.
+  const bool aa_state_changed =
+      msaa != g_msaa || (msaa != 0 && transparencyAA != g_transparency_aa);
   g_msaa = msaa;
+  g_transparency_aa = transparencyAA;
   ++g_target_generation;
+  if (aa_state_changed)
+    OnMSAAChanged();
 }
 
 bool IsShadowShapedTarget(u32 width, u32 height) {

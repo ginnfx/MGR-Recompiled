@@ -7,6 +7,7 @@
 #include <cassert>
 #include <fstream>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -108,6 +109,41 @@ void TestCheckSourceXex() {
   assert(mgr_install::CheckSourceXex(empty, f.manifest) == XexCheck::kNotXex);
 }
 
+// A source that claims `size` bytes for every file and throws if asked to.
+class FakeSource final : public mgr_install::GameSource {
+ public:
+  FakeSource(int64_t size, bool throws) : size_(size), throws_(throws) {}
+  int64_t Size(std::string_view) override { return size_; }
+  bool Read(std::string_view, const std::function<bool(std::span<const uint8_t>)>&) override {
+    was_read = true;
+    if (throws_) throw std::runtime_error("drive went away");
+    return false;
+  }
+  bool was_read = false;
+
+ private:
+  int64_t size_;
+  bool throws_;
+};
+
+void TestOversizedXexIsNotRead() {
+  Fixture f;
+  FakeSource huge(int64_t{1} << 40, false);
+  assert(mgr_install::CheckSourceXex(huge, f.manifest) == XexCheck::kNotXex);
+  assert(!huge.was_read);
+}
+
+void TestThrowingSourceBecomesFailure() {
+  Fixture f;
+  FakeSource broken(int64_t(f.xex.size()), true);
+  const std::atomic<bool> cancel{false};
+  const auto result = mgr_install::InstallFrom(broken, f.data, {}, cancel, f.manifest);
+  assert(!result.ok && !result.cancelled);
+  assert(result.error.find("drive went away") != std::string::npos);
+  assert(!fs::exists(f.data / "game.partial"));
+  assert(mgr_install::CheckSourceXex(broken, f.manifest) == XexCheck::kNotXex);
+}
+
 void TestInstallAndReport() {
   Fixture f;
   mgr_install::FolderSource folder(f.source);
@@ -190,6 +226,8 @@ void TestRealManifestShape() {
 int main() {
   TestCheckXex();
   TestCheckSourceXex();
+  TestOversizedXexIsNotRead();
+  TestThrowingSourceBecomesFailure();
   TestInstallAndReport();
   TestMissingFileKeepsOldInstall();
   TestHashMismatchRollsBack();

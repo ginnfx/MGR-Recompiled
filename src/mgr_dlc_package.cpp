@@ -1,6 +1,8 @@
 // Xbox Live content package (STFS) check for the setup's DLC step.
 #include "mgr_game_install.h"
 
+#include "mgr_byte_order.h"
+
 #include <CommonCrypto/CommonDigest.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -29,10 +31,6 @@ constexpr size_t kBlockSize = 0x1000;
 constexpr uint64_t kBlocksPerTable = 170;
 constexpr uint64_t kBlocksPerLevel1 = kBlocksPerTable * kBlocksPerTable;
 constexpr size_t kHashEntrySize = 0x18;
-
-uint32_t BE32(const uint8_t* p) {
-  return uint32_t{p[0]} << 24 | uint32_t{p[1]} << 16 | uint32_t{p[2]} << 8 | p[3];
-}
 
 // Read-only packages keep one hash table per group; these mirror the SDK's
 // block placement (stfs_container_device.cpp) for that layout.
@@ -116,21 +114,23 @@ DlcPackage CheckDlcPackage(const fs::path& package) {
   const Mapping file(package);
   if (!file.data || file.size < kMinHeaderBytes) return result;
   const uint8_t* h = file.data;
-  const uint32_t magic = BE32(h);
+  const uint32_t magic = ReadBE32(h);
   if (magic != kMagicLive && magic != kMagicPirs) return result;
   result.size = file.size;
   result.name = DisplayName(h + kDisplayNameOffset);
-  if (BE32(h + kTitleIdOffset) != kTitleId) return {DlcCheck::kOtherGame, result.name, result.size};
-  if (BE32(h + kContentTypeOffset) != kMarketplaceContent)
+  if (ReadBE32(h + kTitleIdOffset) != kTitleId) return {DlcCheck::kOtherGame, result.name, result.size};
+  if (ReadBE32(h + kContentTypeOffset) != kMarketplaceContent)
     return {DlcCheck::kNotDlc, result.name, result.size};
 
   const uint8_t* descriptor = h + kDescriptorOffset;
   const bool read_only = descriptor[2] & 1;
-  if (BE32(h + kVolumeTypeOffset) != 0 || !read_only)
+  if (ReadBE32(h + kVolumeTypeOffset) != 0 || !read_only)
     return {DlcCheck::kUnsupported, result.name, result.size};
-  const uint32_t header_size = BE32(h + kHeaderSizeOffset);
+  const uint32_t header_size = ReadBE32(h + kHeaderSizeOffset);
   const size_t base = (size_t(header_size) + kBlockSize - 1) & ~(kBlockSize - 1);
-  const uint32_t total_blocks = BE32(descriptor + 0x1C);
+  const uint32_t total_blocks = ReadBE32(descriptor + 0x1C);
+  // With no blocks the loop below would verify nothing and pass.
+  if (total_blocks == 0) return {DlcCheck::kDamaged, result.name, result.size};
   result.check = VerifyBlocks(file, base, total_blocks) ? DlcCheck::kOk : DlcCheck::kDamaged;
   return result;
 }
@@ -167,6 +167,17 @@ InstallResult QueueDlcPackage(const fs::path& package, const fs::path& data_root
     return {false, false, "Could not copy the DLC package: " + reason};
   }
   return {true, false, {}};
+}
+
+std::filesystem::path DamagedPackagePath(const std::filesystem::path& package) {
+  std::filesystem::path aside = package;
+  aside += ".damaged";
+  return aside;
+}
+
+bool IsPendingPackageFile(const std::filesystem::path& package) {
+  const auto ext = package.extension();
+  return ext != ".partial" && ext != ".damaged";
 }
 
 }  // namespace mgr_install

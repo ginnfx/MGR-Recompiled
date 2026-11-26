@@ -59,6 +59,10 @@ DlcCheck Check(const std::vector<uint8_t>& bytes) {
 }  // namespace
 
 int main() {
+  assert(mgr_install::DamagedPackagePath("pending/wolf.pkg") == fs::path("pending/wolf.pkg.damaged"));
+  assert(mgr_install::IsPendingPackageFile("pending/wolf"));
+  assert(!mgr_install::IsPendingPackageFile("pending/wolf.partial"));
+  assert(!mgr_install::IsPendingPackageFile("pending/wolf.damaged"));
   const auto good = FakePackage();
   const fs::path path = Write(good, "good");
   const auto info = mgr_install::CheckDlcPackage(path);
@@ -73,6 +77,9 @@ int main() {
   assert(Check(truncated) == DlcCheck::kDamaged);
   assert(Check(FakePackage(0x5345085E)) == DlcCheck::kOtherGame);
   assert(Check(FakePackage(mgr_install::kTitleId, 1)) == DlcCheck::kNotDlc);
+  auto empty = good;
+  Put32(empty, 0x379 + 0x1C, 0);  // no data blocks, so nothing could be verified
+  assert(Check(empty) == DlcCheck::kDamaged);
   auto writable = good;
   writable[0x379 + 2] = 0;
   assert(Check(writable) == DlcCheck::kUnsupported);
