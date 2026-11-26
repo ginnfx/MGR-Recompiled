@@ -37,6 +37,7 @@ set(MGR_SOURCES
     src/mgr_options_trace.cpp
     src/mgr_menu_fonts.cpp
     src/mgr_test_script.cpp
+    src/mgr_test_unlock.cpp
     src/mgr_test_window_mac.cpp
     src/thirdparty/mgrr_perf/perf_logger.cpp
 )
